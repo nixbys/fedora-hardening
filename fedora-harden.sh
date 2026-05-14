@@ -25,6 +25,8 @@
 #    • rpm-ostree-aware Fail2Ban setup (defers activation safely until reboot)
 #    • Deterministic command exit-code capture (set -e safe for rpm-ostree and firewall-cmd)
 #    • Comprehensive file operation error handling (chmod, chown, cp, install, sed safe)
+#    • Full rollback support: per-session change journal + --rollback to undo any run
+#    • Session reports: written to ./sessions/ on every exit (success or abort)
 #
 #  USAGE:
 #    sudo ./fedora-harden.sh [options]
@@ -39,6 +41,9 @@
 #        --skip <list>      Comma-separated sections to skip (e.g. 7,8,17)
 #        --only <list>      Comma-separated sections to run exclusively
 #        --list             List all section numbers & names and exit
+#        --list-sessions    List all past hardening sessions with their status
+#        --rollback [id]    Roll back changes from the last session (or session <id>)
+#                           Use --list-sessions first to view available session IDs
 #    -h, --help             Show this help and exit
 #
 #  SECTIONS (execution order optimized for dependency flow):
@@ -190,6 +195,15 @@ USER_RESULTS_DIR=""
 USER_LOGS_DIR=""
 REPORT_DATE="$RUN_STAMP"
 declare -ga TEMP_FILES=()          # All temp paths to auto-clean on EXIT
+
+# ---------- Rollback & session-tracking globals ------------------------------
+ROLLBACK_JOURNAL=""                # Path to per-run change journal inside BACKUP_DIR
+SESSION_DIR="${SCRIPT_DIR}/sessions" # Project-relative sessions report directory
+SESSION_REPORT_FILE=""             # Path to current session's report in SESSION_DIR
+SESSION_STATUS="running"           # Updated to 'completed' or 'aborted' on exit
+SESSION_REPORT_WRITTEN=0           # Guards against double-write on abort path
+ROLLBACK_SESSION_ID=""             # Session ID to roll back (set by --rollback)
+LIST_SESSIONS_MODE=0               # Set by --list-sessions
 
 # Colors (disabled if not a tty)
 if [[ -t 1 ]]; then
@@ -634,6 +648,22 @@ run() {
         done <"$ERROR_CAPTURE_FILE"
         capture_error_context "${BASH_LINENO[0]}" "$*" "$rc" "$ERROR_CAPTURE_FILE"
     fi
+    # Record service enable/disable transitions for rollback journal.
+    if (( rc == 0 )); then
+        local _cmd_str="$*"
+        if [[ "$_cmd_str" =~ ^[[:space:]]*systemctl[[:space:]]+(enable|disable)[[:space:]] ]]; then
+            local _sctl_op="${BASH_REMATCH[1]}"
+            local _sctl_rest="${_cmd_str#*systemctl }"
+            _sctl_rest="${_sctl_rest#enable }"
+            _sctl_rest="${_sctl_rest#disable }"
+            _sctl_rest="${_sctl_rest#--now }"
+            local _sctl_unit="${_sctl_rest%% *}"
+            _sctl_unit="${_sctl_unit%%||*}"
+            _sctl_unit="${_sctl_unit%%&*}"
+            [[ -n "$_sctl_unit" && "$_sctl_unit" != '--'* ]] && \
+                record_change "SERVICE_${_sctl_op^^}" "$_sctl_unit"
+        fi
+    fi
     return "$rc"
 }
 
@@ -745,6 +775,7 @@ pkg_install() {
         for pkg in "${needed[@]}"; do
             _PKG_PENDING_CACHE[$pkg]=1
         done
+        record_change PKG_INSTALL "${needed[*]}"
         warn "Layered packages are applied on reboot. Reboot when this script completes."
     else
         run "dnf install -y ${needed[*]}"
@@ -752,6 +783,7 @@ pkg_install() {
         for pkg in "${needed[@]}"; do
             _PKG_CACHE[$pkg]=0
         done
+        record_change PKG_INSTALL "${needed[*]}"
         # New binaries may now exist; refresh command cache.
         unset _CMD_CACHE
         declare -gA _CMD_CACHE=()
@@ -818,6 +850,8 @@ flatpak_install_or_update() {
         add_action_item "13" "MEDIUM" \
             "FLATPAK_INSTALL_FAILED_${app_id//[^a-zA-Z0-9]/_}" \
             "Flatpak ${app_id} could not be installed automatically — run: flatpak install ${remote} ${app_id}"
+    else
+        record_change FLATPAK_INSTALL "$app_id"
     fi
 }
 
@@ -939,6 +973,7 @@ backup_file() {
         fi
         run "install -d -m 700 '$BACKUP_DIR'" || { warn "Failed to create backup directory"; return 1; }
         run "cp -a --parents '$f' '$BACKUP_DIR/'" || { warn "Failed to backup $f"; return 1; }
+        record_change FILE_BACKUP "$f"
         info "Backed up $f → $BACKUP_DIR"
     fi
 }
@@ -1247,7 +1282,7 @@ validate_and_remediate_loop() {
 
 # trap_cleanup() - Emergency cleanup handler for EXIT/ERR traps.
 # Removes temporary files and performs resource cleanup on script failure.
-# This prevents /tmp pollution and ensures graceful shutdown.
+# Also writes the session report to sessions/ on every exit (normal or abort).
 trap_cleanup() {
     local rc=$?
     gui_progress_close || true
@@ -1256,7 +1291,10 @@ trap_cleanup() {
     for _f in "${TEMP_FILES[@]}"; do
         [[ -f "$_f" ]] && rm -f "$_f"
     done
-    
+
+    # Finalize the session report on every exit path.
+    write_session_report || true
+
     # Ensure logs remain accessible for post-script analysis
     if [[ -f "$LOG_FILE" ]]; then
         chmod 640 "$LOG_FILE" 2>/dev/null || true
@@ -1264,7 +1302,7 @@ trap_cleanup() {
     if [[ -f "$ERROR_LOG" ]]; then
         chmod 640 "$ERROR_LOG" 2>/dev/null || true
     fi
-    
+
     return "$rc"
 }
 
@@ -1277,6 +1315,7 @@ trap_err() {
     if (( EXPECTED_ABORT )); then
         exit "$rc"
     fi
+    SESSION_STATUS="aborted"
     trap_cleanup || true
     capture_error_context "$line" "$cmd_ctx" "$rc" "$ERROR_CAPTURE_FILE" 2>/dev/null || true
     err "Aborted at line $line (exit $rc). See log: $LOG_FILE"
@@ -1300,7 +1339,432 @@ add_action_item() {
 # Usage: register_tmp <path>
 register_tmp() { TEMP_FILES+=("$1"); }
 
-# get_user_downloads_dir() - Resolve target user's XDG Downloads directory.
+# ---------- Rollback journal helpers ----------------------------------------
+
+# record_change() - Append one change entry to the rollback journal.
+# Format written: "TIMESTAMP|CHANGE_TYPE|DETAIL"
+# Types: FILE_BACKUP, PKG_INSTALL, FLATPAK_INSTALL, SERVICE_ENABLE, SERVICE_DISABLE
+# No-ops in --dry-run mode or when journal is not yet initialized.
+# Usage: record_change <type> <detail>
+record_change() {
+    [[ -z "$ROLLBACK_JOURNAL" ]] && return 0
+    (( DRY_RUN )) && return 0
+    local ts
+    printf -v ts '%(%F %T)T' -1 2>/dev/null || ts="$(date '+%F %T')"
+    printf '%s|%s|%s\n' "$ts" "$1" "$2" >> "$ROLLBACK_JOURNAL" 2>/dev/null || true
+}
+
+# init_rollback_journal() - Create BACKUP_DIR and the per-session change journal.
+# Called during preflight after log initialization.
+# Usage: init_rollback_journal
+init_rollback_journal() {
+    (( DRY_RUN )) && return 0
+    install -d -m 700 "$BACKUP_DIR" 2>/dev/null || true
+    ROLLBACK_JOURNAL="${BACKUP_DIR}/.rollback-journal"
+    {
+        printf '# Fedora Hardening Rollback Journal\n'
+        printf '# Session:  %s\n' "$RUN_STAMP"
+        printf '# Host:     %s\n' "$HOST_LABEL"
+        printf '# Started:  %s\n' "$RUN_STAMP_ISO"
+        printf '# Format:   TIMESTAMP|CHANGE_TYPE|DETAIL\n'
+        printf '#\n'
+    } > "$ROLLBACK_JOURNAL" 2>/dev/null || ROLLBACK_JOURNAL=""
+    [[ -n "$ROLLBACK_JOURNAL" ]] && chmod 600 "$ROLLBACK_JOURNAL" 2>/dev/null || true
+}
+
+# init_session_dir() - Create ./sessions/ and write the session header stub.
+# The stub is overwritten with full content by write_session_report() on exit.
+# Usage: init_session_dir
+init_session_dir() {
+    if ! install -d -m 755 "$SESSION_DIR" 2>/dev/null; then
+        warn "Could not create sessions directory: $SESSION_DIR — session reports disabled."
+        SESSION_DIR=""
+        return 0
+    fi
+    SESSION_REPORT_FILE="${SESSION_DIR}/session-${RUN_STAMP}.txt"
+    {
+        printf '=== Fedora Hardening Session Report ===\n'
+        printf 'Session:   %s\n' "$RUN_STAMP"
+        printf 'Status:    running\n'
+        printf 'Host:      %s\n' "$HOST_LABEL"
+        printf 'Started:   %s\n' "$RUN_STAMP_ISO"
+        printf 'Log:       %s\n' "$LOG_FILE"
+        printf 'Backups:   %s\n' "$BACKUP_DIR"
+        printf '\n(Script still running — full report written on exit)\n'
+    } > "$SESSION_REPORT_FILE" 2>/dev/null || SESSION_REPORT_FILE=""
+}
+
+# write_session_report() - Finalize and persist the session report to sessions/.
+# Called automatically from trap_cleanup on both clean exit and abort.
+# Idempotent: skips if already written (SESSION_REPORT_WRITTEN guard).
+# Usage: write_session_report
+write_session_report() {
+    (( SESSION_REPORT_WRITTEN )) && return 0
+    SESSION_REPORT_WRITTEN=1
+    [[ -z "$SESSION_REPORT_FILE" ]] && return 0
+
+    local plat
+    (( IS_OSTREE )) && plat="rpm-ostree (immutable)" || plat="dnf (mutable)"
+
+    local change_count=0 file_backups=0 pkg_installs=0
+    local svc_enables=0 svc_disables=0 flatpak_installs=0
+
+    if [[ -n "$ROLLBACK_JOURNAL" && -f "$ROLLBACK_JOURNAL" ]]; then
+        while IFS='|' read -r _ts ctype _detail; do
+            [[ "$_ts" == '#'* || -z "${ctype:-}" ]] && continue
+            (( change_count++ ))
+            case "$ctype" in
+                FILE_BACKUP)     (( file_backups++ ))     ;;
+                PKG_INSTALL)     (( pkg_installs++ ))     ;;
+                SERVICE_ENABLE)  (( svc_enables++ ))      ;;
+                SERVICE_DISABLE) (( svc_disables++ ))     ;;
+                FLATPAK_INSTALL) (( flatpak_installs++ )) ;;
+            esac
+        done < "$ROLLBACK_JOURNAL"
+    fi
+
+    {
+        printf '=== Fedora Hardening Session Report ===\n'
+        printf 'Session:   %s\n' "$RUN_STAMP"
+        printf 'Status:    %s\n' "$SESSION_STATUS"
+        printf 'Host:      %s\n' "$HOST_LABEL"
+        printf 'Kernel:    %s\n' "$KERNEL_LABEL"
+        printf 'Platform:  %s\n' "$plat"
+        printf 'Started:   %s\n' "$RUN_STAMP_ISO"
+        printf 'Log:       %s\n' "$LOG_FILE"
+        printf 'Backups:   %s\n' "$BACKUP_DIR"
+        printf '\n'
+        printf '=== Change Summary (%d total) ===\n' "$change_count"
+        printf '  File backups created:    %d\n' "$file_backups"
+        printf '  Packages installed:      %d\n' "$pkg_installs"
+        printf '  Services enabled:        %d\n' "$svc_enables"
+        printf '  Services disabled:       %d\n' "$svc_disables"
+        printf '  Flatpak apps installed:  %d\n' "$flatpak_installs"
+        printf '\n'
+        printf '=== Detailed Changes ===\n'
+        if (( DRY_RUN )); then
+            printf '  No changes recorded (dry-run mode).\n'
+        elif [[ -n "$ROLLBACK_JOURNAL" && -f "$ROLLBACK_JOURNAL" && "$change_count" -gt 0 ]]; then
+            while IFS='|' read -r _ts ctype detail; do
+                [[ "$_ts" == '#'* || -z "${ctype:-}" ]] && continue
+                printf '  [%s] %-18s %s\n' "$_ts" "$ctype" "$detail"
+            done < "$ROLLBACK_JOURNAL"
+        else
+            printf '  No changes were applied this session.\n'
+        fi
+        printf '\n'
+        printf '=== Actionable Items (%d) ===\n' "${#ACTIONABLE_ITEMS[@]}"
+        if (( ${#ACTIONABLE_ITEMS[@]} > 0 )); then
+            local idx=1
+            for item in "${ACTIONABLE_ITEMS[@]}"; do
+                local section priority tag desc
+                IFS='|' read -r section priority tag desc <<<"$item"
+                printf '  [%2d] [%s][%s] %s\n' "$idx" "$priority" "$section" "$desc"
+                (( idx++ ))
+            done
+        else
+            printf '  None.\n'
+        fi
+        printf '\n'
+        printf '=== Remediated Items (%d) ===\n' "${#REMEDIATED_ITEMS[@]}"
+        if (( ${#REMEDIATED_ITEMS[@]} > 0 )); then
+            for item in "${REMEDIATED_ITEMS[@]}"; do
+                local section priority tag desc
+                IFS='|' read -r section priority tag desc <<<"$item"
+                printf '  [RESOLVED][%s][%s] %s\n' "$priority" "$section" "$desc"
+            done
+        else
+            printf '  None.\n'
+        fi
+        printf '\n'
+        if [[ "$SESSION_STATUS" == "aborted" ]]; then
+            printf '=== Abort Information ===\n'
+            printf '  The script was aborted before completing all sections.\n'
+            printf '  Some changes may have been applied; see detailed changes above.\n'
+            printf '  Error log: %s\n\n' "$ERROR_LOG"
+        fi
+        printf '=== Rollback Instructions ===\n'
+        if (( change_count > 0 )); then
+            printf '  To undo all changes from this session:\n'
+            printf '    sudo %s --rollback %s\n\n' "$SCRIPT_NAME" "$RUN_STAMP"
+            printf '  Manual restore of config files from:\n'
+            printf '    %s\n' "$BACKUP_DIR"
+        elif (( DRY_RUN )); then
+            printf '  No changes were made (dry-run mode) — nothing to roll back.\n'
+        else
+            printf '  No changes were recorded — nothing to roll back.\n'
+        fi
+    } > "$SESSION_REPORT_FILE" 2>/dev/null || true
+    chmod 644 "$SESSION_REPORT_FILE" 2>/dev/null || true
+    log "[SESSION] Session report written: $SESSION_REPORT_FILE"
+}
+
+# ---------- Rollback session helpers ----------------------------------------
+
+# find_session_backup_dir() - Locate BACKUP_DIR for a given session ID (RUN_STAMP format).
+# Prints the directory path on success; returns 1 if not found.
+# Usage: find_session_backup_dir <stamp>
+find_session_backup_dir() {
+    local stamp="$1"
+    local dir="/root/harden-backups-${stamp}"
+    if [[ -d "$dir" ]]; then
+        printf '%s' "$dir"
+        return 0
+    fi
+    return 1
+}
+
+# list_sessions_cmd() - Display all past sessions from the sessions/ directory.
+# Usage: list_sessions_cmd
+list_sessions_cmd() {
+    if [[ ! -d "$SESSION_DIR" ]]; then
+        info "No sessions directory found at: $SESSION_DIR"
+        return 0
+    fi
+    local found=0
+    printf '\n%s════════ Past Hardening Sessions ════════%s\n' "$C_CYN" "$C_RST"
+    for f in "$SESSION_DIR"/session-*.txt; do
+        [[ -f "$f" ]] || continue
+        (( found++ ))
+        local session_id status
+        session_id="$(awk '/^Session:/{print $2; exit}' "$f" 2>/dev/null || echo unknown)"
+        status="$(awk '/^Status:/{print $2; exit}' "$f" 2>/dev/null || echo unknown)"
+        case "$status" in
+            completed) printf '  %s[✓]%s %s  (completed)\n'   "$C_GRN" "$C_RST" "$session_id" ;;
+            aborted)   printf '  %s[✗]%s %s  (aborted)\n'     "$C_RED" "$C_RST" "$session_id" ;;
+            running)   printf '  %s[~]%s %s  (interrupted)\n' "$C_YEL" "$C_RST" "$session_id" ;;
+            *)         printf '       %s  (%s)\n' "$session_id" "$status" ;;
+        esac
+        printf '       Report: %s\n' "$f"
+    done
+    if (( found == 0 )); then
+        printf '  No sessions found.\n'
+    fi
+    printf '%s═════════════════════════════════════════%s\n\n' "$C_CYN" "$C_RST"
+    printf 'To roll back a session:  sudo %s --rollback <session-id>\n\n' "$SCRIPT_NAME"
+}
+
+# rollback_session() - Reverse all changes recorded in a session rollback journal.
+# Restores backed-up config files, removes installed packages, reverses service
+# enables/disables, and removes Flatpak installs. Generates a rollback report in
+# the sessions/ directory.
+# Usage: rollback_session <session-id|last>
+rollback_session() {
+    local session_id="${1:-last}"
+    local backup_dir journal_file
+
+    # Resolve 'last' to the most recent known session stamp
+    if [[ "$session_id" == "last" ]]; then
+        local latest=""
+        # Prefer sessions/ reports (authoritative stamps)
+        if [[ -d "$SESSION_DIR" ]]; then
+            for f in "$SESSION_DIR"/session-*.txt; do
+                [[ -f "$f" ]] || continue
+                local stamp
+                stamp="$(basename "$f" .txt)"
+                stamp="${stamp#session-}"
+                [[ -z "$latest" || "$stamp" > "$latest" ]] && latest="$stamp"
+            done
+        fi
+        # Fall back to /root/harden-backups-* directories
+        if [[ -z "$latest" ]]; then
+            for d in /root/harden-backups-*/; do
+                [[ -d "$d" ]] || continue
+                local stamp
+                stamp="${d%/}"
+                stamp="${stamp##*/harden-backups-}"
+                [[ -z "$latest" || "$stamp" > "$latest" ]] && latest="$stamp"
+            done
+        fi
+        if [[ -z "$latest" ]]; then
+            err "No previous sessions found to roll back."
+            return 1
+        fi
+        session_id="$latest"
+        info "Most recent session found: $session_id"
+    fi
+
+    backup_dir="$(find_session_backup_dir "$session_id")" || {
+        err "Backup directory not found for session: $session_id"
+        err "Expected location: /root/harden-backups-${session_id}"
+        return 1
+    }
+
+    journal_file="${backup_dir}/.rollback-journal"
+    if [[ ! -f "$journal_file" ]]; then
+        err "No rollback journal found in: $backup_dir"
+        warn "Manual restore: copy files from $backup_dir back to /"
+        return 1
+    fi
+
+    info "Session:     $session_id"
+    info "Backup dir:  $backup_dir"
+    info "Journal:     $journal_file"
+
+    if ! confirm "Proceed with rollback of session ${session_id}?"; then
+        info "Rollback cancelled."
+        return 0
+    fi
+
+    local rb_stamp
+    printf -v rb_stamp '%(%Y%m%d-%H%M%S)T' -1 2>/dev/null || rb_stamp="$(date +%Y%m%d-%H%M%S)"
+    local rb_report=""
+    if [[ -d "$SESSION_DIR" ]]; then
+        rb_report="${SESSION_DIR}/rollback-${session_id}-at-${rb_stamp}.txt"
+    fi
+
+    local restore_count=0 restore_errors=0
+
+    _rbl() { [[ -n "$rb_report" ]] && printf '%s\n' "$*" >> "$rb_report" 2>/dev/null || true; }
+
+    if [[ -n "$rb_report" ]]; then
+        {
+            printf '=== Fedora Hardening Rollback Report ===\n'
+            printf 'Rolling back session:  %s\n' "$session_id"
+            printf 'Rollback started:      %s\n' "$(date '+%F %T')"
+            printf 'Host:                  %s\n' "$HOST_LABEL"
+            printf 'Backup dir:            %s\n' "$backup_dir"
+            printf '\n=== Rollback Actions ===\n'
+        } > "$rb_report" 2>/dev/null || rb_report=""
+    fi
+
+    # Load journal into array for reverse-order processing
+    local -a journal_lines=()
+    while IFS= read -r jline; do
+        [[ "$jline" == '#'* || -z "$jline" ]] && continue
+        journal_lines+=("$jline")
+    done < "$journal_file"
+
+    local i n=${#journal_lines[@]}
+    for (( i = n-1; i >= 0; i-- )); do
+        local ts ctype detail
+        IFS='|' read -r ts ctype detail <<<"${journal_lines[$i]}"
+        [[ -z "${ctype:-}" ]] && continue
+
+        case "$ctype" in
+            FILE_BACKUP)
+                local restored_path="/${detail#/}"
+                local backup_copy="${backup_dir}${detail}"
+                if [[ -f "$backup_copy" ]]; then
+                    if (( DRY_RUN )); then
+                        info "Would restore: $restored_path"
+                    elif cp -a "$backup_copy" "$restored_path" 2>/dev/null; then
+                        ok "Restored: $restored_path"
+                        _rbl "  [OK]   RESTORE  $restored_path"
+                        (( restore_count++ ))
+                    else
+                        warn "Failed to restore: $restored_path"
+                        _rbl "  [FAIL] RESTORE  $restored_path"
+                        (( restore_errors++ ))
+                    fi
+                else
+                    warn "Backup copy not found: $backup_copy — skipping restore of $detail"
+                    _rbl "  [SKIP] RESTORE  $detail (backup copy missing)"
+                fi
+                ;;
+
+            PKG_INSTALL)
+                if (( IS_OSTREE )); then
+                    if (( DRY_RUN )); then
+                        info "Would run: rpm-ostree uninstall $detail"
+                    elif run "rpm-ostree uninstall $detail" 2>/dev/null; then
+                        ok "rpm-ostree uninstall queued: $detail (reboot required)"
+                        _rbl "  [OK]   RPM_OSTREE_UNINSTALL  $detail"
+                        (( restore_count++ ))
+                    else
+                        warn "rpm-ostree uninstall failed for: $detail (may not have been layered)"
+                        _rbl "  [WARN] RPM_OSTREE_UNINSTALL  $detail"
+                        (( restore_errors++ ))
+                    fi
+                else
+                    if (( DRY_RUN )); then
+                        info "Would run: dnf remove -y $detail"
+                    elif run "dnf remove -y $detail" 2>/dev/null; then
+                        ok "Packages removed: $detail"
+                        _rbl "  [OK]   PKG_REMOVE  $detail"
+                        (( restore_count++ ))
+                    else
+                        warn "dnf remove failed for: $detail (may have been pre-existing)"
+                        _rbl "  [WARN] PKG_REMOVE  $detail"
+                        (( restore_errors++ ))
+                    fi
+                fi
+                ;;
+
+            SERVICE_ENABLE)
+                # Reverse: disable the service
+                if (( DRY_RUN )); then
+                    info "Would run: systemctl disable $detail"
+                elif systemctl disable "$detail" 2>/dev/null; then
+                    ok "Service disabled: $detail"
+                    _rbl "  [OK]   SERVICE_DISABLE  $detail"
+                    (( restore_count++ ))
+                else
+                    warn "Could not disable service: $detail"
+                    _rbl "  [WARN] SERVICE_DISABLE  $detail"
+                    (( restore_errors++ ))
+                fi
+                ;;
+
+            SERVICE_DISABLE)
+                # Reverse: re-enable the service
+                if (( DRY_RUN )); then
+                    info "Would run: systemctl enable $detail"
+                elif systemctl enable "$detail" 2>/dev/null; then
+                    ok "Service re-enabled: $detail"
+                    _rbl "  [OK]   SERVICE_ENABLE  $detail"
+                    (( restore_count++ ))
+                else
+                    warn "Could not re-enable service: $detail"
+                    _rbl "  [WARN] SERVICE_ENABLE  $detail"
+                    (( restore_errors++ ))
+                fi
+                ;;
+
+            FLATPAK_INSTALL)
+                if (( DRY_RUN )); then
+                    info "Would run: flatpak uninstall -y $detail"
+                elif have_cmd flatpak && flatpak uninstall -y "$detail" 2>/dev/null; then
+                    ok "Flatpak removed: $detail"
+                    _rbl "  [OK]   FLATPAK_REMOVE  $detail"
+                    (( restore_count++ ))
+                else
+                    warn "Flatpak uninstall failed for: $detail"
+                    _rbl "  [WARN] FLATPAK_REMOVE  $detail"
+                    (( restore_errors++ ))
+                fi
+                ;;
+
+            *)
+                warn "Unknown journal entry type '$ctype' — skipping"
+                _rbl "  [SKIP] UNKNOWN  $ctype: $detail"
+                ;;
+        esac
+    done
+
+    if [[ -n "$rb_report" ]]; then
+        {
+            printf '\n=== Rollback Summary ===\n'
+            printf 'Session rolled back:  %s\n' "$session_id"
+            printf 'Changes reverted:     %d\n' "$restore_count"
+            printf 'Errors/warnings:      %d\n' "$restore_errors"
+            printf 'Completed:            %s\n' "$(date '+%F %T')"
+            (( IS_OSTREE )) && printf '\nNOTE: rpm-ostree uninstalls require a reboot to take effect.\n'
+            printf '\nA reboot is recommended to ensure all rollback changes are applied.\n'
+        } >> "$rb_report" 2>/dev/null || true
+        chmod 644 "$rb_report" 2>/dev/null || true
+        ok "Rollback report saved: $rb_report"
+    fi
+
+    if (( restore_errors > 0 )); then
+        warn "Rollback completed with $restore_errors warning(s) — manual review may be needed."
+    else
+        ok "Rollback complete: $restore_count change(s) reversed for session $session_id."
+    fi
+    (( IS_OSTREE )) && warn "A reboot is required for rpm-ostree changes to take effect."
+    info "A system reboot is recommended to finalize all rollback changes."
+    return 0
+}
 get_user_downloads_dir() {
     local user="${TARGET_USER:-${SUDO_USER:-}}"
     [[ -z "$user" || "$user" == "root" ]] && return 1
@@ -1687,6 +2151,14 @@ parse_args() {
                 fi
                 ONLY_LIST="$2"; shift 2 ;;
             --list)         list_sections; exit 0 ;;
+            --list-sessions) LIST_SESSIONS_MODE=1; shift ;;
+            --rollback)
+                if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
+                    ROLLBACK_SESSION_ID="$2"; shift 2
+                else
+                    ROLLBACK_SESSION_ID="last"; shift
+                fi
+                ;;
             -h|--help)      usage; exit 0 ;;
             *) err "Unknown argument: $1"; usage; exit 2 ;;
         esac
@@ -1781,6 +2253,8 @@ preflight() {
     fi
     info "Log file:    $LOG_FILE"
     info "Backup dir:  $BACKUP_DIR (created on first change)"
+    init_rollback_journal
+    init_session_dir
     (( DRY_RUN ))    && warn "DRY RUN mode — no changes will be applied."
     (( ASSUME_YES )) && warn "Auto-yes mode — no interactive confirmations."
 
@@ -3320,11 +3794,29 @@ EOF
 # ---------- Main ------------------------------------------------------------
 main() {
     parse_args "$@"
+
+    # --list-sessions: show past sessions without running a full preflight
+    if (( LIST_SESSIONS_MODE )); then
+        (( FORCE_GUI_FULL )) || draw_banner
+        list_sessions_cmd
+        EXPECTED_ABORT=1
+        exit 0
+    fi
+
     preflight
     if (( PRECHECK_FAILED )); then
         EXPECTED_ABORT=1
         exit 1
     fi
+
+    # --rollback: undo a previous session (requires root + IS_OSTREE detection from preflight)
+    if [[ -n "$ROLLBACK_SESSION_ID" ]]; then
+        SESSION_REPORT_FILE=""   # Rollback produces its own report; skip session stub
+        rollback_session "$ROLLBACK_SESSION_ID"
+        EXPECTED_ABORT=1
+        exit 0
+    fi
+
     init_user_report_dirs
     if [[ -n "$IMPORT_AUDIT_PATH" ]]; then
         import_audit_items "$IMPORT_AUDIT_PATH" || exit 1
@@ -3360,11 +3852,14 @@ main() {
 
     gui_progress_close
     final_summary
-    
+
     # Execute error analysis and auto-remediation loop to resolve any issues detected
     info "Running error analysis and auto-remediation cycle..."
     validate_and_remediate_loop || warn "Some errors may require manual intervention — review logs"
+
+    SESSION_STATUS="completed"
     ok "Script execution complete. See logs for full details."
+    [[ -n "$SESSION_REPORT_FILE" ]] && ok "Session report: $SESSION_REPORT_FILE"
 }
 
 main "$@"
