@@ -2,7 +2,7 @@
 # =============================================================================
 #  Fedora 44+ Security Hardening Script (multi-release + desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
-#  Efficiency-tuned and low-I/O focused (v1.3 - May 2026)
+#  Efficiency-tuned and low-I/O focused (v1.4 - May 2026)
 #
 #  FEATURES:
 #    • 22 hardening sections with automatic release/profile detection
@@ -11,10 +11,11 @@
 #      Kinoite, Silverblue, and Atomic desktop variants
 #    • Firefox Flatpak hardening with arkenfox + 4 security extensions
 #    • Comprehensive error handling (EXIT/ERR traps + resource cleanup)
-#    • Performance optimized: 3 caching layers, batched operations, smart waits
-#    • Session-level memoization: command, package, and user home caching
+#    • Performance optimized: 4 caching layers, batched operations, smart waits
+#    • Session-level memoization: command, package, user home, and Flatpak commit
 #    • Automatic feature gating based on system capabilities
 #    • Dependency self-healing for required commands/packages (best effort)
+#    • Idempotent Flatpak installs: skip if latest, update if stale, soft-fail
 #    • Graceful startup privilege confirmation (sudo/root context)
 #    • Approval-gated remediation with selective item implementation
 #    • Audit PDF/TXT export for later import and deferred remediation
@@ -80,6 +81,8 @@
 #    • Batched I/O: multi-pattern sed in single pass
 #    • Smart waits: firewalld readiness backoff instead of fixed sleeps
 #    • Package pre-checks: avoid redundant package status queries
+#    • Flatpak commit check: skip install/update when already at latest version
+#    • Safe arithmetic counters: pre-increment (++ x) avoids set -e false exits
 #    • Resource cleanup: EXIT trap guarantees /tmp cleanup
 #    • Session run stamp reuse for report/log/backup naming
 #
@@ -268,7 +271,7 @@ calc_section_total() {
     for s in "${planned[@]}"; do
         [[ -n "$ONLY_LIST" ]] && ! in_list "$s" "$ONLY_LIST" && continue
         [[ -n "$SKIP_LIST" ]] && in_list "$s" "$SKIP_LIST" && continue
-        ((n++))
+        (( ++n ))
     done
     (( n > 0 )) && UI_SECTION_TOTAL="$n" || UI_SECTION_TOTAL="${#planned[@]}"
     UI_SECTION_DONE=0
@@ -521,7 +524,7 @@ err() {
 section(){
     abort_if_cancelled
     local n="$1"; shift
-    ((UI_SECTION_DONE++))
+    (( ++UI_SECTION_DONE ))
     local pct=$(( UI_SECTION_DONE * 100 / UI_SECTION_TOTAL ))
     local pb
     pb="$(progress_bar "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" 28)"
@@ -625,6 +628,44 @@ install_dep_candidates() {
     done
     (( attempted )) && return 0
     return 1
+}
+
+# flatpak_install_or_update() - Idempotent Flatpak install/update (never aborts the script).
+# • Already installed and up-to-date  → skip (no network call needed).
+# • Already installed, update available → flatpak update (soft-fail).
+# • Not installed                       → flatpak install (soft-fail; queues
+#   an action item on failure so the user is notified without script abort).
+# Usage: flatpak_install_or_update <remote> <app-id>
+flatpak_install_or_update() {
+    local remote="$1" app_id="$2"
+
+    if (( DRY_RUN )); then
+        info "Would ensure Flatpak ${app_id} from ${remote} is installed and up-to-date."
+        return 0
+    fi
+
+    if flatpak info "${app_id}" &>/dev/null; then
+        # App is installed — check whether the remote has a newer commit.
+        local inst_commit rem_commit
+        inst_commit=$(flatpak info --show-commit "${app_id}" 2>/dev/null || true)
+        rem_commit=$(flatpak remote-info "${remote}" "${app_id}" --show-commit 2>/dev/null || true)
+        if [[ -n "${inst_commit}" && "${inst_commit}" == "${rem_commit}" ]]; then
+            info "Flatpak ${app_id}: already installed at latest version — skipping."
+            return 0
+        fi
+        info "Flatpak ${app_id}: installed but update available — updating."
+        flatpak update -y "${app_id}" 2>/dev/null || \
+            warn "Flatpak update of ${app_id} failed — will retry next run."
+        return 0
+    fi
+
+    info "Flatpak ${app_id}: not installed — installing from ${remote}."
+    if ! flatpak install -y "${remote}" "${app_id}" 2>/dev/null; then
+        warn "Flatpak ${app_id} install failed."
+        add_action_item "13" "MEDIUM" \
+            "FLATPAK_INSTALL_FAILED_${app_id//[^a-zA-Z0-9]/_}" \
+            "Flatpak ${app_id} could not be installed automatically — run: flatpak install ${remote} ${app_id}"
+    fi
 }
 
 # ensure_command_dep() - Ensure command exists, attempting package install if missing.
@@ -1999,7 +2040,7 @@ sec_13_flatpak() {
     run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
     run "flatpak update -y || true"
     if confirm "Install Flatseal (graphical Flatpak permission manager)?"; then
-        run "flatpak install -y flathub com.github.tchx84.Flatseal"
+        flatpak_install_or_update flathub com.github.tchx84.Flatseal
     fi
 }
 
@@ -2095,11 +2136,7 @@ sec_16_firefox() {
     fi
 
     run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
-    if ! flatpak info org.mozilla.firefox >/dev/null 2>&1; then
-        run "flatpak install -y flathub org.mozilla.firefox"
-    else
-        info "Firefox Flatpak already installed."
-    fi
+    flatpak_install_or_update flathub org.mozilla.firefox
 
     local ff_user="${TARGET_USER:-${SUDO_USER:-}}"
     if [[ -z "$ff_user" || "$ff_user" == "root" ]]; then
