@@ -2,10 +2,10 @@
 # =============================================================================
 #  Fedora 44+ Security Hardening Script (multi-release + desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
-#  Efficiency-tuned and low-I/O focused (v1.6 - May 2026)
+#  Efficiency-tuned and low-I/O focused (v1.9 - May 2026)
 #
 #  FEATURES:
-#    • 22 hardening sections with automatic release/profile detection
+#    • 21 hardening sections with automatic release/profile detection
 #    • Dual-mode support: mutable (dnf) and immutable (rpm-ostree) systems
 #    • Fedora release detection: Workstation, Server, IoT, Cloud, CoreOS,
 #      Kinoite, Silverblue, and Atomic desktop variants
@@ -16,11 +16,15 @@
 #    • Automatic feature gating based on system capabilities
 #    • Dependency self-healing for required commands/packages (best effort)
 #    • Idempotent Flatpak installs: skip if latest, update if stale, soft-fail
+#    • Idempotent rpm-ostree layering: skips already-requested staged packages
 #    • Safe firewalld service registration: auto-creates missing custom service XML
 #    • Graceful startup privilege confirmation (sudo/root context)
 #    • Approval-gated remediation with selective item implementation
 #    • Audit PDF/TXT export for later import and deferred remediation
 #    • Structured error log capture for post-run analysis and remediation loops
+#    • rpm-ostree-aware Fail2Ban setup (defers activation safely until reboot)
+#    • Deterministic command exit-code capture (set -e safe for rpm-ostree and firewall-cmd)
+#    • Comprehensive file operation error handling (chmod, chown, cp, install, sed safe)
 #
 #  USAGE:
 #    sudo ./fedora-harden.sh [options]
@@ -90,7 +94,7 @@
 #
 #  ERROR HANDLING:
 #    • EXIT trap: Cleans up all temporary files on script exit
-#    • ERR trap: Logs line number + exit code, triggers cleanup on error
+#    • ERR trap: Logs line number + failing command context + exit code
 #    • Resource safety: Guaranteed cleanup of /tmp operations
 #    • Fallback strategies: curl → wget, plus best-effort dependency install
 #    • Audit workflow: PDF/TXT export on decline, later import via --import-audit
@@ -172,6 +176,8 @@ declare -ga ERROR_DETAILS=()                # Array: "line|cmd|exit_code|stderr|
 declare -gi LAST_ERROR_COUNT=0              # Track errors for remediation loop
 declare -gi REMEDIATION_PASS=0              # Current pass through remediation
 declare -gi MAX_REMEDIATION_PASSES=3        # Max auto-remediation attempts
+                                             # Prevents infinite loops; persistent errors typically need manual intervention
+LAST_RUN_CMD=""                             # Last command dispatched via run()
 
 # ---------- Report / Actionable-items globals --------------------------------
 declare -ga ACTIONABLE_ITEMS=()
@@ -547,7 +553,7 @@ capture_error_context() {
     local ts stderr_content
     
     init_log_target || return 0
-    ts=$(date '+%F %T')
+    ts=$(date '+%F %T') || ts="(date failed)"
     
     # Read stderr if captured in file
     if [[ -n "$stderr_file" && -f "$stderr_file" ]]; then
@@ -598,6 +604,7 @@ section(){
 # Usage: run "command" "with" "args"
 run() {
     abort_if_cancelled
+    LAST_RUN_CMD="$*"
     if (( DRY_RUN )); then
         (( ! GUI_FULL_MODE )) && printf '%s[DRY ]%s  %s\n' "$C_YEL" "$C_RST" "$*"
         (( GUI_FULL_MODE )) && gui_status_event info "DRY RUN: $*"
@@ -606,15 +613,14 @@ run() {
     fi
     log "[RUN]   $*"
     # shellcheck disable=SC2294
+    local rc=0
     if (( GUI_FULL_MODE )); then
         : >"$ERROR_CAPTURE_FILE" 2>/dev/null || true
-        eval "$@" >>"$LOG_FILE" 2>>"$ERROR_CAPTURE_FILE"
-        local rc=$?
+        eval "$@" >>"$LOG_FILE" 2>>"$ERROR_CAPTURE_FILE" || rc=$?
     else
         # Capture stderr for error analysis
         : >"$ERROR_CAPTURE_FILE" 2>&1
-        eval "$@" 2>>"$ERROR_CAPTURE_FILE"
-        local rc=$?
+        eval "$@" 2>>"$ERROR_CAPTURE_FILE" || rc=$?
     fi
     # Log stderr if command failed (applies to GUI and non-GUI modes).
     if (( rc != 0 )) && [[ -f "$ERROR_CAPTURE_FILE" && -s "$ERROR_CAPTURE_FILE" ]]; then
@@ -653,19 +659,28 @@ pkg_upgrade() {
 # but the system has not yet been rebooted.
 _OSTREE_STAGED_LOADED=0
 _load_ostree_staged_packages() {
-    (( _OSTREE_STAGED_LOADED || ! IS_OSTREE )) && return 0
+    (( _OSTREE_STAGED_LOADED )) && return 0
+    (( IS_OSTREE )) || return 0
     _OSTREE_STAGED_LOADED=1
     local pkg
-    # Each deployment in `rpm-ostree status` prints one "LayeredPackages: p1 p2 …" line.
-    # sed extracts the package-name portion; tr splits on spaces; grep drops empty tokens.
+    # Parse LayeredPackages tokens in one awk pass to avoid extra sed/tr/grep forks.
     while IFS= read -r pkg; do
         [[ -n "$pkg" ]] && _PKG_PENDING_CACHE[$pkg]=1
     done < <(
-        rpm-ostree status 2>/dev/null \
-        | sed -n 's/.*LayeredPackages://p' \
-        | tr ' ' '\n' \
-        | grep -vE '^\s*$|\(pending\)|\(want-[a-z]*\)' \
-        || true
+        local out rc=0
+        out=$(rpm-ostree status 2>&1) || rc=$?
+        if (( rc != 0 )); then
+            warn "Failed to query rpm-ostree staged packages"
+            return 1
+        fi
+        echo "$out" | awk '
+            /LayeredPackages:/ {
+                sub(/.*LayeredPackages:[[:space:]]*/, "", $0)
+                for (i=1; i<=NF; i++) {
+                    if ($i !~ /^\(/) print $i
+                }
+            }
+        '
     )
 }
 
@@ -675,6 +690,7 @@ _load_ostree_staged_packages() {
 # On rpm-ostree systems, also checks the live staged/pending layer so that packages
 # queued in a prior run (before reboot) are not re-requested, preventing the
 # "Package X is already requested" error.
+# Honors --dry-run in both mutable and immutable code paths.
 # Usage: pkg_install <package1> [package2] ...
 pkg_install() {
     local pkgs=("$@") needed=() pkg
@@ -695,8 +711,33 @@ pkg_install() {
 
     (( ${#needed[@]} == 0 )) && { info "All packages already installed (cached)."; return 0; }
 
+    if (( DRY_RUN )); then
+        if (( IS_OSTREE )); then
+            info "Would run: rpm-ostree install ${needed[*]}"
+        else
+            info "Would run: dnf install -y ${needed[*]}"
+        fi
+        return 0
+    fi
+
     if (( IS_OSTREE )); then
-        run "rpm-ostree install ${needed[*]}"
+        local out rc
+        log "[RUN]   rpm-ostree install ${needed[*]}"
+        # Capture output and exit code without triggering set -e abort on failure
+        out="$(rpm-ostree install "${needed[@]}" 2>&1)" || rc=$?
+        rc=${rc:-0}
+        [[ -n "${out}" ]] && printf '%s\n' "$out" >>"$LOG_FILE"
+
+        if (( rc != 0 )); then
+            # Idempotent rpm-ostree no-op cases should not abort under strict mode.
+            if [[ "$out" =~ already[[:space:]]requested|already[[:space:]]provided|No[[:space:]]packages[[:space:]]in[[:space:]]transaction|is[[:space:]]already[[:space:]]provided ]]; then
+                warn "rpm-ostree reports package(s) already queued/provided; treating as up-to-date."
+            else
+                capture_error_context "${BASH_LINENO[0]:-?}" "rpm-ostree install ${needed[*]}" "$rc" "/dev/null" || true
+                return "$rc"
+            fi
+        fi
+
         # Mark requested packages as pending to avoid redundant layering attempts this run.
         for pkg in "${needed[@]}"; do
             _PKG_PENDING_CACHE[$pkg]=1
@@ -758,7 +799,7 @@ flatpak_install_or_update() {
         # current, causing an endless "update available" → no-op update loop.
         # --no-pull checks against the locally cached remote metadata (no download).
         update_check=$(flatpak update --no-pull -y "${app_id}" 2>&1 || true)
-        if echo "${update_check}" | grep -qiE 'nothing to update|is up.to.date|nothing to do'; then
+        if [[ "${update_check}" =~ ([Nn]othing[[:space:]]to[[:space:]]update|[Uu]p[[:space:]]to[[:space:]]date|[Nn]othing[[:space:]]to[[:space:]]do) ]]; then
             info "Flatpak ${app_id}: already up-to-date (${origin}) — skipping."
             return 0
         fi
@@ -811,6 +852,16 @@ ensure_command_dep() {
 # Usage: download_file <url> <destination_path>
 download_file() {
     local url="$1" dest="$2"
+    local dest_dir="${dest%/*}"
+    
+    # Ensure destination directory exists before attempting download
+    if [[ "$dest_dir" != "$dest" && ! -d "$dest_dir" ]]; then
+        if ! install -d -m 700 "$dest_dir" 2>/dev/null; then
+            err "Cannot create destination directory: $dest_dir"
+            return 1
+        fi
+    fi
+    
     if ! cmd_exists curl && ! cmd_exists wget; then
         ensure_command_dep curl "download operations" curl
         cmd_exists curl || ensure_command_dep wget "download operations fallback" wget
@@ -879,8 +930,12 @@ confirm() {
 backup_file() {
     local f="$1"
     if [[ -f "$f" ]]; then
-        run "install -d -m 700 '$BACKUP_DIR'"
-        run "cp -a --parents '$f' '$BACKUP_DIR/'"
+        if [[ ! -r "$f" ]]; then
+            warn "Cannot read $f for backup (permission denied); backup skipped"
+            return 0
+        fi
+        run "install -d -m 700 '$BACKUP_DIR'" || { warn "Failed to create backup directory"; return 1; }
+        run "cp -a --parents '$f' '$BACKUP_DIR/'" || { warn "Failed to backup $f"; return 1; }
         info "Backed up $f → $BACKUP_DIR"
     fi
 }
@@ -909,7 +964,10 @@ batch_sed() {
     for pattern in "$@"; do
         args+=(-e "$pattern")
     done
-    sed -i "${args[@]}" "$f"
+    if ! sed -i "${args[@]}" "$f" 2>/dev/null; then
+        warn "sed failed on $f (file may be read-only or missing)"
+        return 1
+    fi
 }
 
 # cmd_exists() - Fast check if command exists in PATH (cached for this session).
@@ -1208,16 +1266,16 @@ trap_cleanup() {
 }
 
 # trap_err() - Error handler for ERR trap.
-# Captures exit code, line number, and context logs error with full context, then exits.
-# Now also calls analyze_error_log to identify any issues for later remediation.
+# Captures exit code + command context, logs with full detail, then exits.
 # Usage: Called automatically on error via trap.
 trap_err() {
     local rc=$? line=${BASH_LINENO[0]:-?}
+    local cmd_ctx="${BASH_COMMAND:-${LAST_RUN_CMD:-script execution}}"
     if (( EXPECTED_ABORT )); then
         exit "$rc"
     fi
     trap_cleanup || true
-    capture_error_context "$line" "script execution" "$rc" 2>/dev/null || true
+    capture_error_context "$line" "$cmd_ctx" "$rc" "$ERROR_CAPTURE_FILE" 2>/dev/null || true
     err "Aborted at line $line (exit $rc). See log: $LOG_FILE"
     warn "Error details saved to: $ERROR_LOG"
     gui_alert error "Hardening aborted at line $line (exit $rc).\n\nSee logs:\n$LOG_FILE\n$ERROR_LOG"
@@ -1290,9 +1348,12 @@ write_user_report() {
     fi
     local user="${TARGET_USER:-${SUDO_USER:-}}"
     local path="${USER_RESULTS_DIR}/${filename}"
-    cat > "$path"
+    if ! cat > "$path" 2>/dev/null; then
+        err "Failed to write report to $path (filesystem may be read-only or full)"
+        return 1
+    fi
     chown "${user}:${user}" "$path" 2>/dev/null || true
-    chmod 640 "$path"
+    chmod 640 "$path" 2>/dev/null || true
     ok "Report saved: $path"
 }
 
@@ -1303,9 +1364,9 @@ copy_to_user_results() {
     [[ -z "$USER_RESULTS_DIR" || ! -f "$src" ]] && return 0
     (( DRY_RUN )) && { info "Would copy $src -> $USER_RESULTS_DIR/$dest_name"; return 0; }
     local user="${TARGET_USER:-${SUDO_USER:-}}"
-    cp -a "$src" "${USER_RESULTS_DIR}/${dest_name}"
+    cp -a "$src" "${USER_RESULTS_DIR}/${dest_name}" 2>/dev/null || true
     chown "${user}:${user}" "${USER_RESULTS_DIR}/${dest_name}" 2>/dev/null || true
-    chmod 640 "${USER_RESULTS_DIR}/${dest_name}"
+    chmod 640 "${USER_RESULTS_DIR}/${dest_name}" 2>/dev/null || true
     ok "Copied $src -> $USER_RESULTS_DIR/$dest_name"
 }
 
@@ -1315,15 +1376,15 @@ copy_log_to_user() {
     (( DRY_RUN )) && { info "Would copy log -> $USER_LOGS_DIR/"; return 0; }
     local user="${TARGET_USER:-${SUDO_USER:-}}"
     local dest="${USER_LOGS_DIR}/$(basename "$LOG_FILE")"
-    cp -a "$LOG_FILE" "$dest"
+    cp -a "$LOG_FILE" "$dest" 2>/dev/null || true
     chown "${user}:${user}" "$dest" 2>/dev/null || true
-    chmod 640 "$dest"
+    chmod 640 "$dest" 2>/dev/null || true
     ok "Log copied: $dest"
     if [[ -n "$ERROR_LOG" && -f "$ERROR_LOG" ]]; then
         local err_dest="${USER_LOGS_DIR}/$(basename "$ERROR_LOG")"
-        cp -a "$ERROR_LOG" "$err_dest"
+        cp -a "$ERROR_LOG" "$err_dest" 2>/dev/null || true
         chown "${user}:${user}" "$err_dest" 2>/dev/null || true
-        chmod 640 "$err_dest"
+        chmod 640 "$err_dest" 2>/dev/null || true
         ok "Error log copied: $err_dest"
     fi
 }
@@ -1349,7 +1410,7 @@ generate_audit_pdf() {
     fi
 
     if [[ -n "$summary_path" && -f "$summary_path" ]]; then
-        cp -f "$summary_path" "$txt_path"
+        cp -f "$summary_path" "$txt_path" 2>/dev/null || true
     else
         {
             printf 'Fedora Hardening Audit Report\n'
@@ -1452,6 +1513,13 @@ import_audit_items() {
 # Accepts 'all', item numbers, item tags, or a comma-separated mix of numbers and tags.
 select_actionable_items() {
     local selection="${1:-all}"
+    
+    # Validate selection input to prevent shell injection
+    if [[ ! "$selection" =~ ^[a-zA-Z0-9,[:space:]]*$ ]]; then
+        err "Invalid selection format: contains non-alphanumeric characters (only 0-9, a-z, A-Z, commas allowed)"
+        return 1
+    fi
+    
     local token idx=1
     declare -A picks=()
     SELECTED_ACTIONABLE_ITEMS=()
@@ -1641,7 +1709,7 @@ preflight() {
 
     mkdir -p "$LOG_DIR"
     touch "$LOG_FILE"
-    chmod 600 "$LOG_FILE"
+    chmod 600 "$LOG_FILE" 2>/dev/null || true
     LOG_READY=1
 
     # Distro check: Verify this is a Fedora system and detect variant
@@ -1754,11 +1822,11 @@ sec_03_dnf_automatic() {
         if (( ! DRY_RUN )); then
             # Update existing policy or add new [Daemon] section (batch single sed pass)
             if grep -qE '^\s*AutomaticUpdatePolicy\s*=' "$ro_conf"; then
-                sed -i -E 's|^\s*AutomaticUpdatePolicy\s*=.*|AutomaticUpdatePolicy=stage|' "$ro_conf"
+                sed -i -E 's|^\s*AutomaticUpdatePolicy\s*=.*|AutomaticUpdatePolicy=stage|' "$ro_conf" 2>/dev/null || true
             elif grep -qE '^\[Daemon\]' "$ro_conf"; then
-                sed -i '/^\[Daemon\]/a AutomaticUpdatePolicy=stage' "$ro_conf"
+                sed -i '/^\[Daemon\]/a AutomaticUpdatePolicy=stage' "$ro_conf" 2>/dev/null || true
             else
-                printf '\n[Daemon]\nAutomaticUpdatePolicy=stage\n' >> "$ro_conf"
+                printf '\n[Daemon]\nAutomaticUpdatePolicy=stage\n' >> "$ro_conf" 2>/dev/null || true
             fi
             ok "Configured rpm-ostreed automatic update staging in $ro_conf"
         else
@@ -1812,7 +1880,11 @@ sec_04_selinux() {
         run "setenforce 1 || true"
         if [[ -f /etc/selinux/config ]]; then
             backup_file /etc/selinux/config
-            run "sed -i 's|^SELINUX=.*|SELINUX=enforcing|' /etc/selinux/config"
+            if ! sed -i 's|^SELINUX=.*|SELINUX=enforcing|' /etc/selinux/config 2>/dev/null; then
+            err "Failed to set SELINUX=enforcing in /etc/selinux/config"
+            add_action_item 4 HIGH "SELINUX_CONFIG_UPDATE" "Manually set SELINUX=enforcing in /etc/selinux/config"
+            return 1
+        fi
         fi
     else
         ok "SELinux is enforcing."
@@ -1841,7 +1913,7 @@ firewalld_ensure_service() {
         return 0
     fi
 
-    install -d -m 750 "${svc_dir}"
+    install -d -m 750 "${svc_dir}" 2>/dev/null || true
     {
         printf '<?xml version="1.0" encoding="utf-8"?>\n'
         printf '<service>\n'
@@ -1853,7 +1925,7 @@ firewalld_ensure_service() {
         done
         printf '</service>\n'
     } > "${svc_file}"
-    chmod 640 "${svc_file}"
+    chmod 640 "${svc_file}" 2>/dev/null || true
     firewall-cmd --reload &>/dev/null || true
     info "Created firewalld service definition: ${svc_name}"
 }
@@ -1870,8 +1942,9 @@ firewalld_add_service() {
     fi
     log "[RUN]   firewall-cmd --zone=${zone} --add-service=${svc} --permanent"
     local out ec
-    out=$(firewall-cmd --zone="${zone}" --add-service="${svc}" --permanent 2>&1)
-    ec=$?
+    # Capture output and exit code without triggering set -e abort on failure
+    out=$(firewall-cmd --zone="${zone}" --add-service="${svc}" --permanent 2>&1) || ec=$?
+    ec=${ec:-0}
     if (( ec == 0 )); then
         ok "firewalld: added service '${svc}' to zone '${zone}'."
         return 0
@@ -1937,8 +2010,11 @@ sec_05_firewalld() {
         firewalld_add_service drop "$svc"
     done
 
-    run "firewall-cmd --set-log-denied=all"
-    run "firewall-cmd --reload"
+    run "firewall-cmd --set-log-denied=all" || warn "firewall-cmd --set-log-denied failed"
+    if ! run "firewall-cmd --reload"; then
+        err "firewall-cmd --reload failed; firewall rules may not be active"
+        add_action_item 5 HIGH "FIREWALL_RELOAD_FAILED" "Manually reload firewall: sudo firewall-cmd --reload"
+    fi
     run "firewall-cmd --list-all"
     ok "firewalld configured."
 }
@@ -1993,13 +2069,30 @@ sec_07_ssh() {
     fi
 
     if ! confirm "You are about to harden sshd (disables passwords, root login, limits users). Continue?"; then
+
         info "Skipped SSH hardening."
         return 0
     fi
 
+    # Verify public key auth is working before disabling password auth
+    if ! grep -q "^ssh-" ~/.ssh/authorized_keys 2>/dev/null; then
+        warn "WARNING: No public SSH keys found in ~/.ssh/authorized_keys"
+        warn "If you proceed with hardening, you will LOSE SSH access unless you have alternative access method."
+        if ! confirm "Continue without verified public key? (Not recommended)"; then
+            info "Skipped SSH hardening."
+            return 0
+        fi
+        add_action_item 7 HIGH "SSH_NO_PUBLIC_KEY" "Install public SSH key to ~/.ssh/authorized_keys before testing remote login."
+    fi
     local cfg="/etc/ssh/sshd_config"
     local drop="/etc/ssh/sshd_config.d/99-hardening.conf"
     backup_file "$cfg"
+
+    # Validate TARGET_USER to prevent shell injection
+    if [[ -n "$TARGET_USER" && ! "$TARGET_USER" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        err "Invalid username: $TARGET_USER (must be alphanumeric, dots, dashes, underscores)"
+        return 1
+    fi
 
     local allow_users_line=""
     [[ -n "$TARGET_USER" ]] && allow_users_line="AllowUsers $TARGET_USER"
@@ -2007,8 +2100,8 @@ sec_07_ssh() {
     if (( DRY_RUN )); then
         info "Would write hardened drop-in to $drop"
     else
-        install -d -m 755 /etc/ssh/sshd_config.d
-        cat >"$drop" <<EOF
+        install -d -m 755 /etc/ssh/sshd_config.d 2>/dev/null || true
+        if ! cat >"$drop" <<EOF
 # Written by $SCRIPT_NAME on $RUN_STAMP_ISO
 PermitRootLogin no
 PasswordAuthentication no
@@ -2025,7 +2118,8 @@ X11Forwarding no
 AllowAgentForwarding no
 ${allow_users_line}
 EOF
-        chmod 644 "$drop"
+    then warn "Failed to write $drop (filesystem may be read-only or full)"; return 1; fi
+        chmod 644 "$drop" 2>/dev/null || true
         ok "Wrote $drop"
     fi
 
@@ -2070,9 +2164,13 @@ EOF
         umask 077
         local tmp_usbguard="/tmp/usbguard-rules-$$-$RANDOM-$SECONDS.conf"
         register_tmp "$tmp_usbguard"
-        usbguard generate-policy > "$tmp_usbguard"
-        install -m 0600 -o root -g root "$tmp_usbguard" /etc/usbguard/rules.conf
-        rm -f "$tmp_usbguard"
+        if ! usbguard generate-policy > "$tmp_usbguard" 2>/dev/null; then
+            warn "usbguard generate-policy failed"; rm -f "$tmp_usbguard" 2>/dev/null || true; return 1
+        fi
+        if ! install -m 0600 -o root -g root "$tmp_usbguard" /etc/usbguard/rules.conf 2>/dev/null; then
+            warn "Failed to install USBGuard rules (filesystem may be read-only)"; rm -f "$tmp_usbguard" 2>/dev/null || true; return 1
+        fi
+        rm -f "$tmp_usbguard" 2>/dev/null || true
         ok "Wrote /etc/usbguard/rules.conf (0600 root:root)"
     fi
     run "systemctl enable --now usbguard"
@@ -2149,7 +2247,7 @@ sec_10_sysctl() {
     if (( DRY_RUN )); then
         info "Would write $f with guide's full sysctl set"
     else
-        cat > "$f" <<'EOF'
+        if ! cat > "$f" <<'EOF'
 # /etc/sysctl.d/99-hardening.conf
 # Installed by fedora-harden.sh
 
@@ -2205,7 +2303,8 @@ fs.protected_regular = 2
 fs.protected_symlinks = 1
 fs.protected_hardlinks = 1
 EOF
-        chmod 644 "$f"
+        then err "Failed to write sysctl configuration"; return 1; fi
+        chmod 644 "$f" 2>/dev/null || true
         ok "Wrote $f"
     fi
     run "sysctl --system"
@@ -2225,7 +2324,7 @@ sec_11_auditd() {
     if (( DRY_RUN )); then
         info "Would write $rules"
     else
-        cat > "$rules" <<'EOF'
+        if ! cat > "$rules" <<'EOF'
 -D
 -b 8192
 -f 1
@@ -2267,7 +2366,8 @@ sec_11_auditd() {
 # Uncomment to lock the ruleset at boot (requires reboot to change):
 # -e 2
 EOF
-        chmod 640 "$rules"
+    then warn "Failed to write $rules (filesystem may be read-only)"; return 1; fi
+        chmod 640 "$rules" 2>/dev/null || true
         ok "Wrote $rules"
     fi
     run "augenrules --load"
@@ -2304,11 +2404,12 @@ sec_12_ids() {
     # Daily cron
     local cron_rk="/etc/cron.daily/rkhunter-scan"
     if (( ! DRY_RUN )); then
-        cat > "$cron_rk" <<'CRONEOF'
+        if ! cat > "$cron_rk" <<'CRONEOF'
 #!/bin/bash
 /usr/bin/rkhunter --cronjob --update --quiet
 CRONEOF
-        chmod 755 "$cron_rk"
+        then warn "Failed to write $cron_rk"; return 1; fi
+        chmod 755 "$cron_rk" 2>/dev/null || true
         ok "Wrote $cron_rk"
     fi
 
@@ -2321,11 +2422,12 @@ CRONEOF
 
     local cron_aide="/etc/cron.weekly/aide-check"
     if (( ! DRY_RUN )); then
-        cat > "$cron_aide" <<'CRONEOF'
+        if ! cat > "$cron_aide" <<'CRONEOF'
 #!/bin/bash
 /usr/sbin/aide --check 2>&1 | logger -t aide
 CRONEOF
-        chmod 755 "$cron_aide"
+        then warn "Failed to write $cron_aide"; return 1; fi
+        chmod 755 "$cron_aide" 2>/dev/null || true
         ok "Wrote $cron_aide (results sent to journal via logger)"
     fi
     warn "Re-initialize AIDE after legitimate package updates: 'sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
@@ -2346,7 +2448,7 @@ CRONEOF
             printf '\n--- Cron jobs installed ---\n'
             printf 'Daily rkhunter:  %s\n' "$cron_rk"
             printf 'Weekly AIDE:     %s\n' "$cron_aide"
-        } | write_user_report "section-12-rkhunter-aide-${REPORT_DATE}.txt"
+        } | write_user_report "section-12-rkhunter-aide-${REPORT_DATE}.txt" || true
     fi
 
     # Populate actionable items based on findings
@@ -2393,14 +2495,15 @@ sec_14_dot() {
     backup_file "$cfg"
     if (( ! DRY_RUN )); then
         # Write a drop-in instead of clobbering the main file.
-        install -d -m 755 /etc/systemd/resolved.conf.d
-        cat >/etc/systemd/resolved.conf.d/99-hardening.conf <<'EOF'
+        install -d -m 755 /etc/systemd/resolved.conf.d 2>/dev/null || true
+        if ! cat >/etc/systemd/resolved.conf.d/99-hardening.conf <<'EOF'
 [Resolve]
 DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 1.1.1.1#cloudflare-dns.com
 FallbackDNS=8.8.8.8#dns.google
 DNSOverTLS=yes
 DNSSEC=yes
 EOF
+        then err "Failed to write DNS-over-TLS configuration"; return 1; fi
         ok "Wrote /etc/systemd/resolved.conf.d/99-hardening.conf"
     fi
     run "systemctl restart systemd-resolved"
@@ -2530,12 +2633,16 @@ sec_16_firefox() {
             if (( DRY_RUN )); then
                 info "Would install arkenfox user.js into $profile_dir/user.js"
             else
-                local tmp_arken="/tmp/arkenfox-user-$$.js"
+                local tmp_arken="/tmp/arkenfox-user-$$-$RANDOM-$SECONDS.js"
                 register_tmp "$tmp_arken"
                 if download_file "https://raw.githubusercontent.com/arkenfox/user.js/master/user.js" "$tmp_arken"; then
-                    install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_arken" "$profile_dir/user.js"
-                    rm -f "$tmp_arken"
-                    ok "Installed arkenfox user.js into $profile_dir/user.js"
+                    if ! install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_arken" "$profile_dir/user.js" 2>/dev/null; then
+                        warn "Failed to install arkenfox user.js (filesystem may be read-only)"
+                        rm -f "$tmp_arken" 2>/dev/null || true
+                    else
+                        rm -f "$tmp_arken" 2>/dev/null || true
+                        ok "Installed arkenfox user.js into $profile_dir/user.js"
+                    fi
                 else
                     warn "arkenfox user.js download failed; Firefox profile will use defaults (no arkenfox hardening)"
                     rm -f "$tmp_arken"
@@ -2554,10 +2661,10 @@ sec_16_firefox() {
     if (( DRY_RUN )); then
         info "Would write Firefox extension policy to $policy_file"
     else
-        install -d -m 0700 -o "$ff_user" -g "$ff_user" "$policy_dir"
-        local tmp_policy="/tmp/firefox-policies-$$.json"
+        install -d -m 0700 -o "$ff_user" -g "$ff_user" "$policy_dir" 2>/dev/null || true
+        local tmp_policy="/tmp/firefox-policies-$$-$RANDOM-$SECONDS.json"
         register_tmp "$tmp_policy"
-        cat > "$tmp_policy" <<'EOF'
+        if ! cat > "$tmp_policy" <<'EOF'
 {
   "policies": {
     "Extensions": {
@@ -2576,8 +2683,11 @@ sec_16_firefox() {
   }
 }
 EOF
-        install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_policy" "$policy_file"
-        rm -f "$tmp_policy"
+        then warn "Failed to write Firefox policy JSON"; rm -f "$tmp_policy" 2>/dev/null || true; return 1; fi
+        if ! install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_policy" "$policy_file" 2>/dev/null; then
+            warn "Failed to install Firefox policy (filesystem may be read-only)"; rm -f "$tmp_policy" 2>/dev/null || true; return 1
+        fi
+        rm -f "$tmp_policy" 2>/dev/null || true
         ok "Installed Firefox extension policy at $policy_file"
     fi
 
@@ -2604,12 +2714,23 @@ sec_18_fail2ban() {
     should_run 18 || return 0
     section 18 "Fail2Ban"
     pkg_install fail2ban
-    local jl="/etc/fail2ban/jail.local"
+    local fb_dir="/etc/fail2ban"
+    local jl="${fb_dir}/jail.local"
+
     if (( DRY_RUN )); then
         [[ -f "$jl" ]] && info "$jl already exists — would leave unchanged." \
                        || info "Would write $jl (not present yet)"
-    elif [[ ! -f "$jl" ]]; then
-        cat > "$jl" <<'EOF'
+    else
+        # Ensure configuration directory exists before writing jail.local.
+        if ! run "install -d -m 0755 '$fb_dir'"; then
+            warn "Could not create $fb_dir; skipping Fail2Ban configuration for now."
+            add_action_item 18 HIGH "FAIL2BAN_DIR_CREATE_FAILED" \
+                "Failed to create $fb_dir. Fix filesystem permissions and re-run section 18."
+            return 0
+        fi
+
+        if [[ ! -f "$jl" ]]; then
+            if ! cat > "$jl" <<'EOF'
 [DEFAULT]
 bantime  = 3600
 findtime = 600
@@ -2622,11 +2743,32 @@ port    = ssh
 logpath = %(sshd_log)s
 backend = systemd
 EOF
-        ok "Wrote $jl"
-    else
-        info "$jl already exists — leaving unchanged."
+            then
+                warn "Could not write $jl; skipping Fail2Ban activation for now."
+                add_action_item 18 HIGH "FAIL2BAN_JAIL_WRITE_FAILED" \
+                    "Failed to write $jl. Fix filesystem/permissions and re-run section 18."
+                return 0
+            fi
+            ok "Wrote $jl"
+        else
+            info "$jl already exists — leaving unchanged."
+        fi
+
+        # rpm-ostree hosts may have fail2ban staged but not active until reboot.
+        if (( IS_OSTREE )) && ! systemctl list-unit-files 2>/dev/null | grep -q '^fail2ban\.service'; then
+            warn "fail2ban is staged but not active yet on rpm-ostree. Reboot required before enabling service."
+            add_action_item 18 HIGH "FAIL2BAN_PENDING_REBOOT" \
+                "Reboot to activate staged fail2ban packages, then re-run section 18."
+            return 0
+        fi
+
+        if ! run "systemctl enable --now fail2ban"; then
+            warn "Unable to enable/start fail2ban right now."
+            add_action_item 18 MEDIUM "FAIL2BAN_ENABLE_FAILED" \
+                "Run: sudo systemctl enable --now fail2ban (after reboot on rpm-ostree hosts)."
+            return 0
+        fi
     fi
-    run "systemctl enable --now fail2ban"
 
     # Post-enable status check and report
     if (( ! DRY_RUN )); then
@@ -2648,7 +2790,7 @@ EOF
             printf '\n--- Jail summary ---\n%s\n' "$f2b_status"
             printf '\n--- jail.local contents ---\n'
             [[ -f "$jl" ]] && cat "$jl" || printf '(not found)\n'
-        } | write_user_report "section-18-fail2ban-${REPORT_DATE}.txt"
+        } | write_user_report "section-18-fail2ban-${REPORT_DATE}.txt" || true
         if (( f2b_active )); then
             add_action_item 18 LOW "FAIL2BAN_REVIEW" \
                 "Review fail2ban jail status and ban history: sudo fail2ban-client status sshd"
@@ -2744,18 +2886,21 @@ sec_21_clamav() {
         if systemctl is-active --quiet clamd@scan 2>/dev/null || systemctl is-active --quiet clamd@scan.service 2>/dev/null; then
             clamd_active=1
         fi
+        # Collect status output safely
         {
-            printf '=== Section 21: ClamAV Report ===\n'
-            printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-            printf '--- clamav-freshclam status ---\n'
+            echo "=== Section 21: ClamAV Report ==="
+            echo "Generated: $RUN_STAMP_HUMAN"
+            echo ""
+            echo "--- clamav-freshclam status ---"
             systemctl status clamav-freshclam --no-pager 2>&1 || true
-            printf '\n--- clamd@scan status ---\n'
-            systemctl status clamd@scan --no-pager 2>&1 || \
-            systemctl status clamd@scan.service --no-pager 2>&1 || true
-            printf '\n--- ClamAV version / DB ---\n'
+            echo ""
+            echo "--- clamd@scan status ---"
+            systemctl status clamd@scan --no-pager 2>&1 || systemctl status clamd@scan.service --no-pager 2>&1 || true
+            echo ""
+            echo "--- ClamAV version / DB ---"
             clamscan --version 2>&1 || true
             freshclam --version 2>&1 || true
-        } | write_user_report "section-21-clamav-${REPORT_DATE}.txt"
+        } | write_user_report "section-21-clamav-${REPORT_DATE}.txt" || true
         (( freshclam_active )) || add_action_item 21 MEDIUM "CLAMAV_FRESHCLAM_NOT_RUNNING" \
             "clamav-freshclam is not running — run: sudo systemctl start clamav-freshclam"
         (( clamd_active )) || add_action_item 21 MEDIUM "CLAMAV_CLAMD_NOT_RUNNING" \
@@ -2839,7 +2984,7 @@ sec_22_openscap() {
                   /root/scap-results.xml 2>/dev/null \
                   | head -25 \
                   || printf '(no failures found or XML parse error)\n'
-            } | write_user_report "section-22-openscap-summary-${REPORT_DATE}.txt"
+            } | write_user_report "section-22-openscap-summary-${REPORT_DATE}.txt" || true
             local fail_n
             fail_n="${fail_count//[^0-9]/}"
             if [[ -n "$fail_n" ]] && (( fail_n > 0 )) 2>/dev/null; then
@@ -2949,7 +3094,7 @@ remediate_item() {
             {
                 printf '=== ClamAV Initial Home Scan ===\nDate: %s\nTarget: %s\n\n' "$RUN_STAMP_HUMAN" "$scan_home"
                 cat "$scan_tmp"
-            } | write_user_report "section-21-clamav-initial-scan-${REPORT_DATE}.txt"
+            } | write_user_report "section-21-clamav-initial-scan-${REPORT_DATE}.txt" || true
             if (( infected > 0 )); then
                 warn "ClamAV found $infected infected file(s) — review the scan report."
                 add_action_item 21 HIGH "CLAMAV_INFECTED" \
@@ -3095,7 +3240,7 @@ final_summary() {
             for f in "$USER_RESULTS_DIR"/section-*.txt "$USER_RESULTS_DIR"/section-*.html; do
                 [[ -f "$f" ]] && printf '  %s\n' "$(basename "$f")"
             done || true
-        } | write_user_report "$summary_file"
+        } | write_user_report "$summary_file" || true
         summary_path="${USER_RESULTS_DIR}/${summary_file}"
     fi
 
@@ -3105,23 +3250,25 @@ final_summary() {
     # Display terminal summary
     if (( ! GUI_FULL_MODE )); then
         printf '\n%s════════════════════════ Summary ════════════════════════%s\n' "$C_GRN" "$C_RST"
+        local reports_line="" ostree_line=""
+        [[ -n "$USER_RESULTS_DIR" ]] && reports_line=" Reports:      $USER_RESULTS_DIR"
+        (( IS_OSTREE )) && ostree_line=$'\n On rpm-ostree systems, reboot is also required to apply layered package changes and staged updates.'
         cat <<EOF
- Log file:     $LOG_FILE
- Backups:      $BACKUP_DIR  (empty if no changes needed)
- Target user:  ${TARGET_USER:-<none>}
- Platform:     ${_plat}
-$( [[ -n "$USER_RESULTS_DIR" ]] && printf ' Reports:      %s\n' "$USER_RESULTS_DIR" )
- Manual follow-up items (from the guide, NOT automated by this script):
-   • LUKS full-disk encryption — set during Fedora installation only.
-   • GRUB password (§6b) — run 'sudo grub2-mkpasswd-pbkdf2' manually.
-   • SSH keys — generate on your CLIENT machine and ssh-copy-id to this host.
-   • WireGuard tunnel — edit /etc/wireguard/wg0.conf with your peer keys.
-   • Review arkenfox defaults and add local exceptions in user-overrides.js as needed.
-   • KDE GUI-only settings: KWallet master password, Privacy, Activity tracking.
-   • Re-initialize AIDE database after any legitimate package upgrade.
+    Log file:     $LOG_FILE
+    Backups:      $BACKUP_DIR  (empty if no changes needed)
+    Target user:  ${TARGET_USER:-<none>}
+    Platform:     ${_plat}
+    $reports_line
+    Manual follow-up items (from the guide, NOT automated by this script):
+       • LUKS full-disk encryption — set during Fedora installation only.
+       • GRUB password (§6b) — run 'sudo grub2-mkpasswd-pbkdf2' manually.
+       • SSH keys — generate on your CLIENT machine and ssh-copy-id to this host.
+       • WireGuard tunnel — edit /etc/wireguard/wg0.conf with your peer keys.
+       • Review arkenfox defaults and add local exceptions in user-overrides.js as needed.
+       • KDE GUI-only settings: KWallet master password, Privacy, Activity tracking.
+       • Re-initialize AIDE database after any legitimate package upgrade.
 
- A REBOOT is recommended to pick up kernel, GRUB, sysctl, and PAM changes.
-$( (( IS_OSTREE )) && printf "\n On rpm-ostree systems, reboot is also required to apply layered package changes and staged updates.\n" )
+    A REBOOT is recommended to pick up kernel, GRUB, sysctl, and PAM changes.$ostree_line
 EOF
         printf '%s═════════════════════════════════════════════════════════%s\n' "$C_GRN" "$C_RST"
     else
@@ -3155,7 +3302,7 @@ EOF
                     printf '  [MANUAL][%s][%s] %s\n' "$priority" "$section" "$desc"
                 done
             fi
-        } | write_user_report "harden-remediation-update-${REPORT_DATE}.txt"
+        } | write_user_report "harden-remediation-update-${REPORT_DATE}.txt" || true
     fi
 }
 
