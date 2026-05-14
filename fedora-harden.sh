@@ -545,11 +545,15 @@ pkg_upgrade() {
 # Skips already-installed packages using cache to reduce redundant operations.
 # Usage: pkg_install <package1> [package2] ...
 pkg_install() {
-    local pkgs=("$@") needed=()
+    local pkgs=("$@") needed=() pkg
     (( ${#pkgs[@]} == 0 )) && return 0
     
     # Filter already-cached/installed packages from install list (caching optimization)
     for pkg in "${pkgs[@]}"; do
+        # On rpm-ostree, skip packages already queued in this run.
+        if (( IS_OSTREE )) && [[ "${_PKG_PENDING_CACHE[$pkg]:-0}" -eq 1 ]]; then
+            continue
+        fi
         pkg_cached "$pkg" || needed+=("$pkg")
     done
     
@@ -557,9 +561,20 @@ pkg_install() {
     
     if (( IS_OSTREE )); then
         run "rpm-ostree install ${needed[*]}"
+        # Mark requested packages as pending to avoid redundant layering attempts this run.
+        for pkg in "${needed[@]}"; do
+            _PKG_PENDING_CACHE[$pkg]=1
+        done
         warn "Layered packages are applied on reboot. Reboot when this script completes."
     else
         run "dnf install -y ${needed[*]}"
+        # Keep package cache coherent after successful mutable-system installs.
+        for pkg in "${needed[@]}"; do
+            _PKG_CACHE[$pkg]=0
+        done
+        # New binaries may now exist; refresh command cache.
+        unset _CMD_CACHE
+        declare -gA _CMD_CACHE=()
     fi
 }
 
@@ -571,11 +586,7 @@ install_dep_candidates() {
     for pkg in "$@"; do
         [[ -z "$pkg" ]] && continue
         attempted=1
-        if (( IS_OSTREE )); then
-            run "rpm-ostree install '$pkg' || true"
-        else
-            run "dnf install -y '$pkg' || true"
-        fi
+        pkg_install "$pkg" || true
     done
     (( attempted )) && return 0
     return 1
@@ -736,6 +747,7 @@ cmd_exists() {
 # Avoids repeated rpm -q calls for the same package.
 # Usage: pkg_cached <package_name>
 declare -gA _PKG_CACHE=()  # Session cache for package status
+declare -gA _PKG_PENDING_CACHE=()  # rpm-ostree layered-package requests in current run
 pkg_cached() {
     local pkg="$1"
     if [[ -v _PKG_CACHE[$pkg] ]]; then
@@ -2315,8 +2327,8 @@ remediate_item() {
             info "  Text summary: ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-22-openscap-summary-${REPORT_DATE}.txt}"
             if [[ -f /root/scap-results.xml ]]; then
                 info "  Top 10 failed rules:"
-                grep -oP 'idref="[^"]*" result="fail"' /root/scap-results.xml 2>/dev/null \
-                    | grep -oP 'idref="[^"]*"' | sed 's/idref="//;s/"//' | head -10 \
+                awk -F'"' '/result="fail"/{for(i=1;i<NF;i++) if($i=="idref") print $(i+1)}' /root/scap-results.xml 2>/dev/null \
+                    | head -10 \
                     | while IFS= read -r rule; do info "    • $rule"; done || true
             fi
             return 1
