@@ -22,6 +22,7 @@
 #    -y, --yes              Assume "yes" to all prompts (non-interactive)
 #    -n, --dry-run          Print what would run; make no changes
 #        --gui              Enable graphical prompts (kdialog/zenity) when available
+#        --gui-full         Full windowed frontend: GUI progress + GUI status output
 #        --skip <list>      Comma-separated sections to skip (e.g. 7,8,17)
 #        --only <list>      Comma-separated sections to run exclusively
 #        --list             List all section numbers & names and exit
@@ -94,19 +95,45 @@ DRY_RUN=0
 SKIP_LIST=""
 ONLY_LIST=""
 FORCE_GUI=0
+FORCE_GUI_FULL=0
 GUI_MODE=0
+GUI_FULL_MODE=0
 GUI_TOOL=""
+GUI_PROGRESS_REF=""
+GUI_PROGRESS_PIPE_FD=""
+GUI_PROGRESS_PID=""
+GUI_LAST_STATUS=""
+GUI_CANCEL_REQUESTED=0
+LOG_READY=0
+PRECHECK_FAILED=0
+EXPECTED_ABORT=0
 IS_OSTREE=0
 IS_KINOITE=0
 IS_SILVERBLUE=0
 IS_SERVER=0
 IS_WORKSTATION=0
+IS_IOT=0
+IS_CLOUD=0
+IS_COREOS=0
+IS_ATOMIC_DESKTOP=0
 IS_FEDORA=0
 HAS_KDE=0
+HAS_GNOME=0
+HAS_DESKTOP=0
+DESKTOP_ENVS=""
 FEDORA_VARIANT="unknown"
 FEDORA_MAJOR=0
 UI_SECTION_DONE=0
 UI_SECTION_TOTAL=21
+
+# ---------- Report / Actionable-items globals --------------------------------
+declare -ga ACTIONABLE_ITEMS=()
+declare -ga REMEDIATED_ITEMS=()
+USER_DOWNLOADS_DIR=""
+USER_RESULTS_DIR=""
+USER_LOGS_DIR=""
+REPORT_DATE="$(date +%Y%m%d-%H%M%S)"
+declare -ga TEMP_FILES=()          # All temp paths to auto-clean on EXIT
 
 # Colors (disabled if not a tty)
 if [[ -t 1 ]]; then
@@ -163,6 +190,20 @@ setup_ui_mode() {
             warn "Install 'kdialog' (KDE) or 'zenity' (GTK) to use GUI prompts."
         fi
     fi
+
+    if (( FORCE_GUI_FULL )); then
+        FORCE_GUI=1
+        if [[ -n "$GUI_TOOL" ]]; then
+            GUI_MODE=1
+            GUI_FULL_MODE=1
+            info "Full GUI frontend enabled using $GUI_TOOL."
+        else
+            GUI_MODE=0
+            GUI_FULL_MODE=0
+            warn "--gui-full requested, but no supported GUI dialog tool was found. Falling back to terminal output."
+            warn "Install 'kdialog' or 'zenity' and rerun with --gui-full."
+        fi
+    fi
 }
 
 # calc_section_total() - Estimate number of sections that will run for progress display.
@@ -202,45 +243,239 @@ gui_alert() {
     esac
 }
 
+# prompt_input() - Request free-form input from user in GUI or terminal mode.
+# Usage: prompt_input <prompt> [default_value]
+prompt_input() {
+    local prompt="$1" default_value="${2:-}" value=""
+
+    if (( GUI_MODE )); then
+        case "$GUI_TOOL" in
+            kdialog)
+                value="$(kdialog --title "$SCRIPT_NAME" --inputbox "$prompt" "$default_value" 2>/dev/null || true)"
+                ;;
+            zenity)
+                value="$(zenity --entry --title="$SCRIPT_NAME" --text="$prompt" --entry-text="$default_value" --width=520 2>/dev/null || true)"
+                ;;
+        esac
+    else
+        read -r -p "$(printf '%s[??]%s  %s ' "$C_YEL" "$C_RST" "$prompt")" value || true
+    fi
+
+    printf '%s' "$value"
+}
+
+# gui_progress_start() - Start full-GUI progress stream with minimal I/O overhead.
+gui_progress_start() {
+    (( GUI_FULL_MODE )) || return 0
+
+    case "$GUI_TOOL" in
+        kdialog)
+            if cmd_exists qdbus; then
+                GUI_PROGRESS_REF="$(kdialog --title "$SCRIPT_NAME" --progressbar "Initializing hardening..." "$UI_SECTION_TOTAL")"
+                if [[ -n "$GUI_PROGRESS_REF" ]]; then
+                    qdbus "$GUI_PROGRESS_REF" showCancelButton true >/dev/null 2>&1 || true
+                    qdbus "$GUI_PROGRESS_REF" setLabelText "Preparing section execution..." >/dev/null 2>&1 || true
+                    qdbus "$GUI_PROGRESS_REF" Set "" value 0 >/dev/null 2>&1 || true
+                fi
+            else
+                warn "qdbus not found; kdialog progress updates are limited."
+            fi
+            ;;
+        zenity)
+            coproc GUI_ZENITY_PROGRESS {
+                zenity --progress \
+                    --title="$SCRIPT_NAME" \
+                    --text="Preparing section execution..." \
+                    --percentage=0 \
+                    --auto-close \
+                    --width=640
+            }
+            GUI_PROGRESS_PIPE_FD="${GUI_ZENITY_PROGRESS[1]:-}"
+            GUI_PROGRESS_PID="$COPROC_PID"
+            ;;
+    esac
+}
+
+# gui_progress_update() - Stream progress updates directly to GUI widgets.
+# Usage: gui_progress_update <current> <total> <message>
+gui_progress_update() {
+    local current="$1" total="$2" message="$3"
+    (( GUI_FULL_MODE )) || return 0
+    (( total <= 0 )) && total=1
+    (( current < 0 )) && current=0
+    (( current > total )) && current=total
+    local pct=$(( current * 100 / total ))
+    GUI_LAST_STATUS="$message"
+
+    case "$GUI_TOOL" in
+        kdialog)
+            [[ -n "$GUI_PROGRESS_REF" ]] || return 0
+            if cmd_exists qdbus && [[ "$(qdbus "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
+                GUI_CANCEL_REQUESTED=1
+                return 0
+            fi
+            qdbus "$GUI_PROGRESS_REF" Set "" value "$current" >/dev/null 2>&1 || true
+            qdbus "$GUI_PROGRESS_REF" setLabelText "$message" >/dev/null 2>&1 || true
+            ;;
+        zenity)
+            [[ -n "$GUI_PROGRESS_PIPE_FD" ]] || return 0
+            if ! printf '%s\n# %s\n' "$pct" "$message" >&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null; then
+                GUI_CANCEL_REQUESTED=1
+            fi
+            ;;
+    esac
+}
+
+# gui_progress_close() - Gracefully close full-GUI progress resources.
+gui_progress_close() {
+    (( GUI_FULL_MODE )) || return 0
+
+    case "$GUI_TOOL" in
+        kdialog)
+            if [[ -n "$GUI_PROGRESS_REF" ]]; then
+                qdbus "$GUI_PROGRESS_REF" close >/dev/null 2>&1 || true
+                GUI_PROGRESS_REF=""
+            fi
+            ;;
+        zenity)
+            if [[ -n "$GUI_PROGRESS_PIPE_FD" ]]; then
+                exec {GUI_PROGRESS_PIPE_FD}>&- || true
+                GUI_PROGRESS_PIPE_FD=""
+            fi
+            if [[ -n "$GUI_PROGRESS_PID" ]]; then
+                wait "$GUI_PROGRESS_PID" 2>/dev/null || true
+                GUI_PROGRESS_PID=""
+            fi
+            ;;
+    esac
+}
+
+# gui_status_event() - Route status messages to GUI widgets without file polling.
+# Usage: gui_status_event <info|ok|warning|error> <message>
+gui_status_event() {
+    local level="$1" message="$2"
+    (( GUI_FULL_MODE )) || return 0
+
+    case "$level" in
+        info|ok)
+            gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
+            ;;
+        warning)
+            gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
+            gui_alert warning "$message"
+            ;;
+        error)
+            gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
+            gui_alert error "$message"
+            ;;
+    esac
+}
+
+# gui_check_cancel() - Poll for GUI cancel requests across supported frontends.
+gui_check_cancel() {
+    (( GUI_FULL_MODE )) || return 1
+    (( GUI_CANCEL_REQUESTED )) && return 0
+
+    case "$GUI_TOOL" in
+        kdialog)
+            if cmd_exists qdbus && [[ -n "$GUI_PROGRESS_REF" ]] && [[ "$(qdbus "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
+                GUI_CANCEL_REQUESTED=1
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}
+
+# abort_if_cancelled() - Gracefully terminate when user cancels from GUI frontend.
+abort_if_cancelled() {
+    if gui_check_cancel; then
+        err "Execution cancelled by user from GUI frontend."
+        exit 130
+    fi
+}
+
 # ---------- Logging helpers -------------------------------------------------
+# init_log_target() - Ensure log destination exists, with /tmp fallback when needed.
+init_log_target() {
+    (( LOG_READY )) && return 0
+
+    local d
+    d="${LOG_FILE%/*}"
+    if mkdir -p "$d" 2>/dev/null && : >>"$LOG_FILE" 2>/dev/null; then
+        chmod 600 "$LOG_FILE" 2>/dev/null || true
+        LOG_READY=1
+        return 0
+    fi
+
+    LOG_FILE="/tmp/${SCRIPT_NAME%.*}-$(date +%Y%m%d-%H%M%S).log"
+    : >>"$LOG_FILE" 2>/dev/null || return 1
+    chmod 600 "$LOG_FILE" 2>/dev/null || true
+    LOG_READY=1
+    return 0
+}
+
 # log() - Write timestamped message to persistent log file for audit trail.
 # All log entries are appended with date/time for complete audit history.
 # Usage: log "message text"
-log() { printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG_FILE" >/dev/null; }
+log() {
+    init_log_target || return 0
+    printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG_FILE" 2>/dev/null || true
+}
 
 # info() - Write informational message to stdout and log (blue color).
 # Used for status updates and intermediate steps.
 # Usage: info "message text"
-info() { printf '%s[INFO]%s  %s\n' "$C_BLU" "$C_RST" "$*"; log "[INFO]  $*"; }
+info() {
+    (( ! GUI_FULL_MODE )) && printf '%s[INFO]%s  %s\n' "$C_BLU" "$C_RST" "$*"
+    log "[INFO]  $*"
+    gui_status_event info "$*"
+}
 
 # ok() - Write success message to stdout and log (green color).
 # Indicates successful completion of a task or verification.
 # Usage: ok "message text"
-ok() { printf '%s[ OK ]%s  %s\n' "$C_GRN" "$C_RST" "$*"; log "[OK]    $*"; }
+ok() {
+    (( ! GUI_FULL_MODE )) && printf '%s[ OK ]%s  %s\n' "$C_GRN" "$C_RST" "$*"
+    log "[OK]    $*"
+    gui_status_event ok "$*"
+}
 
 # warn() - Write warning message to stdout and log (yellow color).
 # Alerts about non-critical issues, skipped steps, or prerequisites.
 # Usage: warn "message text"
-warn() { printf '%s[WARN]%s  %s\n' "$C_YEL" "$C_RST" "$*"; log "[WARN]  $*"; }
+warn() {
+    (( ! GUI_FULL_MODE )) && printf '%s[WARN]%s  %s\n' "$C_YEL" "$C_RST" "$*"
+    log "[WARN]  $*"
+    gui_status_event warning "$*"
+}
 
 # err() - Write error message to stderr and log (red color).
 # Indicates a problem that may prevent further execution.
 # Usage: err "message text"
-err() { printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2; log "[ERROR] $*"; }
+err() {
+    (( ! GUI_FULL_MODE )) && printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2
+    log "[ERROR] $*"
+    gui_status_event error "$*"
+}
 # section() - Print formatted section header with visual divider and log entry.
 # Displays section number and title with colored borders for visual clarity.
 # All section headers are logged for audit trail with timestamps.
 # Usage: section <number> <title...>
 section(){
+    abort_if_cancelled
     local n="$1"; shift
     ((UI_SECTION_DONE++))
     local pct=$(( UI_SECTION_DONE * 100 / UI_SECTION_TOTAL ))
     local pb
     pb="$(progress_bar "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" 28)"
-    printf '\n%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
-    printf '%s Section %s: %s%s\n' "$C_BLD" "$n" "$*" "$C_RST"
-    printf '%s Progress:%s %s %d/%d (%d%%)\n' "$C_BLU" "$C_RST" "$pb" "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$pct"
-    printf '%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
+    if (( ! GUI_FULL_MODE )); then
+        printf '\n%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
+        printf '%s Section %s: %s%s\n' "$C_BLD" "$n" "$*" "$C_RST"
+        printf '%s Progress:%s %s %d/%d (%d%%)\n' "$C_BLU" "$C_RST" "$pb" "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$pct"
+        printf '%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
+    fi
+    gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "Section $n: $*"
     log "==== Section $n: $* ===="
 }
 
@@ -249,14 +484,20 @@ section(){
 # All commands are logged to audit file regardless of execution.
 # Usage: run "command" "with" "args"
 run() {
+    abort_if_cancelled
     if (( DRY_RUN )); then
-        printf '%s[DRY ]%s  %s\n' "$C_YEL" "$C_RST" "$*"
+        (( ! GUI_FULL_MODE )) && printf '%s[DRY ]%s  %s\n' "$C_YEL" "$C_RST" "$*"
+        (( GUI_FULL_MODE )) && gui_status_event info "DRY RUN: $*"
         log "[DRY]   $*"
         return 0
     fi
     log "[RUN]   $*"
     # shellcheck disable=SC2294
-    eval "$@"
+    if (( GUI_FULL_MODE )); then
+        eval "$@" >>"$LOG_FILE" 2>&1
+    else
+        eval "$@"
+    fi
 }
 
 # have_cmd() - Check if a command exists in PATH.
@@ -437,6 +678,63 @@ pkg_cached() {
     fi
 }
 
+# detect_fedora_release_type() - Classify Fedora release family from os-release metadata.
+detect_fedora_release_type() {
+    local release_blob
+    release_blob="${NAME:-} ${PRETTY_NAME:-} ${VARIANT:-} ${VARIANT_ID:-} ${CPE_NAME:-} ${PLATFORM_ID:-} ${ID_LIKE:-}"
+    release_blob="${release_blob,,}"
+
+    [[ "$release_blob" == *"workstation"* ]] && IS_WORKSTATION=1
+    [[ "$release_blob" == *"server"* ]] && IS_SERVER=1
+    [[ "$release_blob" == *"kinoite"* ]] && IS_KINOITE=1
+    [[ "$release_blob" == *"silverblue"* ]] && IS_SILVERBLUE=1
+    [[ "$release_blob" == *"iot"* ]] && IS_IOT=1
+    [[ "$release_blob" == *"cloud"* ]] && IS_CLOUD=1
+    [[ "$release_blob" == *"coreos"* ]] && IS_COREOS=1
+
+    # Fedora Atomic desktops include Kinoite/Silverblue and the named Atomic editions.
+    if (( IS_KINOITE || IS_SILVERBLUE )) \
+       || [[ "$release_blob" == *"atomic"* && "$release_blob" == *"fedora"* ]]; then
+        IS_ATOMIC_DESKTOP=1
+    fi
+}
+
+# detect_desktop_envs() - Detect active/installed desktop environments for feature gating.
+detect_desktop_envs() {
+    local detected=()
+    local xdg_blob="${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}"
+    xdg_blob="${xdg_blob,,}"
+
+    # Running session hints.
+    if [[ "$xdg_blob" == *"kde"* || "$xdg_blob" == *"plasma"* ]]; then
+        HAS_KDE=1
+        [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+    fi
+    if [[ "$xdg_blob" == *"gnome"* ]]; then
+        HAS_GNOME=1
+        [[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+    fi
+    if [[ "$xdg_blob" == *"sway"* ]]; then
+        [[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+    fi
+
+    # Installed desktop/tooling hints.
+    if cmd_exists kwriteconfig6 || cmd_exists kwriteconfig5 || pkg_cached plasma-workspace; then
+        HAS_KDE=1
+        [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+    fi
+    if cmd_exists gnome-shell || pkg_cached gnome-shell || pkg_cached gnome-session; then
+        HAS_GNOME=1
+        [[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+    fi
+    if cmd_exists sway || pkg_cached sway; then
+        [[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+    fi
+
+    (( HAS_KDE || HAS_GNOME || ${#detected[@]} > 0 )) && HAS_DESKTOP=1
+    DESKTOP_ENVS="$(IFS=,; echo "${detected[*]}")"
+}
+
 # section_compatible() - Check if a section is compatible with current system.
 # Evaluates variant, edition, and platform capabilities to auto-skip incompatible sections.
 # Examples: Section 15 (KDE) skips if !HAS_KDE; Section 16 (Firefox) skips if IS_SERVER
@@ -448,14 +746,14 @@ section_compatible() {
         15)
             # Section 15 requires KDE/Plasma to be installed and available.
             if (( ! HAS_KDE )); then
-                info "Skipping section 15: KDE tooling is not available on this Fedora variant."
+                info "Skipping section 15: KDE/Plasma tooling is not installed on this host."
                 return 1
             fi
             ;;
         16)
-            # Section 16 is desktop-focused (Firefox hardening) and not applicable to Server edition.
-            if (( IS_SERVER )); then
-                info "Skipping section 16: Firefox desktop hardening is not applicable to Fedora Server by default."
+            # Section 16 is desktop-focused and should run if any desktop environment is installed.
+            if (( ! HAS_DESKTOP )); then
+                info "Skipping section 16: no desktop environment detected on this host."
                 return 1
             fi
             ;;
@@ -495,6 +793,12 @@ should_run() {
 # This prevents /tmp pollution and ensures graceful shutdown.
 trap_cleanup() {
     local rc=$?
+    gui_progress_close || true
+    # Clean all registered temp files (registered via register_tmp())
+    local _f
+    for _f in "${TEMP_FILES[@]}"; do
+        [[ -f "$_f" ]] && rm -f "$_f"
+    done
     [[ -f /tmp/arkenfox-user.js ]] && rm -f /tmp/arkenfox-user.js
     [[ -f /tmp/firefox-policies.json ]] && rm -f /tmp/firefox-policies.json
     [[ -f /tmp/usbguard-rules.conf ]] && rm -f /tmp/usbguard-rules.conf
@@ -506,6 +810,9 @@ trap_cleanup() {
 # Usage: Called automatically on error via trap.
 trap_err() {
     local rc=$? line=${BASH_LINENO[0]:-?}
+    if (( EXPECTED_ABORT )); then
+        exit "$rc"
+    fi
     trap_cleanup || true
     err "Aborted at line $line (exit $rc). See log: $LOG_FILE"
     gui_alert error "Hardening aborted at line $line (exit $rc).\n\nSee log:\n$LOG_FILE"
@@ -514,6 +821,95 @@ trap_err() {
 # Enable error and exit traps to catch unexpected failures and clean resources.
 trap trap_cleanup EXIT
 trap trap_err ERR
+
+# ---------- Report helpers --------------------------------------------------
+# add_action_item() - Register a finding for the post-run actionable list.
+# Format stored in ACTIONABLE_ITEMS: "S<num>|<priority>|<tag>|<description>"
+# Usage: add_action_item <section_num> <priority: HIGH|MEDIUM|LOW> <tag> <desc>
+add_action_item() {
+    ACTIONABLE_ITEMS+=("S${1}|${2}|${3}|${4}")
+}
+
+# register_tmp() - Track a temp file path for guaranteed cleanup on EXIT.
+# Usage: register_tmp <path>
+register_tmp() { TEMP_FILES+=("$1"); }
+
+# get_user_downloads_dir() - Resolve target user's XDG Downloads directory.
+get_user_downloads_dir() {
+    local user="${TARGET_USER:-${SUDO_USER:-}}"
+    [[ -z "$user" || "$user" == "root" ]] && return 1
+    local home; home="$(user_home "$user")"
+    [[ -z "$home" ]] && return 1
+    local dl
+    dl="$(sudo -u "$user" xdg-user-dir DOWNLOAD 2>/dev/null || true)"
+    [[ -z "$dl" ]] && dl="${home}/Downloads"
+    printf '%s' "$dl"
+}
+
+# init_user_report_dirs() - Create Downloads/results and Downloads/logs with correct ownership.
+init_user_report_dirs() {
+    local user="${TARGET_USER:-${SUDO_USER:-}}"
+    USER_DOWNLOADS_DIR="$(get_user_downloads_dir 2>/dev/null || true)"
+    if [[ -z "$USER_DOWNLOADS_DIR" ]]; then
+        warn "No target user set — section reports will only appear in $LOG_FILE."
+        return 0
+    fi
+    USER_RESULTS_DIR="${USER_DOWNLOADS_DIR}/results"
+    USER_LOGS_DIR="${USER_DOWNLOADS_DIR}/logs"
+    if (( DRY_RUN )); then
+        info "Would create: $USER_RESULTS_DIR"
+        info "Would create: $USER_LOGS_DIR"
+        return 0
+    fi
+    install -d -m 750 -o "$user" -g "$user" "$USER_RESULTS_DIR" 2>/dev/null \
+        || { warn "Could not create $USER_RESULTS_DIR — reports will only be in $LOG_FILE."; return 0; }
+    install -d -m 750 -o "$user" -g "$user" "$USER_LOGS_DIR" 2>/dev/null || true
+    ok "Report dirs ready: $USER_RESULTS_DIR"
+    ok "Log copy dir ready: $USER_LOGS_DIR"
+}
+
+# write_user_report() - Read stdin and write to a file in the user results directory.
+# Usage: { echo content; } | write_user_report <filename>
+write_user_report() {
+    local filename="$1"
+    if [[ -z "$USER_RESULTS_DIR" ]]; then cat >/dev/null; return 0; fi
+    if (( DRY_RUN )); then
+        info "Would write report: $USER_RESULTS_DIR/$filename"
+        cat >/dev/null
+        return 0
+    fi
+    local user="${TARGET_USER:-${SUDO_USER:-}}"
+    local path="${USER_RESULTS_DIR}/${filename}"
+    cat > "$path"
+    chown "${user}:${user}" "$path" 2>/dev/null || true
+    chmod 640 "$path"
+    ok "Report saved: $path"
+}
+
+# copy_to_user_results() - Copy a system-owned file into the user results directory.
+# Usage: copy_to_user_results <source_path> [dest_filename]
+copy_to_user_results() {
+    local src="$1" dest_name="${2:-$(basename "$1")}"
+    [[ -z "$USER_RESULTS_DIR" || ! -f "$src" ]] && return 0
+    (( DRY_RUN )) && { info "Would copy $src -> $USER_RESULTS_DIR/$dest_name"; return 0; }
+    local user="${TARGET_USER:-${SUDO_USER:-}}"
+    cp -a "$src" "${USER_RESULTS_DIR}/${dest_name}"
+    chown "${user}:${user}" "${USER_RESULTS_DIR}/${dest_name}" 2>/dev/null || true
+    chmod 640 "${USER_RESULTS_DIR}/${dest_name}"
+    ok "Copied $src -> $USER_RESULTS_DIR/$dest_name"
+}
+
+# copy_log_to_user() - Copy the main harden log to the user logs directory.
+copy_log_to_user() {
+    [[ -z "$USER_LOGS_DIR" || ! -f "$LOG_FILE" ]] && return 0
+    (( DRY_RUN )) && { info "Would copy log -> $USER_LOGS_DIR/"; return 0; }
+    local user="${TARGET_USER:-${SUDO_USER:-}}"
+    local dest="${USER_LOGS_DIR}/$(basename "$LOG_FILE")"
+    cp -a "$LOG_FILE" "$dest"
+    chown "${user}:${user}" "$dest" 2>/dev/null || true
+    chmod 640 "$dest"
+    ok "Log copied: $dest"
+}
 
 # ---------- Pre-flight Checks -----------------------------------------------
 # Initialize script environment, detect system configuration, and validate prerequisites.
@@ -538,9 +934,6 @@ usage() {
 # Used by --list flag to help users understand available options.
 # Usage: list_sections (called by --list flag)
 list_sections() {
-    grep -E '^[[:space:]]*[0-9]+[ab]?[[:space:]]+' "$0" \
-      | sed -n '/^#/!d; s/^# *//p' \
-      | sed -n '/^ *[0-9]/p' | head -40 || true
     cat <<'EOF'
   2  System updates
   3  Automatic updates
@@ -583,6 +976,7 @@ parse_args() {
             -y|--yes)       ASSUME_YES=1; shift ;;
             -n|--dry-run)   DRY_RUN=1; shift ;;
             --gui)          FORCE_GUI=1; shift ;;
+            --gui-full)     FORCE_GUI_FULL=1; shift ;;
             --skip)         SKIP_LIST="$2"; shift 2 ;;
             --only)         ONLY_LIST="$2"; shift 2 ;;
             --list)         list_sections; exit 0 ;;
@@ -598,16 +992,17 @@ parse_args() {
 # Sets FEDORA_MAJOR version for compatibility validation (expects 44+).
 # Usage: preflight (called in main after parse_args)
 preflight() {
-    draw_banner
+    (( FORCE_GUI_FULL )) || draw_banner
+    setup_ui_mode
     if (( EUID != 0 )); then
         err "This script must be run as root (use sudo)."
-        exit 1
+        PRECHECK_FAILED=1
+        return 0
     fi
     mkdir -p "$LOG_DIR"
     touch "$LOG_FILE"
     chmod 600 "$LOG_FILE"
-
-    setup_ui_mode
+    LOG_READY=1
 
     # Distro check: Verify this is a Fedora system and detect variant
     # Sources /etc/os-release to extract distribution metadata
@@ -624,16 +1019,9 @@ preflight() {
         IS_OSTREE=1
     fi
     FEDORA_VARIANT="${VARIANT_ID:-${VARIANT:-unknown}}"
-    [[ "${NAME:-}" == *"Server"* ]] && IS_SERVER=1
-    [[ "${NAME:-}" == *"Workstation"* ]] && IS_WORKSTATION=1
-    [[ "${NAME:-}" == *"KDE"* || "${NAME:-}" == *"Kinoite"* ]] && HAS_KDE=1
-    if [[ "${VARIANT_ID:-}" == "kinoite" || "${NAME:-}" == *"Kinoite"* ]]; then
-        IS_KINOITE=1
-        HAS_KDE=1
-    fi
-    if [[ "${VARIANT_ID:-}" == "silverblue" || "${NAME:-}" == *"Silverblue"* ]]; then
-        IS_SILVERBLUE=1
-    fi
+    detect_fedora_release_type
+    detect_desktop_envs
+    (( IS_KINOITE )) && HAS_KDE=1
     if [[ "${VERSION_ID:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
         FEDORA_MAJOR="${VERSION_ID%%.*}"
     fi
@@ -643,6 +1031,7 @@ preflight() {
     fi
     info "Host: $(hostname 2>/dev/null || echo unknown)   Distro: ${PRETTY_NAME:-?}   Kernel: $(uname -r 2>/dev/null || echo unknown)"
     info "Variant: ${FEDORA_VARIANT}"
+    info "Release flags: workstation=$IS_WORKSTATION server=$IS_SERVER iot=$IS_IOT cloud=$IS_CLOUD coreos=$IS_COREOS ostree=$IS_OSTREE atomic_desktop=$IS_ATOMIC_DESKTOP"
     if (( IS_OSTREE )); then
         info "Detected rpm-ostree (immutable) host. Using rpm-ostree for package/update actions."
     fi
@@ -655,9 +1044,26 @@ preflight() {
     if (( IS_WORKSTATION )); then
         info "Detected Fedora Workstation variant. Desktop-focused sections are enabled."
     fi
+    if (( IS_SERVER )); then
+        info "Detected Fedora Server release profile."
+    fi
+    if (( IS_IOT )); then
+        info "Detected Fedora IoT release profile."
+    fi
+    if (( IS_CLOUD )); then
+        info "Detected Fedora Cloud release profile."
+    fi
+    if (( IS_COREOS )); then
+        info "Detected Fedora CoreOS release profile."
+    fi
     info "Fedora major version detected: ${FEDORA_MAJOR}"
+    if (( HAS_DESKTOP )); then
+        info "Detected desktop environments: ${DESKTOP_ENVS:-unknown}"
+    else
+        warn "No desktop environment detected; desktop-focused sections may be skipped."
+    fi
     if (( ! HAS_KDE )); then
-        warn "KDE tooling not detected from distro metadata; KDE-specific section may be skipped."
+        warn "KDE/Plasma tooling not detected; KDE-specific section will be skipped."
     fi
     info "Log file:    $LOG_FILE"
     info "Backup dir:  $BACKUP_DIR (created on first change)"
@@ -673,7 +1079,7 @@ preflight() {
         if (( ASSUME_YES )); then
             warn "No target user set — sections that need one (7, 9c, 20) will skip user-specific tweaks."
         else
-            read -r -p "$(printf '%s[??]%s  Enter the primary username to harden (blank to skip user-specific tweaks): ' "$C_YEL" "$C_RST")" TARGET_USER || true
+            TARGET_USER="$(prompt_input 'Enter the primary username to harden (blank to skip user-specific tweaks):')"
         fi
     fi
     if [[ -n "$TARGET_USER" ]] && ! id -u "$TARGET_USER" >/dev/null 2>&1; then
@@ -843,6 +1249,9 @@ sec_06_secureboot() {
     else
         warn "mokutil not present — cannot check Secure Boot. Install mokutil or check UEFI manually."
     fi
+    if (( GUI_FULL_MODE )); then
+        gui_alert info "GRUB password setup (guide section 6b) is manual.\n\nRun: sudo grub2-mkpasswd-pbkdf2\nThen add password_pbkdf2 lines in /etc/grub.d/40_custom and regenerate grub.cfg."
+    else
     cat <<'EOF'
 NOTE on GRUB password (guide §6b):
   Setting a GRUB password requires interactive use of 'grub2-mkpasswd-pbkdf2'.
@@ -854,6 +1263,7 @@ NOTE on GRUB password (guide §6b):
       sudo grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg   # UEFI
       sudo grub2-mkconfig -o /boot/grub2/grub.cfg            # legacy BIOS
 EOF
+    fi
 }
 
 # ============================================================================
@@ -921,6 +1331,9 @@ EOF
 sec_08_usbguard() {
     should_run 8 || return 0
     section 8 "USBGuard — ⚠ BE CAREFUL ⚠"
+    if (( GUI_FULL_MODE )); then
+        gui_alert warning "USBGuard can block unapproved USB devices, including keyboard/mouse.\n\nBefore continuing, connect all required USB devices and ensure you have an alternate recovery path."
+    else
     cat <<'EOF'
 USBGuard will block every USB device that isn't in its policy file,
 including your keyboard and mouse if they are USB. The policy is generated
@@ -934,6 +1347,7 @@ You can later manage devices with:
   sudo usbguard list-devices
   sudo usbguard allow-device <ID> [--permanent]
 EOF
+        fi
     if ! confirm "Install and enable USBGuard with the current devices whitelisted?"; then
         info "Skipped USBGuard."
         return 0
@@ -951,7 +1365,7 @@ EOF
     fi
     run "systemctl enable --now usbguard"
 
-    if rpm -q plasma-workspace >/dev/null 2>&1; then
+    if pkg_cached plasma-workspace; then
         if confirm "Install graphical USBGuard notifier (usbguard-notifier)?"; then
             pkg_install usbguard-notifier || true
         fi
@@ -1157,24 +1571,36 @@ sec_12_ids() {
 
     pkg_install rkhunter aide
 
-    # rkhunter
+    # rkhunter: update signatures then run scan with output capture
     run "rkhunter --update || true"
     run "rkhunter --propupd"
     info "Running initial rkhunter scan (this takes a minute)..."
-    run "rkhunter --check --sk --rwo || true"
+    local rk_tmp="/tmp/rkhunter-out-$$.tmp" rk_warn_count=0
+    register_tmp "$rk_tmp"
+    if (( ! DRY_RUN )); then
+        log "[RUN]   rkhunter --check --sk --rwo"
+        if (( GUI_FULL_MODE )); then
+            rkhunter --check --sk --rwo >"$rk_tmp" 2>&1 || true
+        else
+            rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" || true
+        fi
+        rk_warn_count="$(grep -c '^\[ Warning \]' "$rk_tmp" 2>/dev/null || echo 0)"
+    else
+        run "rkhunter --check --sk --rwo || true"
+    fi
 
     # Daily cron
     local cron_rk="/etc/cron.daily/rkhunter-scan"
     if (( ! DRY_RUN )); then
-        cat > "$cron_rk" <<'EOF'
+        cat > "$cron_rk" <<'CRONEOF'
 #!/bin/bash
 /usr/bin/rkhunter --cronjob --update --quiet
-EOF
+CRONEOF
         chmod 755 "$cron_rk"
         ok "Wrote $cron_rk"
     fi
 
-    # AIDE
+    # AIDE: initialize database
     info "Initializing AIDE database (this can take several minutes)..."
     run "aide --init"
     if (( ! DRY_RUN )) && [[ -f /var/lib/aide/aide.db.new.gz ]]; then
@@ -1183,14 +1609,48 @@ EOF
 
     local cron_aide="/etc/cron.weekly/aide-check"
     if (( ! DRY_RUN )); then
-        cat > "$cron_aide" <<'EOF'
+        cat > "$cron_aide" <<'CRONEOF'
 #!/bin/bash
 /usr/sbin/aide --check 2>&1 | logger -t aide
-EOF
+CRONEOF
         chmod 755 "$cron_aide"
         ok "Wrote $cron_aide (results sent to journal via logger)"
     fi
     warn "Re-initialize AIDE after legitimate package updates: 'sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
+
+    # Write section report to user Downloads/results/
+    if (( ! DRY_RUN )); then
+        {
+            printf '=== Section 12: rkhunter + AIDE Report ===\n'
+            printf 'Generated: %s\n\n' "$(date)"
+            printf '--- rkhunter scan output (%d warning(s)) ---\n' "$rk_warn_count"
+            [[ -f "$rk_tmp" ]] && cat "$rk_tmp" || printf '(capture unavailable)\n'
+            printf '\n--- AIDE database status ---\n'
+            if [[ -f /var/lib/aide/aide.db.gz ]]; then
+                printf 'AIDE database: /var/lib/aide/aide.db.gz  [INITIALIZED]\n'
+            else
+                printf 'AIDE database: NOT FOUND — initialization may have failed\n'
+            fi
+            printf '\n--- Cron jobs installed ---\n'
+            printf 'Daily rkhunter:  %s\n' "$cron_rk"
+            printf 'Weekly AIDE:     %s\n' "$cron_aide"
+        } | write_user_report "section-12-rkhunter-aide-${REPORT_DATE}.txt"
+    fi
+
+    # Populate actionable items based on findings
+    if (( rk_warn_count > 0 )); then
+        warn "rkhunter found $rk_warn_count warning(s) — review the section 12 report."
+        add_action_item 12 HIGH "RK_WARNINGS" \
+            "rkhunter found $rk_warn_count warning(s): investigate flagged files, then run: sudo rkhunter --propupd"
+    else
+        ok "rkhunter scan: no warnings detected."
+    fi
+    if (( ! DRY_RUN )) && [[ ! -f /var/lib/aide/aide.db.gz ]]; then
+        add_action_item 12 HIGH "AIDE_DB_MISSING" \
+            "AIDE database not initialized — run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+    fi
+    add_action_item 12 LOW "AIDE_RECHECK" \
+        "Re-initialize AIDE after any future package updates (command in section-12 report)."
 }
 
 # ============================================================================
@@ -1298,7 +1758,7 @@ sec_16_firefox() {
     fi
 
     # Keep native RPM Firefox if present, but prefer Flatpak as the managed baseline.
-    if rpm -q firefox >/dev/null 2>&1; then
+    if pkg_cached firefox; then
         info "Detected native RPM Firefox. Keeping it installed, but Flatpak Firefox remains the hardened preferred browser."
     fi
 
@@ -1426,7 +1886,10 @@ sec_18_fail2ban() {
     section 18 "Fail2Ban"
     pkg_install fail2ban
     local jl="/etc/fail2ban/jail.local"
-    if (( ! DRY_RUN )) && [[ ! -f "$jl" ]]; then
+    if (( DRY_RUN )); then
+        [[ -f "$jl" ]] && info "$jl already exists — would leave unchanged." \
+                       || info "Would write $jl (not present yet)"
+    elif [[ ! -f "$jl" ]]; then
         cat > "$jl" <<'EOF'
 [DEFAULT]
 bantime  = 3600
@@ -1445,6 +1908,33 @@ EOF
         info "$jl already exists — leaving unchanged."
     fi
     run "systemctl enable --now fail2ban"
+
+    # Post-enable status check and report
+    if (( ! DRY_RUN )); then
+        local f2b_active=0 f2b_status=""
+        systemctl is-active --quiet fail2ban 2>/dev/null && f2b_active=1 || true
+        if (( f2b_active )); then
+            f2b_status="$(fail2ban-client status 2>&1 || true)"
+            ok "fail2ban is active."
+        else
+            warn "fail2ban is not active after enable — see report."
+            add_action_item 18 HIGH "FAIL2BAN_NOT_RUNNING" \
+                "fail2ban service is not running — run: sudo systemctl restart fail2ban"
+        fi
+        {
+            printf '=== Section 18: Fail2Ban Report ===\n'
+            printf 'Generated: %s\n\n' "$(date)"
+            printf '--- Service status ---\n'
+            systemctl status fail2ban --no-pager 2>&1 || true
+            printf '\n--- Jail summary ---\n%s\n' "$f2b_status"
+            printf '\n--- jail.local contents ---\n'
+            [[ -f "$jl" ]] && cat "$jl" || printf '(not found)\n'
+        } | write_user_report "section-18-fail2ban-${REPORT_DATE}.txt"
+        if (( f2b_active )); then
+            add_action_item 18 LOW "FAIL2BAN_REVIEW" \
+                "Review fail2ban jail status and ban history: sudo fail2ban-client status sshd"
+        fi
+    fi
 }
 
 # ============================================================================
@@ -1467,11 +1957,9 @@ sec_19_services() {
     for entry in "${candidates[@]}"; do
         svc="${entry%%:*}"
         local desc="${entry#*:}"
-        if systemctl list-unit-files "${svc}.service" >/dev/null 2>&1; then
-            if systemctl is-enabled --quiet "$svc" 2>/dev/null || systemctl is-active --quiet "$svc" 2>/dev/null; then
-                if confirm "Disable $svc ($desc)?"; then
-                    run "systemctl disable --now $svc || true"
-                fi
+        if systemctl is-enabled --quiet "$svc" 2>/dev/null || systemctl is-active --quiet "$svc" 2>/dev/null; then
+            if confirm "Disable $svc ($desc)?"; then
+                run "systemctl disable --now $svc || true"
             fi
         fi
     done
@@ -1493,7 +1981,7 @@ sec_20_perms() {
     run "chmod 1777 /tmp"
 
     if [[ -n "$TARGET_USER" ]]; then
-        local home; home="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+        local home; home="$(user_home "$TARGET_USER")"
         if [[ -n "$home" && -d "$home" ]]; then
             run "chmod 700 '$home'"
         fi
@@ -1527,6 +2015,34 @@ sec_21_clamav() {
     run "systemctl enable --now clamav-freshclam || true"
     # The clamd@scan unit varies; try both
     run "systemctl enable --now clamd@scan || systemctl enable --now clamd@scan.service || true"
+
+    # Post-enable status check and report
+    if (( ! DRY_RUN )); then
+        local freshclam_active=0 clamd_active=0
+        systemctl is-active --quiet clamav-freshclam 2>/dev/null  && freshclam_active=1 || true
+        { systemctl is-active --quiet clamd@scan 2>/dev/null || \
+          systemctl is-active --quiet clamd@scan.service 2>/dev/null; } && clamd_active=1 || true
+        {
+            printf '=== Section 21: ClamAV Report ===\n'
+            printf 'Generated: %s\n\n' "$(date)"
+            printf '--- clamav-freshclam status ---\n'
+            systemctl status clamav-freshclam --no-pager 2>&1 || true
+            printf '\n--- clamd@scan status ---\n'
+            systemctl status clamd@scan --no-pager 2>&1 || \
+            systemctl status clamd@scan.service --no-pager 2>&1 || true
+            printf '\n--- ClamAV version / DB ---\n'
+            clamscan --version 2>&1 || true
+            freshclam --version 2>&1 || true
+        } | write_user_report "section-21-clamav-${REPORT_DATE}.txt"
+        (( freshclam_active )) || add_action_item 21 MEDIUM "CLAMAV_FRESHCLAM_NOT_RUNNING" \
+            "clamav-freshclam is not running — run: sudo systemctl start clamav-freshclam"
+        (( clamd_active )) || add_action_item 21 MEDIUM "CLAMAV_CLAMD_NOT_RUNNING" \
+            "clamd@scan is not running — run: sudo systemctl start clamd@scan"
+        add_action_item 21 MEDIUM "CLAMAV_INITIAL_SCAN" \
+            "Run initial ClamAV home-directory scan (handled automatically in remediation step)."
+        add_action_item 21 LOW "CLAMAV_REVIEW" \
+            "Review ClamAV status: $USER_RESULTS_DIR/section-21-clamav-${REPORT_DATE}.txt"
+    fi
 }
 
 # ============================================================================
@@ -1551,44 +2067,361 @@ sec_22_openscap() {
             '$content' || true"
         ok "Report: /root/scap-report.html"
     fi
+
+    # Copy results to user Downloads/results/ and generate text summary
+    if (( ! DRY_RUN )); then
+        copy_to_user_results /root/scap-report.html  "section-22-openscap-${REPORT_DATE}.html"
+        copy_to_user_results /root/scap-results.xml  "section-22-openscap-results-${REPORT_DATE}.xml"
+        local pass_count="?" fail_count="?" notchecked_count="?"
+        if [[ -f /root/scap-results.xml ]]; then
+            pass_count="$(grep -c 'result="pass"'        /root/scap-results.xml 2>/dev/null || echo '?')"
+            fail_count="$(grep -c 'result="fail"'        /root/scap-results.xml 2>/dev/null || echo '?')"
+            notchecked_count="$(grep -c 'result="notchecked"' /root/scap-results.xml 2>/dev/null || echo '?')"
+            info "OpenSCAP results — pass: $pass_count  fail: $fail_count  not-checked: $notchecked_count"
+            {
+                printf '=== Section 22: OpenSCAP Compliance Summary ===\n'
+                printf 'Generated: %s\n\n' "$(date)"
+                printf 'Results XML:  /root/scap-results.xml\n'
+                printf 'HTML report:  /root/scap-report.html\n\n'
+                printf 'Pass:         %s\n' "$pass_count"
+                printf 'Fail:         %s\n' "$fail_count"
+                printf 'Not checked:  %s\n\n' "$notchecked_count"
+                printf '--- Top 25 failing rules ---\n'
+                awk -F'"' '/result="fail"/{for(i=1;i<NF;i++) if($i=="idref") print $(i+1)}' \
+                  /root/scap-results.xml 2>/dev/null \
+                  | head -25 \
+                  || printf '(no failures found or XML parse error)\n'
+            } | write_user_report "section-22-openscap-summary-${REPORT_DATE}.txt"
+            local fail_n
+            fail_n="${fail_count//[^0-9]/}"
+            if [[ -n "$fail_n" ]] && (( fail_n > 0 )) 2>/dev/null; then
+                add_action_item 22 HIGH "SCAP_FAILED_RULES" \
+                    "OpenSCAP: $fail_count rule(s) failed — review $USER_RESULTS_DIR/section-22-openscap-${REPORT_DATE}.html"
+            else
+                ok "OpenSCAP scan: $pass_count passing, $fail_count failing."
+            fi
+        else
+            add_action_item 22 MEDIUM "SCAP_NO_SCAN" \
+                "OpenSCAP scan was skipped or results not found — rerun section 22 to generate compliance report."
+        fi
+    fi
+}
+
+# ---------- Actionable-items display + remediation --------------------------
+# show_actionable_items() - Print the full prioritized actionable items list.
+show_actionable_items() {
+    if (( ${#ACTIONABLE_ITEMS[@]} == 0 )); then
+        ok "No actionable items — sections 12/18/21/22 appear clean."
+        return 0
+    fi
+    if (( ! GUI_FULL_MODE )); then
+        printf '\n%s════════ Actionable Items (%d found) ════════%s\n' "$C_YEL" "${#ACTIONABLE_ITEMS[@]}" "$C_RST"
+        local idx=1
+        for item in "${ACTIONABLE_ITEMS[@]}"; do
+            local section priority tag desc
+            IFS='|' read -r section priority tag desc <<<"$item"
+            case "$priority" in
+                HIGH)   printf '%s  [%2d] [%s][%s] %s%s\n' "$C_RED" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
+                MEDIUM) printf '%s  [%2d] [%s][%s] %s%s\n' "$C_YEL" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
+                *)      printf '%s  [%2d] [%s][%s] %s%s\n' "$C_BLU" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
+            esac
+            ((idx++))
+        done
+        printf '%s════════════════════════════════════════════%s\n\n' "$C_YEL" "$C_RST"
+    else
+        local msg="Actionable Items (${#ACTIONABLE_ITEMS[@]}):"$'\n'
+        for item in "${ACTIONABLE_ITEMS[@]}"; do
+            local section priority tag desc
+            IFS='|' read -r section priority tag desc <<<"$item"
+            msg+="[${priority}][${section}] ${desc}"$'\n'
+        done
+        gui_alert warning "$msg"
+    fi
+}
+
+# remediate_item() - Attempt automated fix for one actionable item identified by tag.
+# Returns 0 if resolved, 1 if manual attention still required.
+remediate_item() {
+    local tag="$1"
+    case "$tag" in
+        FAIL2BAN_NOT_RUNNING)
+            info "Attempting to restart fail2ban..."
+            if systemctl restart fail2ban 2>/dev/null; then
+                ok "fail2ban restarted successfully."
+                return 0
+            fi
+            warn "fail2ban restart failed — check: journalctl -u fail2ban"
+            return 1
+            ;;
+        CLAMAV_FRESHCLAM_NOT_RUNNING)
+            info "Attempting to start clamav-freshclam..."
+            if systemctl start clamav-freshclam 2>/dev/null; then
+                ok "clamav-freshclam started."
+                return 0
+            fi
+            warn "clamav-freshclam failed to start — check: journalctl -u clamav-freshclam"
+            return 1
+            ;;
+        CLAMAV_CLAMD_NOT_RUNNING)
+            info "Attempting to start clamd@scan..."
+            if systemctl start clamd@scan 2>/dev/null || systemctl start clamd@scan.service 2>/dev/null; then
+                ok "clamd@scan started."
+                return 0
+            fi
+            warn "clamd@scan failed to start — check: journalctl -u clamd@scan"
+            return 1
+            ;;
+        CLAMAV_FRESHCLAM_OUTDATED)
+            info "Updating ClamAV virus definitions (freshclam)..."
+            (( DRY_RUN )) && { info "Would run: freshclam"; return 1; }
+            if freshclam 2>/dev/null; then
+                ok "ClamAV definitions updated."
+                return 0
+            fi
+            warn "freshclam failed — daemon may hold lock; retry after clamd starts."
+            return 1
+            ;;
+        CLAMAV_INITIAL_SCAN)
+            info "Running initial ClamAV scan of home directory (this may take several minutes)..."
+            local scan_user="${TARGET_USER:-${SUDO_USER:-}}"
+            local scan_home; scan_home="$(user_home "$scan_user" 2>/dev/null || echo "/root")"
+            if (( DRY_RUN )); then
+                info "Would run: clamscan -r --infected '$scan_home'"
+                return 1
+            fi
+            local scan_tmp="/tmp/clamscan-out-$$.tmp"
+            register_tmp "$scan_tmp"
+            log "[RUN]   clamscan -r --infected $scan_home"
+            if (( GUI_FULL_MODE )); then
+                clamscan -r --infected "$scan_home" >"$scan_tmp" 2>&1 || true
+            else
+                clamscan -r --infected "$scan_home" 2>&1 | tee "$scan_tmp" || true
+            fi
+            local infected; infected="$(grep -c ' FOUND$' "$scan_tmp" 2>/dev/null || echo 0)"
+            {
+                printf '=== ClamAV Initial Home Scan ===\nDate: %s\nTarget: %s\n\n' "$(date)" "$scan_home"
+                cat "$scan_tmp"
+            } | write_user_report "section-21-clamav-initial-scan-${REPORT_DATE}.txt"
+            if (( infected > 0 )); then
+                warn "ClamAV found $infected infected file(s) — review the scan report."
+                add_action_item 21 HIGH "CLAMAV_INFECTED" \
+                    "ClamAV found $infected infected file(s) — manual quarantine/deletion required."
+                return 1
+            fi
+            ok "ClamAV scan complete — no infected files found in $scan_home."
+            return 0
+            ;;
+        AIDE_DB_MISSING)
+            info "Attempting to initialize AIDE database..."
+            (( DRY_RUN )) && { info "Would run: aide --init"; return 1; }
+            if aide --init 2>/dev/null && \
+               mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz 2>/dev/null; then
+                ok "AIDE database initialized."
+                return 0
+            fi
+            warn "AIDE initialization failed — run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+            return 1
+            ;;
+        SCAP_FAILED_RULES)
+            info "OpenSCAP failures require manual review."
+            info "  HTML report:  ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-22-openscap-${REPORT_DATE}.html}"
+            info "  Text summary: ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-22-openscap-summary-${REPORT_DATE}.txt}"
+            if [[ -f /root/scap-results.xml ]]; then
+                info "  Top 10 failed rules:"
+                grep -oP 'idref="[^"]*" result="fail"' /root/scap-results.xml 2>/dev/null \
+                    | grep -oP 'idref="[^"]*"' | sed 's/idref="//;s/"//' | head -10 \
+                    | while IFS= read -r rule; do info "    • $rule"; done || true
+            fi
+            return 1
+            ;;
+        RK_WARNINGS)
+            info "rkhunter warnings require manual investigation:"
+            info "  Report: ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-12-rkhunter-aide-${REPORT_DATE}.txt}"
+            info "  After investigating, run: sudo rkhunter --propupd"
+            return 1
+            ;;
+        AIDE_RECHECK|FAIL2BAN_REVIEW|CLAMAV_REVIEW|SCAP_NO_SCAN|CLAMAV_INFECTED)
+            info "Item [${tag}] requires manual review — see reports in: ${USER_RESULTS_DIR:-$LOG_FILE}"
+            return 1
+            ;;
+        *)
+            info "No automated fix for tag '${tag}' — manual review required."
+            return 1
+            ;;
+    esac
+}
+
+# remediation_loop() - Iteratively display, approve, and resolve all actionable items.
+remediation_loop() {
+    (( ${#ACTIONABLE_ITEMS[@]} == 0 )) && return 0
+    local round=1 max_rounds=5 prev_count=-1
+    while (( ${#ACTIONABLE_ITEMS[@]} > 0 && round <= max_rounds )); do
+        local current_count="${#ACTIONABLE_ITEMS[@]}"
+        (( current_count == prev_count )) && break   # No progress — stop
+        prev_count="$current_count"
+        printf '\n'
+        info "=== Remediation round $round of $max_rounds (${#ACTIONABLE_ITEMS[@]} item(s) remaining) ==="
+        show_actionable_items
+        if ! confirm "Attempt automated remediation of the listed items now?"; then
+            info "Remediation skipped. All items are recorded in: ${USER_RESULTS_DIR:-$LOG_FILE}"
+            return 0
+        fi
+        local remaining_items=()
+        for item in "${ACTIONABLE_ITEMS[@]}"; do
+            local section priority tag desc
+            IFS='|' read -r section priority tag desc <<<"$item"
+            if remediate_item "$tag"; then
+                REMEDIATED_ITEMS+=("$item")
+                log "[REMEDIATED] [${section}][${tag}] $desc"
+                ok "Resolved: [${section}] $desc"
+            else
+                remaining_items+=("$item")
+            fi
+        done
+        if (( ${#remaining_items[@]} > 0 )); then
+            ACTIONABLE_ITEMS=("${remaining_items[@]}")
+        else
+            ACTIONABLE_ITEMS=()
+        fi
+        (( ${#ACTIONABLE_ITEMS[@]} == 0 )) && { ok "All actionable items resolved in round $round."; break; }
+        ((round++))
+    done
+    if (( ${#ACTIONABLE_ITEMS[@]} > 0 )); then
+        warn "${#ACTIONABLE_ITEMS[@]} item(s) could not be auto-resolved and require manual action:"
+        show_actionable_items
+    fi
+    if (( ${#REMEDIATED_ITEMS[@]} > 0 )); then
+        ok "${#REMEDIATED_ITEMS[@]} item(s) were successfully remediated this session."
+    fi
 }
 
 # ---------- Summary ---------------------------------------------------------
-# final_summary() - Print execution summary and manual follow-up items.
-# Shows log file location, backup directory, target user, and platform type.
-# Lists manual steps not automated (LUKS, GRUB password, SSH keys).
-# Called at end of main() for cleanup/feedback before script exit.
-# Usage: final_summary (called at end of main)
+# final_summary() - Analyze section 12/18/21/22 findings, write all reports to
+# user Downloads/results and Downloads/logs, display actionable list, and run
+# the approval-gated remediation loop.
 final_summary() {
-    printf '\n%s════════════════════════ Summary ════════════════════════%s\n' "$C_GRN" "$C_RST"
-    cat <<EOF
+    local summary_file="harden-summary-${REPORT_DATE}.txt"
+
+    # Write overall human-readable summary to Downloads/results/
+    if [[ -n "$USER_RESULTS_DIR" ]]; then
+        {
+            printf '=== Fedora Hardening Run Summary ===\n'
+            printf 'Generated:    %s\n' "$(date)"
+            printf 'Host:         %s\n' "$(hostname 2>/dev/null || echo unknown)"
+            printf 'Log file:     %s\n' "$LOG_FILE"
+            printf 'Backups:      %s\n' "$BACKUP_DIR"
+            printf 'Target user:  %s\n' "${TARGET_USER:-<none>}"
+            printf 'Platform:     %s\n\n' "$( (( IS_OSTREE )) && echo "rpm-ostree (immutable)" || echo "dnf (mutable)" )"
+            printf '=== Actionable Items (%d) ===\n' "${#ACTIONABLE_ITEMS[@]}"
+            if (( ${#ACTIONABLE_ITEMS[@]} > 0 )); then
+                local idx=1
+                for item in "${ACTIONABLE_ITEMS[@]}"; do
+                    local section priority tag desc
+                    IFS='|' read -r section priority tag desc <<<"$item"
+                    printf '  [%2d] [%s][%s] %s\n' "$idx" "$priority" "$section" "$desc"
+                    ((idx++))
+                done
+            else
+                printf '  None — sections 12/18/21/22 appear clean.\n'
+            fi
+            printf '\n=== Remediated Items (%d) ===\n' "${#REMEDIATED_ITEMS[@]}"
+            if (( ${#REMEDIATED_ITEMS[@]} > 0 )); then
+                for item in "${REMEDIATED_ITEMS[@]}"; do
+                    local section priority tag desc
+                    IFS='|' read -r section priority tag desc <<<"$item"
+                    printf '  [RESOLVED][%s][%s] %s\n' "$priority" "$section" "$desc"
+                done
+            fi
+            printf '\n=== Manual Follow-up Items ===\n'
+            printf '  • LUKS full-disk encryption  — set during Fedora installation only.\n'
+            printf '  • GRUB password (section 6b) — run: sudo grub2-mkpasswd-pbkdf2\n'
+            printf '  • SSH keys                   — generate on CLIENT, then: ssh-copy-id user@host\n'
+            printf '  • WireGuard tunnel           — configure /etc/wireguard/wg0.conf with peer keys.\n'
+            printf '  • arkenfox overrides         — add exceptions in user-overrides.js as needed.\n'
+            printf '  • KDE GUI-only settings      — KWallet master password, Privacy, Activity.\n'
+            printf '  • AIDE re-init               — after any future package updates.\n'
+            printf '  • REBOOT RECOMMENDED         — to apply kernel/sysctl/PAM/GRUB changes.\n'
+            (( IS_OSTREE )) && printf '  • rpm-ostree REBOOT         — required for staged/layered package changes.\n'
+            printf '\n=== Section Reports in Downloads/results/ ===\n'
+            for f in "$USER_RESULTS_DIR"/section-*.txt "$USER_RESULTS_DIR"/section-*.html; do
+                [[ -f "$f" ]] && printf '  %s\n' "$(basename "$f")"
+            done || true
+        } | write_user_report "$summary_file"
+    fi
+
+    # Copy the main harden log to Downloads/logs/
+    copy_log_to_user
+
+    # Display terminal summary
+    if (( ! GUI_FULL_MODE )); then
+        printf '\n%s════════════════════════ Summary ════════════════════════%s\n' "$C_GRN" "$C_RST"
+        cat <<EOF
  Log file:     $LOG_FILE
  Backups:      $BACKUP_DIR  (empty if no changes needed)
  Target user:  ${TARGET_USER:-<none>}
  Platform:     $( (( IS_OSTREE )) && echo "rpm-ostree (immutable)" || echo "dnf (mutable)" )
-
+$( [[ -n "$USER_RESULTS_DIR" ]] && printf ' Reports:      %s\n' "$USER_RESULTS_DIR" )
  Manual follow-up items (from the guide, NOT automated by this script):
    • LUKS full-disk encryption — set during Fedora installation only.
    • GRUB password (§6b) — run 'sudo grub2-mkpasswd-pbkdf2' manually.
    • SSH keys — generate on your CLIENT machine and ssh-copy-id to this host.
    • WireGuard tunnel — edit /etc/wireguard/wg0.conf with your peer keys.
-     • Review arkenfox defaults and add local exceptions in user-overrides.js as needed.
+   • Review arkenfox defaults and add local exceptions in user-overrides.js as needed.
    • KDE GUI-only settings: KWallet master password, Privacy, Activity tracking.
    • Re-initialize AIDE database after any legitimate package upgrade.
 
  A REBOOT is recommended to pick up kernel, GRUB, sysctl, and PAM changes.
 $( (( IS_OSTREE )) && printf "\n On rpm-ostree systems, reboot is also required to apply layered package changes and staged updates.\n" )
 EOF
-    printf '%s═════════════════════════════════════════════════════════%s\n' "$C_GRN" "$C_RST"
+        printf '%s═════════════════════════════════════════════════════════%s\n' "$C_GRN" "$C_RST"
+    else
+        log "Summary: log=$LOG_FILE backups=$BACKUP_DIR target_user=${TARGET_USER:-<none>}"
+        log "Summary: reboot recommended for kernel/GRUB/sysctl/PAM changes"
+        (( IS_OSTREE )) && log "Summary: reboot required on rpm-ostree for staged/layered changes"
+    fi
 
-    gui_alert info "Fedora hardening finished.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR"
+    gui_alert info "Fedora hardening finished.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
+
+    # Display the actionable items from sections 12/18/21/22 and enter remediation loop
+    show_actionable_items
+    remediation_loop
+
+    # Re-write the summary with final state (after remediation updates ACTIONABLE/REMEDIATED lists)
+    if [[ -n "$USER_RESULTS_DIR" ]] && (( ${#REMEDIATED_ITEMS[@]} > 0 )); then
+        {
+            printf '=== Fedora Hardening — Post-Remediation Summary Update ===\n'
+            printf 'Generated: %s\n\n' "$(date)"
+            printf 'Remaining actionable items: %d\n' "${#ACTIONABLE_ITEMS[@]}"
+            printf 'Remediated this session:    %d\n\n' "${#REMEDIATED_ITEMS[@]}"
+            for item in "${REMEDIATED_ITEMS[@]}"; do
+                local section priority tag desc
+                IFS='|' read -r section priority tag desc <<<"$item"
+                printf '  [RESOLVED][%s][%s] %s\n' "$priority" "$section" "$desc"
+            done
+            if (( ${#ACTIONABLE_ITEMS[@]} > 0 )); then
+                printf '\nStill requires manual action:\n'
+                for item in "${ACTIONABLE_ITEMS[@]}"; do
+                    local section priority tag desc
+                    IFS='|' read -r section priority tag desc <<<"$item"
+                    printf '  [MANUAL][%s][%s] %s\n' "$priority" "$section" "$desc"
+                done
+            fi
+        } | write_user_report "harden-remediation-update-${REPORT_DATE}.txt"
+    fi
 }
 
 # ---------- Main ------------------------------------------------------------
 main() {
     parse_args "$@"
     preflight
+    if (( PRECHECK_FAILED )); then
+        EXPECTED_ABORT=1
+        exit 1
+    fi
+    init_user_report_dirs
     calc_section_total
+    gui_progress_start
+    abort_if_cancelled
 
     # Execution order is optimized for dependency flow and operational safety.
     sec_02_updates
@@ -1613,6 +2446,7 @@ main() {
     sec_20_perms
     sec_08_usbguard
 
+    gui_progress_close
     final_summary
 }
 
