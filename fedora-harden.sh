@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Fedora 44+ Security Hardening Script (KDE/Kinoite/Silverblue aware)
+#  Fedora 44+ Security Hardening Script (multi-release + desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
-#  Optimized for 100% global efficiency (v1.2 - May 2026)
+#  Optimized for 100% global efficiency (v1.3 - May 2026)
 #
 #  FEATURES:
-#    • 22 hardening sections with automatic variant detection
+#    • 22 hardening sections with automatic release/profile detection
 #    • Dual-mode support: mutable (dnf) and immutable (rpm-ostree) systems
-#    • Fedora variant detection: Workstation, Server, Kinoite, Silverblue
+#    • Fedora release detection: Workstation, Server, IoT, Cloud, CoreOS,
+#      Kinoite, Silverblue, and Atomic desktop variants
 #    • Firefox Flatpak hardening with arkenfox + 4 security extensions
 #    • Comprehensive error handling (EXIT/ERR traps + resource cleanup)
 #    • Performance optimized: 3 caching layers, batched operations, smart waits
 #    • Session-level memoization: command, package, and user home caching
 #    • Automatic feature gating based on system capabilities
+#    • Dependency self-healing for required commands/packages (best effort)
 #
 #  USAGE:
-#    sudo ./fedora-kde-harden.sh [options]
+#    sudo ./fedora-harden.sh [options]
 #
 #  OPTIONS:
 #    -u, --user <name>      Target username for SSH/chage/home-dir hardening
@@ -61,9 +63,13 @@
 #  PLATFORM SUPPORT:
 #    ✓ Fedora Workstation (mutable, dnf)
 #    ✓ Fedora Server (mutable, dnf)
+#    ✓ Fedora IoT (immutable, rpm-ostree)
+#    ✓ Fedora Cloud (mutable images/variants)
+#    ✓ Fedora CoreOS (immutable, rpm-ostree)
 #    ✓ Fedora Kinoite (immutable, rpm-ostree + KDE)
-#    ✓ Fedora Silverblue (immutable, rpm-ostree, no KDE)
-#    Auto-detection: Reads /etc/os-release for NAME, VARIANT_ID, /run/ostree-booted
+#    ✓ Fedora Silverblue (immutable, rpm-ostree)
+#    Auto-detection: Reads /etc/os-release metadata + /run/ostree-booted
+#    Desktop detection: session and installed tooling/packages (KDE/GNOME/Sway)
 #
 #  PERFORMANCE OPTIMIZATIONS:
 #    • Caching layers: command availability, package status, user home dirs
@@ -77,7 +83,7 @@
 #    • EXIT trap: Cleans up all temporary files on script exit
 #    • ERR trap: Logs line number + exit code, triggers cleanup on error
 #    • Resource safety: Guaranteed cleanup of /tmp operations
-#    • Fallback strategies: curl → wget, skip on missing prerequisites
+#    • Fallback strategies: curl → wget, plus best-effort dependency install
 #
 # =============================================================================
 
@@ -172,7 +178,19 @@ progress_bar() {
 # Prefers kdialog on KDE systems, then zenity, otherwise falls back to TTY prompts.
 setup_ui_mode() {
     local has_display=0
+    local prefers_kde=0
     [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] && has_display=1
+    [[ "${XDG_CURRENT_DESKTOP:-}${DESKTOP_SESSION:-}" =~ [Kk][Dd][Ee]|[Pp]lasma ]] && prefers_kde=1
+
+    # If GUI mode is requested, try to satisfy missing GUI dialog dependencies.
+    if (( has_display && (FORCE_GUI || FORCE_GUI_FULL) )); then
+        if (( prefers_kde )); then
+            cmd_exists kdialog || ensure_command_dep kdialog "GUI dialog mode" kdialog
+        fi
+        if ! cmd_exists kdialog; then
+            cmd_exists zenity || ensure_command_dep zenity "GUI dialog fallback" zenity
+        fi
+    fi
 
     if (( has_display )) && cmd_exists kdialog; then
         GUI_TOOL="kdialog"
@@ -194,6 +212,9 @@ setup_ui_mode() {
     if (( FORCE_GUI_FULL )); then
         FORCE_GUI=1
         if [[ -n "$GUI_TOOL" ]]; then
+            if [[ "$GUI_TOOL" == "kdialog" ]]; then
+                cmd_exists qdbus || ensure_command_dep qdbus "kdialog full progress mode" qt6-qttools qt5-qttools
+            fi
             GUI_MODE=1
             GUI_FULL_MODE=1
             info "Full GUI frontend enabled using $GUI_TOOL."
@@ -542,11 +563,62 @@ pkg_install() {
     fi
 }
 
+# install_dep_candidates() - Best-effort install of dependency package candidates.
+# Attempts each package and continues even if one candidate fails.
+install_dep_candidates() {
+    local pkg attempted=0
+    (( DRY_RUN )) && { info "Would install dependency package(s): $*"; return 0; }
+    for pkg in "$@"; do
+        [[ -z "$pkg" ]] && continue
+        attempted=1
+        if (( IS_OSTREE )); then
+            run "rpm-ostree install '$pkg' || true"
+        else
+            run "dnf install -y '$pkg' || true"
+        fi
+    done
+    (( attempted )) && return 0
+    return 1
+}
+
+# ensure_command_dep() - Ensure command exists, attempting package install if missing.
+# Usage: ensure_command_dep <command> <reason> <pkg1> [pkg2 ...]
+ensure_command_dep() {
+    local cmd="$1" reason="$2"
+    shift 2
+    cmd_exists "$cmd" && return 0
+
+    warn "Missing dependency '$cmd' required for: $reason"
+    if (( EUID != 0 )); then
+        warn "Cannot auto-install '$cmd' without root privileges."
+        return 1
+    fi
+    (( $# > 0 )) || return 1
+
+    local pkg
+    for pkg in "$@"; do
+        info "Attempting to install '$pkg' for missing command '$cmd'..."
+        install_dep_candidates "$pkg"
+        unset "_CMD_CACHE[$cmd]" 2>/dev/null || true
+        if cmd_exists "$cmd"; then
+            ok "Dependency resolved: '$cmd'"
+            return 0
+        fi
+    done
+
+    warn "Dependency '$cmd' is still unavailable after install attempts."
+    return 1
+}
+
 # download_file() - Download file from URL (with smart tool selection and error handling).
 # Tries curl first (preferred), falls back to wget. Returns 0 on success, 1 on failure.
 # Usage: download_file <url> <destination_path>
 download_file() {
     local url="$1" dest="$2"
+    if ! cmd_exists curl && ! cmd_exists wget; then
+        ensure_command_dep curl "download operations" curl
+        cmd_exists curl || ensure_command_dep wget "download operations fallback" wget
+    fi
     if cmd_exists curl; then
         run "curl -fsSL '$url' -o '$dest'" 2>/dev/null && return 0
     fi
@@ -736,8 +808,8 @@ detect_desktop_envs() {
 }
 
 # section_compatible() - Check if a section is compatible with current system.
-# Evaluates variant, edition, and platform capabilities to auto-skip incompatible sections.
-# Examples: Section 15 (KDE) skips if !HAS_KDE; Section 16 (Firefox) skips if IS_SERVER
+# Evaluates release type, desktop presence, and platform capabilities to auto-skip safely.
+# Examples: Section 15 (KDE) skips if !HAS_KDE; Section 16 skips if !HAS_DESKTOP
 # Returns 0 (compatible) or 1 (incompatible/should skip).
 # Usage: section_compatible <section_number>
 section_compatible() {
@@ -988,7 +1060,7 @@ parse_args() {
 
 # preflight() - Initialize script environment, detect system configuration, and validate prerequisites.
 # Runs pre-flight checks: validates root access, creates log/backup dirs, detects Fedora variant.
-# Populates 6 detection flags (IS_OSTREE, IS_KINOITE, etc.) for auto-gating features.
+# Populates release/desktop detection flags for auto-gating features and dependency decisions.
 # Sets FEDORA_MAJOR version for compatibility validation (expects 44+).
 # Usage: preflight (called in main after parse_args)
 preflight() {
@@ -1238,7 +1310,10 @@ sec_05_firewalld() {
 sec_06_secureboot() {
     should_run 6 || return 0
     section 6 "Secure Boot verification"
-    if command -v mokutil >/dev/null 2>&1; then
+    if ! cmd_exists mokutil; then
+        ensure_command_dep mokutil "Secure Boot verification" mokutil
+    fi
+    if cmd_exists mokutil; then
         local sb; sb="$(mokutil --sb-state 2>/dev/null || true)"
         info "$sb"
         if grep -qi "enabled" <<<"$sb"; then
@@ -1247,7 +1322,7 @@ sec_06_secureboot() {
             warn "Secure Boot is NOT enabled. Enable it in UEFI firmware settings."
         fi
     else
-        warn "mokutil not present — cannot check Secure Boot. Install mokutil or check UEFI manually."
+        warn "mokutil is unavailable after dependency checks — cannot verify Secure Boot state."
     fi
     if (( GUI_FULL_MODE )); then
         gui_alert info "GRUB password setup (guide section 6b) is manual.\n\nRun: sudo grub2-mkpasswd-pbkdf2\nThen add password_pbkdf2 lines in /etc/grub.d/40_custom and regenerate grub.cfg."
@@ -1273,13 +1348,9 @@ sec_07_ssh() {
     should_run 7 || return 0
     section 7 "SSH hardening"
     if ! pkg_cached openssh-server; then
-        info "openssh-server not installed. Skipping SSH hardening."
-        if (( IS_OSTREE )); then
-            info "If needed on Kinoite: 'sudo rpm-ostree install openssh-server' then reboot."
-        else
-            info "If you don't need SSH, leave it that way. Otherwise: 'sudo dnf install openssh-server'."
-        fi
-        return 0
+        warn "openssh-server is missing; attempting dependency install for section 7."
+        pkg_install openssh-server
+        pkg_cached openssh-server || { warn "openssh-server is still unavailable; skipping SSH hardening."; return 0; }
     fi
 
     if ! confirm "You are about to harden sshd (disables passwords, root login, limits users). Continue?"; then
@@ -1439,7 +1510,7 @@ sec_10_sysctl() {
     else
         cat > "$f" <<'EOF'
 # /etc/sysctl.d/99-hardening.conf
-# Installed by fedora-kde-harden.sh
+# Installed by fedora-harden.sh
 
 # ── Network Hardening ──────────────────────────────────────────────────
 net.ipv4.conf.all.accept_source_route = 0
@@ -2052,10 +2123,26 @@ sec_22_openscap() {
     should_run 22 || return 0
     section 22 "OpenSCAP compliance scanner"
     pkg_install openscap-scanner scap-security-guide
+    ensure_command_dep oscap "OpenSCAP compliance scan" openscap-scanner
+    if ! cmd_exists oscap; then
+        warn "oscap command is unavailable after dependency checks — skipping section 22."
+        return 0
+    fi
     local content="/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml"
     if [[ ! -f "$content" ]]; then
-        warn "SSG content $content not present — skipping scan."
-        return 0
+        warn "SSG content missing at expected path; retrying dependency install and alternate path lookup."
+        pkg_install scap-security-guide
+        if [[ ! -f "$content" ]]; then
+            local alt_content=""
+            alt_content="$(find /usr/share/xml/scap/ssg/content -maxdepth 1 -type f -name 'ssg-fedora*-ds.xml' 2>/dev/null | head -1 || true)"
+            if [[ -n "$alt_content" ]]; then
+                content="$alt_content"
+                info "Using alternate SSG content path: $content"
+            else
+                warn "No Fedora SSG datastream found; skipping OpenSCAP scan."
+                return 0
+            fi
+        fi
     fi
     info "Available profiles:"
     run "oscap info '$content' | grep -E '^(Profile|Title)' | head -20 || true"
