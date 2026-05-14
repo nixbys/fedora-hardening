@@ -2,7 +2,7 @@
 # =============================================================================
 #  Fedora 44+ Security Hardening Script (multi-release + desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
-#  Efficiency-tuned and low-I/O focused (v1.4 - May 2026)
+#  Efficiency-tuned and low-I/O focused (v1.6 - May 2026)
 #
 #  FEATURES:
 #    • 22 hardening sections with automatic release/profile detection
@@ -12,13 +12,15 @@
 #    • Firefox Flatpak hardening with arkenfox + 4 security extensions
 #    • Comprehensive error handling (EXIT/ERR traps + resource cleanup)
 #    • Performance optimized: 4 caching layers, batched operations, smart waits
-#    • Session-level memoization: command, package, user home, and Flatpak commit
+#    • Session-level memoization: command, package, user home, and rpm-ostree pending layer
 #    • Automatic feature gating based on system capabilities
 #    • Dependency self-healing for required commands/packages (best effort)
 #    • Idempotent Flatpak installs: skip if latest, update if stale, soft-fail
+#    • Safe firewalld service registration: auto-creates missing custom service XML
 #    • Graceful startup privilege confirmation (sudo/root context)
 #    • Approval-gated remediation with selective item implementation
 #    • Audit PDF/TXT export for later import and deferred remediation
+#    • Structured error log capture for post-run analysis and remediation loops
 #
 #  USAGE:
 #    sudo ./fedora-harden.sh [options]
@@ -81,7 +83,7 @@
 #    • Batched I/O: multi-pattern sed in single pass
 #    • Smart waits: firewalld readiness backoff instead of fixed sleeps
 #    • Package pre-checks: avoid redundant package status queries
-#    • Flatpak commit check: skip install/update when already at latest version
+#    • Flatpak update-state check (flatpak resolver, no download): skip already-current apps
 #    • Safe arithmetic counters: pre-increment (++ x) avoids set -e false exits
 #    • Resource cleanup: EXIT trap guarantees /tmp cleanup
 #    • Session run stamp reuse for report/log/backup naming
@@ -162,6 +164,14 @@ FEDORA_VARIANT="unknown"
 FEDORA_MAJOR=0
 UI_SECTION_DONE=0
 UI_SECTION_TOTAL=21
+
+# Error tracking & remediation infrastructure
+ERROR_LOG=""                                # Structured error log file path
+ERROR_CAPTURE_FILE=""                       # Temp file for capturing command stderr
+declare -ga ERROR_DETAILS=()                # Array: "line|cmd|exit_code|stderr|timestamp"
+declare -gi LAST_ERROR_COUNT=0              # Track errors for remediation loop
+declare -gi REMEDIATION_PASS=0              # Current pass through remediation
+declare -gi MAX_REMEDIATION_PASSES=3        # Max auto-remediation attempts
 
 # ---------- Report / Actionable-items globals --------------------------------
 declare -ga ACTIONABLE_ITEMS=()
@@ -460,15 +470,25 @@ init_log_target() {
     local d
     d="${LOG_FILE%/*}"
     if mkdir -p "$d" 2>/dev/null && : >>"$LOG_FILE" 2>/dev/null; then
-        chmod 600 "$LOG_FILE" 2>/dev/null || true
+        chmod 640 "$LOG_FILE" 2>/dev/null || true
         LOG_READY=1
-        return 0
+    else
+        LOG_FILE="/tmp/${SCRIPT_NAME%.*}-${RUN_STAMP}.log"
+        : >>"$LOG_FILE" 2>/dev/null || return 1
+        chmod 640 "$LOG_FILE" 2>/dev/null || true
+        LOG_READY=1
     fi
-
-    LOG_FILE="/tmp/${SCRIPT_NAME%.*}-${RUN_STAMP}.log"
-    : >>"$LOG_FILE" 2>/dev/null || return 1
-    chmod 600 "$LOG_FILE" 2>/dev/null || true
-    LOG_READY=1
+    
+    # Initialize error log with same base directory
+    if (( LOG_READY )); then
+        ERROR_LOG="${LOG_FILE%.log}-errors.log"
+        : >>"$ERROR_LOG" 2>/dev/null || ERROR_LOG="/tmp/$(basename "$LOG_FILE" .log)-errors.log"
+        chmod 640 "$ERROR_LOG" 2>/dev/null || true
+        
+        # Create temp file for capturing stderr from commands
+        ERROR_CAPTURE_FILE="/tmp/fedora-harden-stderr-$$.tmp"
+        register_tmp "$ERROR_CAPTURE_FILE"
+    fi
     return 0
 }
 
@@ -517,6 +537,39 @@ err() {
     log "[ERROR] $*"
     gui_status_event error "$*"
 }
+
+# capture_error_context() - Log detailed error information including command, exit code, and stderr.
+# Stores structured error data for later analysis and automatic remediation.
+# Called by trap_err and soft-fail handlers to capture full error context.
+# Usage: capture_error_context <line> <cmd> <exit_code> [stderr_file]
+capture_error_context() {
+    local line="$1" cmd="$2" ec="$3" stderr_file="${4:-}"
+    local ts stderr_content
+    
+    init_log_target || return 0
+    ts=$(date '+%F %T')
+    
+    # Read stderr if captured in file
+    if [[ -n "$stderr_file" && -f "$stderr_file" ]]; then
+        stderr_content=$(<"$stderr_file")
+        stderr_content="${stderr_content//\"/\\\"}"  # Escape quotes
+        stderr_content="${stderr_content//$'\n'/ | }"  # Replace newlines with |
+    else
+        stderr_content="(no stderr captured)"
+    fi
+    
+    # Store as: "line|cmd|exit_code|stderr|timestamp"
+    ERROR_DETAILS+=("${line}|${cmd}|${ec}|${stderr_content}|${ts}")
+    
+    # Write to structured error log
+    {
+        printf '{"timestamp":"%s","line":%d,"exit_code":%d,"command":"%s","stderr":"%s"}\n' \
+            "$ts" "$line" "$ec" "${cmd//\"/\\\"}" "$stderr_content"
+    } >> "$ERROR_LOG" 2>/dev/null || true
+    
+    log "[DEBUG] Error at line $line: cmd='$cmd' exit=$ec"
+}
+
 # section() - Print formatted section header with visual divider and log entry.
 # Displays section number and title with colored borders for visual clarity.
 # All section headers are logged for audit trail with timestamps.
@@ -541,6 +594,7 @@ section(){
 # run() - Execute shell command or simulate execution in --dry-run mode.
 # In dry-run mode, logs the command for preview without executing it.
 # All commands are logged to audit file regardless of execution.
+# Captures stderr from failed commands for later error analysis and remediation.
 # Usage: run "command" "with" "args"
 run() {
     abort_if_cancelled
@@ -553,10 +607,25 @@ run() {
     log "[RUN]   $*"
     # shellcheck disable=SC2294
     if (( GUI_FULL_MODE )); then
-        eval "$@" >>"$LOG_FILE" 2>&1
+        : >"$ERROR_CAPTURE_FILE" 2>/dev/null || true
+        eval "$@" >>"$LOG_FILE" 2>>"$ERROR_CAPTURE_FILE"
+        local rc=$?
     else
-        eval "$@"
+        # Capture stderr for error analysis
+        : >"$ERROR_CAPTURE_FILE" 2>&1
+        eval "$@" 2>>"$ERROR_CAPTURE_FILE"
+        local rc=$?
     fi
+    # Log stderr if command failed (applies to GUI and non-GUI modes).
+    if (( rc != 0 )) && [[ -f "$ERROR_CAPTURE_FILE" && -s "$ERROR_CAPTURE_FILE" ]]; then
+        log "[STDERR] $*"
+        local line
+        while IFS= read -r line; do
+            log "[STDERR]   $line"
+        done <"$ERROR_CAPTURE_FILE"
+        capture_error_context "${BASH_LINENO[0]}" "$*" "$rc" "$ERROR_CAPTURE_FILE"
+    fi
+    return "$rc"
 }
 
 # have_cmd() - Check if a command exists in PATH.
@@ -578,25 +647,54 @@ pkg_upgrade() {
     fi
 }
 
+# _load_ostree_staged_packages() - Populate _PKG_PENDING_CACHE from the live rpm-ostree
+# staged/pending layer (runs once per script execution).  Prevents "Package X is already
+# requested" errors when pkg_install is called after a prior run that layered packages
+# but the system has not yet been rebooted.
+_OSTREE_STAGED_LOADED=0
+_load_ostree_staged_packages() {
+    (( _OSTREE_STAGED_LOADED || ! IS_OSTREE )) && return 0
+    _OSTREE_STAGED_LOADED=1
+    local pkg
+    # Each deployment in `rpm-ostree status` prints one "LayeredPackages: p1 p2 …" line.
+    # sed extracts the package-name portion; tr splits on spaces; grep drops empty tokens.
+    while IFS= read -r pkg; do
+        [[ -n "$pkg" ]] && _PKG_PENDING_CACHE[$pkg]=1
+    done < <(
+        rpm-ostree status 2>/dev/null \
+        | sed -n 's/.*LayeredPackages://p' \
+        | tr ' ' '\n' \
+        | grep -vE '^\s*$|\(pending\)|\(want-[a-z]*\)' \
+        || true
+    )
+}
+
 # pkg_install() - Install packages via appropriate package manager (skips if already cached).
 # Automatically selects dnf for mutable systems or rpm-ostree for immutable.
 # Skips already-installed packages using cache to reduce redundant operations.
+# On rpm-ostree systems, also checks the live staged/pending layer so that packages
+# queued in a prior run (before reboot) are not re-requested, preventing the
+# "Package X is already requested" error.
 # Usage: pkg_install <package1> [package2] ...
 pkg_install() {
     local pkgs=("$@") needed=() pkg
     (( ${#pkgs[@]} == 0 )) && return 0
-    
+
+    # On rpm-ostree, pre-load staged packages so we don't re-request them.
+    (( IS_OSTREE )) && _load_ostree_staged_packages
+
     # Filter already-cached/installed packages from install list (caching optimization)
     for pkg in "${pkgs[@]}"; do
-        # On rpm-ostree, skip packages already queued in this run.
+        # On rpm-ostree, skip packages already queued (this run or a prior pending layer).
         if (( IS_OSTREE )) && [[ "${_PKG_PENDING_CACHE[$pkg]:-0}" -eq 1 ]]; then
+            info "Package '${pkg}' already in rpm-ostree pending layer — skipping."
             continue
         fi
         pkg_cached "$pkg" || needed+=("$pkg")
     done
-    
+
     (( ${#needed[@]} == 0 )) && { info "All packages already installed (cached)."; return 0; }
-    
+
     if (( IS_OSTREE )); then
         run "rpm-ostree install ${needed[*]}"
         # Mark requested packages as pending to avoid redundant layering attempts this run.
@@ -631,10 +729,15 @@ install_dep_candidates() {
 }
 
 # flatpak_install_or_update() - Idempotent Flatpak install/update (never aborts the script).
-# • Already installed and up-to-date  → skip (no network call needed).
-# • Already installed, update available → flatpak update (soft-fail).
+# • Already installed and up-to-date  → skip (uses flatpak's own resolver, no download).
+# • Already installed, update available → flatpak update on origin remote (soft-fail).
 # • Not installed                       → flatpak install (soft-fail; queues
 #   an action item on failure so the user is notified without script abort).
+# Up-to-date detection uses `flatpak update --no-pull` (checks locally cached remote
+# metadata without any network I/O) instead of raw commit-hash comparison.  Commit hashes
+# from `flatpak info --show-commit` and `flatpak remote-info --show-commit` use different
+# SHA representations and never match even when the app is current, which caused a false
+# "update available" → no-op update loop on every run.
 # Usage: flatpak_install_or_update <remote> <app-id>
 flatpak_install_or_update() {
     local remote="$1" app_id="$2"
@@ -645,15 +748,21 @@ flatpak_install_or_update() {
     fi
 
     if flatpak info "${app_id}" &>/dev/null; then
-        # App is installed — check whether the remote has a newer commit.
-        local inst_commit rem_commit
-        inst_commit=$(flatpak info --show-commit "${app_id}" 2>/dev/null || true)
-        rem_commit=$(flatpak remote-info "${remote}" "${app_id}" --show-commit 2>/dev/null || true)
-        if [[ -n "${inst_commit}" && "${inst_commit}" == "${rem_commit}" ]]; then
-            info "Flatpak ${app_id}: already installed at latest version — skipping."
+        # Resolve the actual origin remote the app was installed from.
+        local origin update_check
+        origin=$(flatpak info --show-origin "${app_id}" 2>/dev/null || true)
+        origin="${origin:-${remote}}"
+        # Delegate the up-to-date check to flatpak's own resolver rather than comparing
+        # raw commit hashes.  The installed object-store commit and remote-metadata commit
+        # use different SHA representations and will never match even when the app is
+        # current, causing an endless "update available" → no-op update loop.
+        # --no-pull checks against the locally cached remote metadata (no download).
+        update_check=$(flatpak update --no-pull -y "${app_id}" 2>&1 || true)
+        if echo "${update_check}" | grep -qiE 'nothing to update|is up.to.date|nothing to do'; then
+            info "Flatpak ${app_id}: already up-to-date (${origin}) — skipping."
             return 0
         fi
-        info "Flatpak ${app_id}: installed but update available — updating."
+        info "Flatpak ${app_id}: update available (${origin}) — updating."
         flatpak update -y "${app_id}" 2>/dev/null || \
             warn "Flatpak update of ${app_id} failed — will retry next run."
         return 0
@@ -707,10 +816,10 @@ download_file() {
         cmd_exists curl || ensure_command_dep wget "download operations fallback" wget
     fi
     if cmd_exists curl; then
-        run "curl -fsSL '$url' -o '$dest'" 2>/dev/null && return 0
+        run "curl -fsSL '$url' -o '$dest' 2>/dev/null" && return 0
     fi
     if cmd_exists wget; then
-        run "wget -qO '$dest' '$url'" 2>/dev/null && return 0
+        run "wget -qO '$dest' '$url' 2>/dev/null" && return 0
     fi
     err "Neither curl nor wget is available; cannot download $url"
     return 1
@@ -825,7 +934,7 @@ cmd_exists() {
 # Avoids repeated rpm -q calls for the same package.
 # Usage: pkg_cached <package_name>
 declare -gA _PKG_CACHE=()  # Session cache for package status
-declare -gA _PKG_PENDING_CACHE=()  # rpm-ostree layered-package requests in current run
+declare -gA _PKG_PENDING_CACHE=()  # rpm-ostree pending/staged layer packages (pre-loaded from live status + current-run requests)
 pkg_cached() {
     local pkg="$1"
     if [[ -v _PKG_CACHE[$pkg] ]]; then
@@ -950,6 +1059,131 @@ should_run() {
     return 0
 }
 
+# analyze_error_log() - Parse error log and identify patterns for auto-remediation.
+# Populates LAST_ERROR_COUNT and emits categorized findings.
+# Usage: analyze_error_log
+analyze_error_log() {
+    init_log_target || return 1
+    LAST_ERROR_COUNT=0
+    
+    if [[ ! -f "$ERROR_LOG" ]]; then
+        info "No errors logged — script executed cleanly."
+        return 0
+    fi
+    
+    local error_count=0 line
+    local permission_errors=0 package_errors=0 service_errors=0 connection_errors=0
+    
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        (( error_count++ ))
+        
+        # Pattern matching for auto-remediation categories
+        if [[ "$line" =~ "Permission denied" || "$line" =~ "not in sudoers" ]]; then
+            (( permission_errors++ ))
+        elif [[ "$line" =~ "No such file or directory" || "$line" =~ "package.*not found" ]]; then
+            (( package_errors++ ))
+        elif [[ "$line" =~ "service.*not available" || "$line" =~ "Unit.*not found" ]]; then
+            (( service_errors++ ))
+        elif [[ "$line" =~ "Connection refused" || "$line" =~ "Network.*unreachable" ]]; then
+            (( connection_errors++ ))
+        fi
+    done < "$ERROR_LOG"
+    
+    LAST_ERROR_COUNT=$error_count
+    if (( error_count == 0 )); then
+        ok "Error analysis: No errors found."
+        return 0
+    fi
+    
+    warn "Error analysis: Found $error_count error(s)"
+    (( permission_errors > 0 )) && warn "  ↳ Permission issues: $permission_errors"
+    (( package_errors > 0 )) && warn "  ↳ Package/file issues: $package_errors"
+    (( service_errors > 0 )) && warn "  ↳ Service issues: $service_errors"
+    (( connection_errors > 0 )) && warn "  ↳ Connection issues: $connection_errors"
+    
+    return 0
+}
+
+# auto_remediate_errors() - Attempt to fix common errors identified in log analysis.
+# Handles permission fixes, missing files, service issues, and network problems.
+# Usage: auto_remediate_errors
+auto_remediate_errors() {
+    init_log_target || return 1
+    
+    [[ ! -f "$ERROR_LOG" ]] && return 0
+    (( ++REMEDIATION_PASS ))
+    
+    if (( REMEDIATION_PASS > MAX_REMEDIATION_PASSES )); then
+        warn "Reached maximum remediation attempts ($MAX_REMEDIATION_PASSES); stopping auto-remediation."
+        return 1
+    fi
+    
+    warn "Starting auto-remediation pass $REMEDIATION_PASS of $MAX_REMEDIATION_PASSES..."
+    
+    # Fix 1: Log file permissions
+    if [[ -f "$LOG_FILE" ]]; then
+        chmod 640 "$LOG_FILE" 2>/dev/null || true
+        chmod 640 "$ERROR_LOG" 2>/dev/null || true
+    fi
+    
+    # Fix 2: Cached package status might be stale after failures
+    unset _PKG_CACHE _CMD_CACHE 2>/dev/null || true
+    declare -gA _PKG_CACHE=()
+    declare -gA _CMD_CACHE=()
+    info "Cleared package/command caches for fresh validation"
+    
+    # Fix 3: Re-initialize ostree staged packages cache
+    _OSTREE_STAGED_LOADED=0
+    
+    # Fix 4: Check for permission-related errors and attempt fixes
+    if grep -q "Permission denied\|not in sudoers" "$ERROR_LOG" 2>/dev/null; then
+        warn "Detected permission errors — verifying EUID and sudo context..."
+        if (( EUID != 0 )); then
+            err "Still running as non-root (EUID=$EUID) — cannot remediate."
+            return 1
+        fi
+        info "Running as root — permission errors may have been transient"
+    fi
+    
+    # Fix 5: Check for missing package manager states
+    if grep -q "rpm -q.*not installed\|dnf.*not found" "$ERROR_LOG" 2>/dev/null; then
+        warn "Detected package lookup errors — refreshing package lists..."
+        run "dnf check-update -q || rpm-ostree status >/dev/null" || true
+    fi
+    
+    ok "Auto-remediation pass $REMEDIATION_PASS complete"
+    return 0
+}
+
+# validate_and_remediate_loop() - Run analysis and remediation until resolved or max attempts.
+# This implements the recursive fix loop: analyze → remediate → validate → repeat.
+# Usage: validate_and_remediate_loop
+validate_and_remediate_loop() {
+    info "Starting error validation and remediation loop..."
+    REMEDIATION_PASS=0
+    LAST_ERROR_COUNT=0
+    
+    while (( REMEDIATION_PASS < MAX_REMEDIATION_PASSES )); do
+        analyze_error_log
+        local error_count=$LAST_ERROR_COUNT
+        
+        if (( error_count == 0 )); then
+            ok "✓ All errors resolved after $REMEDIATION_PASS pass(es)"
+            return 0
+        fi
+        
+        auto_remediate_errors || break
+    done
+    
+    if (( LAST_ERROR_COUNT > 0 )); then
+        warn "Could not fully auto-remediate errors after $MAX_REMEDIATION_PASSES pass(es)"
+        warn "Review logs for manual remediation: $LOG_FILE and $ERROR_LOG"
+        return 1
+    fi
+    return 0
+}
+
 # trap_cleanup() - Emergency cleanup handler for EXIT/ERR traps.
 # Removes temporary files and performs resource cleanup on script failure.
 # This prevents /tmp pollution and ensures graceful shutdown.
@@ -961,14 +1195,21 @@ trap_cleanup() {
     for _f in "${TEMP_FILES[@]}"; do
         [[ -f "$_f" ]] && rm -f "$_f"
     done
-    [[ -f /tmp/arkenfox-user.js ]] && rm -f /tmp/arkenfox-user.js
-    [[ -f /tmp/firefox-policies.json ]] && rm -f /tmp/firefox-policies.json
-    [[ -f /tmp/usbguard-rules.conf ]] && rm -f /tmp/usbguard-rules.conf
+    
+    # Ensure logs remain accessible for post-script analysis
+    if [[ -f "$LOG_FILE" ]]; then
+        chmod 640 "$LOG_FILE" 2>/dev/null || true
+    fi
+    if [[ -f "$ERROR_LOG" ]]; then
+        chmod 640 "$ERROR_LOG" 2>/dev/null || true
+    fi
+    
     return "$rc"
 }
 
 # trap_err() - Error handler for ERR trap.
-# Captures exit code and line number, logs error with context, then exits.
+# Captures exit code, line number, and context logs error with full context, then exits.
+# Now also calls analyze_error_log to identify any issues for later remediation.
 # Usage: Called automatically on error via trap.
 trap_err() {
     local rc=$? line=${BASH_LINENO[0]:-?}
@@ -976,8 +1217,10 @@ trap_err() {
         exit "$rc"
     fi
     trap_cleanup || true
+    capture_error_context "$line" "script execution" "$rc" 2>/dev/null || true
     err "Aborted at line $line (exit $rc). See log: $LOG_FILE"
-    gui_alert error "Hardening aborted at line $line (exit $rc).\n\nSee log:\n$LOG_FILE"
+    warn "Error details saved to: $ERROR_LOG"
+    gui_alert error "Hardening aborted at line $line (exit $rc).\n\nSee logs:\n$LOG_FILE\n$ERROR_LOG"
     exit "$rc"
 }
 # Enable error and exit traps to catch unexpected failures and clean resources.
@@ -1066,7 +1309,7 @@ copy_to_user_results() {
     ok "Copied $src -> $USER_RESULTS_DIR/$dest_name"
 }
 
-# copy_log_to_user() - Copy the main harden log to the user logs directory.
+# copy_log_to_user() - Copy main and structured error logs to the user logs directory.
 copy_log_to_user() {
     [[ -z "$USER_LOGS_DIR" || ! -f "$LOG_FILE" ]] && return 0
     (( DRY_RUN )) && { info "Would copy log -> $USER_LOGS_DIR/"; return 0; }
@@ -1076,6 +1319,13 @@ copy_log_to_user() {
     chown "${user}:${user}" "$dest" 2>/dev/null || true
     chmod 640 "$dest"
     ok "Log copied: $dest"
+    if [[ -n "$ERROR_LOG" && -f "$ERROR_LOG" ]]; then
+        local err_dest="${USER_LOGS_DIR}/$(basename "$ERROR_LOG")"
+        cp -a "$ERROR_LOG" "$err_dest"
+        chown "${user}:${user}" "$err_dest" 2>/dev/null || true
+        chmod 640 "$err_dest"
+        ok "Error log copied: $err_dest"
+    fi
 }
 
 # generate_audit_pdf() - Export a PDF audit report and importable TXT bundle.
@@ -1333,20 +1583,36 @@ parse_args() {
     # --import-audit, --skip, --only, --list, -h/--help
     # Validates option syntax and applies settings globally for use throughout script.
     # Usage: parse_args "$@" (called in preflight)
-
-    # Parse command-line arguments and set global flags.
-    # Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui, --gui-full,
-    # --import-audit, --skip, --only, --list, -h/--help
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -u|--user)      TARGET_USER="$2"; shift 2 ;;
+            -u|--user)
+                if [[ -z "${2:-}" ]]; then
+                    err "Option --user requires a username argument"
+                    usage; exit 2
+                fi
+                TARGET_USER="$2"; shift 2 ;;
             -y|--yes)       ASSUME_YES=1; shift ;;
             -n|--dry-run)   DRY_RUN=1; shift ;;
             --gui)          FORCE_GUI=1; shift ;;
             --gui-full)     FORCE_GUI_FULL=1; shift ;;
-            --import-audit) IMPORT_AUDIT_PATH="$2"; shift 2 ;;
-            --skip)         SKIP_LIST="$2"; shift 2 ;;
-            --only)         ONLY_LIST="$2"; shift 2 ;;
+            --import-audit)
+                if [[ -z "${2:-}" ]]; then
+                    err "Option --import-audit requires a file path argument"
+                    usage; exit 2
+                fi
+                IMPORT_AUDIT_PATH="$2"; shift 2 ;;
+            --skip)
+                if [[ -z "${2:-}" ]]; then
+                    err "Option --skip requires a section list argument"
+                    usage; exit 2
+                fi
+                SKIP_LIST="$2"; shift 2 ;;
+            --only)
+                if [[ -z "${2:-}" ]]; then
+                    err "Option --only requires a section list argument"
+                    usage; exit 2
+                fi
+                ONLY_LIST="$2"; shift 2 ;;
             --list)         list_sections; exit 0 ;;
             -h|--help)      usage; exit 0 ;;
             *) err "Unknown argument: $1"; usage; exit 2 ;;
@@ -1555,6 +1821,71 @@ sec_04_selinux() {
     info "Use 'sudo ausearch -m avc -ts recent | audit2why' to diagnose denials."
 }
 
+# firewalld_ensure_service() - Register a custom firewalld service XML if not already known.
+# Firewalld only ships built-in definitions for well-known services; KDE Connect and
+# similar require a custom XML file before --add-service can reference them.
+# Usage: firewalld_ensure_service <name> <short-desc> <port/proto> [<port/proto>...]
+firewalld_ensure_service() {
+    local svc_name="${1}"; shift
+    local svc_short="${1}"; shift
+    local svc_dir="/etc/firewalld/services"
+    local svc_file="${svc_dir}/${svc_name}.xml"
+
+    # Already known to firewalld — nothing to do.
+    if firewall-cmd --get-services 2>/dev/null | grep -qw "${svc_name}"; then
+        return 0
+    fi
+
+    if (( DRY_RUN )); then
+        info "Would create firewalld service definition: ${svc_name}"
+        return 0
+    fi
+
+    install -d -m 750 "${svc_dir}"
+    {
+        printf '<?xml version="1.0" encoding="utf-8"?>\n'
+        printf '<service>\n'
+        printf '  <short>%s</short>\n' "${svc_short}"
+        local portproto port proto
+        for portproto in "$@"; do
+            port="${portproto%%/*}"; proto="${portproto##*/}"
+            printf '  <port port="%s" protocol="%s"/>\n' "${port}" "${proto}"
+        done
+        printf '</service>\n'
+    } > "${svc_file}"
+    chmod 640 "${svc_file}"
+    firewall-cmd --reload &>/dev/null || true
+    info "Created firewalld service definition: ${svc_name}"
+}
+
+# firewalld_add_service() - Add a service to a firewalld zone (permanent), soft-failing on
+# INVALID_SERVICE (exit 101) instead of aborting the script under set -e.
+# Queues an action item for manual follow-up when the service is not recognised.
+# Usage: firewalld_add_service <zone> <service>
+firewalld_add_service() {
+    local zone="${1}" svc="${2}"
+    if (( DRY_RUN )); then
+        info "Would run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent"
+        return 0
+    fi
+    log "[RUN]   firewall-cmd --zone=${zone} --add-service=${svc} --permanent"
+    local out ec
+    out=$(firewall-cmd --zone="${zone}" --add-service="${svc}" --permanent 2>&1)
+    ec=$?
+    if (( ec == 0 )); then
+        ok "firewalld: added service '${svc}' to zone '${zone}'."
+        return 0
+    fi
+    if (( ec == 101 )) || [[ "${out}" == *"INVALID_SERVICE"* ]]; then
+        warn "firewalld: service '${svc}' not recognised — skipping. (${out})"
+        add_action_item "5" "MEDIUM" "FW_INVALID_SVC_${svc^^}" \
+            "firewalld service '${svc}' is not registered. Create /etc/firewalld/services/${svc}.xml then run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent && firewall-cmd --reload"
+        return 1
+    fi
+    err "firewall-cmd --add-service=${svc} failed (exit ${ec}): ${out}"
+    return "${ec}"
+}
+
 # ============================================================================
 #  SECTION 5 — firewalld
 # ============================================================================
@@ -1582,12 +1913,18 @@ sec_05_firewalld() {
     run "firewall-cmd --set-default-zone=drop"
 
     local svc services_to_allow=()
-    for svc in mdns kde-connect; do
-        if (( ASSUME_YES )) || confirm "Allow '$svc' through the firewall?"; then
-            services_to_allow+=("$svc")
+    if confirm "Allow 'mdns' through the firewall?"; then
+        services_to_allow+=("mdns")
+    fi
+    # kde-connect is KDE-specific and requires a custom service XML (not built-in to firewalld).
+    if (( HAS_KDE )); then
+        if confirm "Allow 'kde-connect' through the firewall?"; then
+            firewalld_ensure_service "kde-connect" "KDE Connect" \
+                "1714-1764/tcp" "1714-1764/udp"
+            services_to_allow+=("kde-connect")
         fi
-    done
-    
+    fi
+
     if systemctl is-enabled --quiet sshd 2>/dev/null; then
         info "sshd is enabled — allowing SSH in firewall."
         services_to_allow+=("ssh")
@@ -1595,9 +1932,9 @@ sec_05_firewalld() {
         services_to_allow+=("ssh")
     fi
 
-    # Batch all --permanent firewall rules together (efficiency)
+    # Add each service with soft-fail guard (INVALID_SERVICE → warn + action item, not abort).
     for svc in "${services_to_allow[@]}"; do
-        run "firewall-cmd --zone=drop --add-service=$svc --permanent"
+        firewalld_add_service drop "$svc"
     done
 
     run "firewall-cmd --set-log-denied=all"
@@ -1651,7 +1988,7 @@ sec_07_ssh() {
     section 7 "SSH hardening"
     if ! pkg_cached openssh-server; then
         warn "openssh-server is missing; attempting dependency install for section 7."
-        pkg_install openssh-server
+        pkg_install openssh-server || true
         pkg_cached openssh-server || { warn "openssh-server is still unavailable; skipping SSH hardening."; return 0; }
     fi
 
@@ -1731,9 +2068,11 @@ EOF
         info "Would generate policy: usbguard generate-policy > /etc/usbguard/rules.conf"
     else
         umask 077
-        usbguard generate-policy > /tmp/usbguard-rules.conf
-        install -m 0600 -o root -g root /tmp/usbguard-rules.conf /etc/usbguard/rules.conf
-        rm -f /tmp/usbguard-rules.conf
+        local tmp_usbguard="/tmp/usbguard-rules-$$-$RANDOM-$SECONDS.conf"
+        register_tmp "$tmp_usbguard"
+        usbguard generate-policy > "$tmp_usbguard"
+        install -m 0600 -o root -g root "$tmp_usbguard" /etc/usbguard/rules.conf
+        rm -f "$tmp_usbguard"
         ok "Wrote /etc/usbguard/rules.conf (0600 root:root)"
     fi
     run "systemctl enable --now usbguard"
@@ -2032,7 +2371,7 @@ CRONEOF
 sec_13_flatpak() {
     should_run 13 || return 0
     section 13 "Flatpak + Flathub"
-    if ! have_cmd flatpak; then
+    if ! cmd_exists flatpak; then
         pkg_install flatpak
     else
         info "Flatpak already present."
@@ -2150,6 +2489,10 @@ sec_16_firefox() {
 
     local home ff_root profiles_ini profile_marker profile_path profile_dir
     home="$(user_home "$ff_user")"
+    if [[ -z "$home" ]]; then
+        warn "Could not resolve home directory for $ff_user; skipping Firefox profile hardening."
+        return 0
+    fi
     ff_root="$home/.var/app/org.mozilla.firefox/.mozilla/firefox"
     profiles_ini="$ff_root/profiles.ini"
 
@@ -2187,11 +2530,16 @@ sec_16_firefox() {
             if (( DRY_RUN )); then
                 info "Would install arkenfox user.js into $profile_dir/user.js"
             else
-                local tmp_arken="/tmp/arkenfox-user.js"
-                download_file "https://raw.githubusercontent.com/arkenfox/user.js/master/user.js" "$tmp_arken"
-                install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_arken" "$profile_dir/user.js"
-                rm -f "$tmp_arken"
-                ok "Installed arkenfox user.js into $profile_dir/user.js"
+                local tmp_arken="/tmp/arkenfox-user-$$.js"
+                register_tmp "$tmp_arken"
+                if download_file "https://raw.githubusercontent.com/arkenfox/user.js/master/user.js" "$tmp_arken"; then
+                    install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_arken" "$profile_dir/user.js"
+                    rm -f "$tmp_arken"
+                    ok "Installed arkenfox user.js into $profile_dir/user.js"
+                else
+                    warn "arkenfox user.js download failed; Firefox profile will use defaults (no arkenfox hardening)"
+                    rm -f "$tmp_arken"
+                fi
             fi
         else
             warn "Resolved Firefox profile directory '$profile_dir' does not exist; skipping arkenfox deployment."
@@ -2207,7 +2555,9 @@ sec_16_firefox() {
         info "Would write Firefox extension policy to $policy_file"
     else
         install -d -m 0700 -o "$ff_user" -g "$ff_user" "$policy_dir"
-        cat > /tmp/firefox-policies.json <<'EOF'
+        local tmp_policy="/tmp/firefox-policies-$$.json"
+        register_tmp "$tmp_policy"
+        cat > "$tmp_policy" <<'EOF'
 {
   "policies": {
     "Extensions": {
@@ -2226,8 +2576,8 @@ sec_16_firefox() {
   }
 }
 EOF
-        install -m 0600 -o "$ff_user" -g "$ff_user" /tmp/firefox-policies.json "$policy_file"
-        rm -f /tmp/firefox-policies.json
+        install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_policy" "$policy_file"
+        rm -f "$tmp_policy"
         ok "Installed Firefox extension policy at $policy_file"
     fi
 
@@ -2388,9 +2738,12 @@ sec_21_clamav() {
     # Post-enable status check and report
     if (( ! DRY_RUN )); then
         local freshclam_active=0 clamd_active=0
-        systemctl is-active --quiet clamav-freshclam 2>/dev/null  && freshclam_active=1 || true
-        { systemctl is-active --quiet clamd@scan 2>/dev/null || \
-          systemctl is-active --quiet clamd@scan.service 2>/dev/null; } && clamd_active=1 || true
+        if systemctl is-active --quiet clamav-freshclam 2>/dev/null; then
+            freshclam_active=1
+        fi
+        if systemctl is-active --quiet clamd@scan 2>/dev/null || systemctl is-active --quiet clamd@scan.service 2>/dev/null; then
+            clamd_active=1
+        fi
         {
             printf '=== Section 21: ClamAV Report ===\n'
             printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
@@ -2695,6 +3048,8 @@ remediation_loop() {
 final_summary() {
     local summary_file="harden-summary-${REPORT_DATE}.txt"
     local summary_path=""
+    # Precompute platform label once — avoids two subshell spawns in report + terminal output.
+    local _plat; (( IS_OSTREE )) && _plat="rpm-ostree (immutable)" || _plat="dnf (mutable)"
 
     # Write overall human-readable summary to Downloads/<project>/results/
     if [[ -n "$USER_RESULTS_DIR" ]]; then
@@ -2705,7 +3060,7 @@ final_summary() {
             printf 'Log file:     %s\n' "$LOG_FILE"
             printf 'Backups:      %s\n' "$BACKUP_DIR"
             printf 'Target user:  %s\n' "${TARGET_USER:-<none>}"
-            printf 'Platform:     %s\n\n' "$( (( IS_OSTREE )) && echo "rpm-ostree (immutable)" || echo "dnf (mutable)" )"
+            printf 'Platform:     %s\n\n' "${_plat}"
             printf '=== Actionable Items (%d) ===\n' "${#ACTIONABLE_ITEMS[@]}"
             if (( ${#ACTIONABLE_ITEMS[@]} > 0 )); then
                 local idx=1
@@ -2754,7 +3109,7 @@ final_summary() {
  Log file:     $LOG_FILE
  Backups:      $BACKUP_DIR  (empty if no changes needed)
  Target user:  ${TARGET_USER:-<none>}
- Platform:     $( (( IS_OSTREE )) && echo "rpm-ostree (immutable)" || echo "dnf (mutable)" )
+ Platform:     ${_plat}
 $( [[ -n "$USER_RESULTS_DIR" ]] && printf ' Reports:      %s\n' "$USER_RESULTS_DIR" )
  Manual follow-up items (from the guide, NOT automated by this script):
    • LUKS full-disk encryption — set during Fedora installation only.
@@ -2847,6 +3202,11 @@ main() {
 
     gui_progress_close
     final_summary
+    
+    # Execute error analysis and auto-remediation loop to resolve any issues detected
+    info "Running error analysis and auto-remediation cycle..."
+    validate_and_remediate_loop || warn "Some errors may require manual intervention — review logs"
+    ok "Script execution complete. See logs for full details."
 }
 
 main "$@"
