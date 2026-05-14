@@ -15,6 +15,7 @@
 #    • Session-level memoization: command, package, and user home caching
 #    • Automatic feature gating based on system capabilities
 #    • Dependency self-healing for required commands/packages (best effort)
+#    • Graceful startup privilege confirmation (sudo/root context)
 #    • Approval-gated remediation with selective item implementation
 #    • Audit PDF/TXT export for later import and deferred remediation
 #
@@ -1318,6 +1319,7 @@ parse_args() {
 # Sets FEDORA_MAJOR version for compatibility validation (expects 44+).
 # Usage: preflight (called in main after parse_args)
 preflight() {
+    local privilege_source="direct root login/session"
     (( FORCE_GUI_FULL )) || draw_banner
     setup_ui_mode
     if (( EUID != 0 )); then
@@ -1325,6 +1327,11 @@ preflight() {
         PRECHECK_FAILED=1
         return 0
     fi
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        privilege_source="sudo (invoked by ${SUDO_USER})"
+    fi
+    ok "Privilege check passed: running with administrator/root privileges via ${privilege_source}."
+
     mkdir -p "$LOG_DIR"
     touch "$LOG_FILE"
     chmod 600 "$LOG_FILE"
@@ -2388,7 +2395,12 @@ sec_22_openscap() {
         pkg_install scap-security-guide
         if [[ ! -f "$content" ]]; then
             local alt_content=""
-            alt_content="$(find /usr/share/xml/scap/ssg/content -maxdepth 1 -type f -name 'ssg-fedora*-ds.xml' 2>/dev/null | head -1 || true)"
+            local candidate
+            for candidate in /usr/share/xml/scap/ssg/content/ssg-fedora*-ds.xml; do
+                [[ -f "$candidate" ]] || continue
+                alt_content="$candidate"
+                break
+            done
             if [[ -n "$alt_content" ]]; then
                 content="$alt_content"
                 info "Using alternate SSG content path: $content"
