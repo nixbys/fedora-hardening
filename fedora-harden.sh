@@ -2,7 +2,7 @@
 # =============================================================================
 #  Fedora 44+ Security Hardening Script (multi-release + desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
-#  Optimized for 100% global efficiency (v1.3 - May 2026)
+#  Efficiency-tuned and low-I/O focused (v1.3 - May 2026)
 #
 #  FEATURES:
 #    • 22 hardening sections with automatic release/profile detection
@@ -76,11 +76,11 @@
 #
 #  PERFORMANCE OPTIMIZATIONS:
 #    • Caching layers: command availability, package status, user home dirs
-#    • Batched I/O: multi-pattern sed in single pass (60-70% faster)
-#    • Smart waits: firewalld exponential backoff (65% faster than sleep 3)
-#    • Package pre-checks: avoid redundant rpm -q queries (50% faster)
-#    • Resource cleanup: EXIT trap guarantees /tmp cleanup (100% safe)
-#    Overall: 15-25% faster execution vs baseline
+#    • Batched I/O: multi-pattern sed in single pass
+#    • Smart waits: firewalld readiness backoff instead of fixed sleeps
+#    • Package pre-checks: avoid redundant package status queries
+#    • Resource cleanup: EXIT trap guarantees /tmp cleanup
+#    • Session run stamp reuse for report/log/backup naming
 #
 #  ERROR HANDLING:
 #    • EXIT trap: Cleans up all temporary files on script exit
@@ -95,9 +95,31 @@ set -Eeuo pipefail
 
 # ---------- Globals ---------------------------------------------------------
 SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+PROJECT_NAME="$(basename "$SCRIPT_DIR")"
+RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
+RUN_DATE_YMD="${RUN_STAMP%%-*}"
+RUN_STAMP_HUMAN="${RUN_STAMP/-/ }"
+RUN_STAMP_ISO=""
+HOST_LABEL=""
+KERNEL_LABEL=""
 LOG_DIR="/var/log/fedora-harden"
-LOG_FILE="${LOG_DIR}/harden-$(date +%Y%m%d-%H%M%S).log"
-BACKUP_DIR="/root/harden-backups-$(date +%Y%m%d-%H%M%S)"
+LOG_FILE="${LOG_DIR}/harden-${RUN_STAMP}.log"
+BACKUP_DIR="/root/harden-backups-${RUN_STAMP}"
+
+printf -v RUN_STAMP_ISO '%(%Y-%m-%dT%H:%M:%S%z)T' -1 2>/dev/null || RUN_STAMP_ISO="$(date -Iseconds)"
+HOST_LABEL="${HOSTNAME:-}"
+if [[ -z "$HOST_LABEL" && -r /etc/hostname ]]; then
+    IFS= read -r HOST_LABEL </etc/hostname || true
+fi
+if [[ -z "$HOST_LABEL" && -r /proc/sys/kernel/hostname ]]; then
+    IFS= read -r HOST_LABEL </proc/sys/kernel/hostname || true
+fi
+[[ -z "$HOST_LABEL" ]] && HOST_LABEL="unknown"
+if [[ -r /proc/sys/kernel/osrelease ]]; then
+    IFS= read -r KERNEL_LABEL </proc/sys/kernel/osrelease || true
+fi
+[[ -z "$KERNEL_LABEL" ]] && KERNEL_LABEL="$(uname -r 2>/dev/null || echo unknown)"
 
 TARGET_USER=""
 ASSUME_YES=0
@@ -143,9 +165,10 @@ declare -ga REMEDIATED_ITEMS=()
 declare -ga SELECTED_ACTIONABLE_ITEMS=()
 declare -ga DEFERRED_ACTIONABLE_ITEMS=()
 USER_DOWNLOADS_DIR=""
+USER_PROJECT_DIR=""
 USER_RESULTS_DIR=""
 USER_LOGS_DIR=""
-REPORT_DATE="$(date +%Y%m%d-%H%M%S)"
+REPORT_DATE="$RUN_STAMP"
 declare -ga TEMP_FILES=()          # All temp paths to auto-clean on EXIT
 
 # Colors (disabled if not a tty)
@@ -161,8 +184,10 @@ fi
 draw_banner() {
     printf '\n%s╔══════════════════════════════════════════════════════════════╗%s\n' "$C_CYN" "$C_RST"
     printf '%s║%s Fedora Hardening Orchestrator                              %s║%s\n' "$C_CYN" "$C_BLD" "$C_CYN" "$C_RST"
+    local who
+    who="${SUDO_USER:-${USER:-root}}"
     printf '%s║%s %s@%s  %s                                        %s║%s\n' \
-        "$C_CYN" "$C_RST" "$(whoami 2>/dev/null || echo root)" "$(hostname 2>/dev/null || echo host)" "$(date '+%F %T')" "$C_CYN" "$C_RST"
+        "$C_CYN" "$C_RST" "$who" "$HOST_LABEL" "$RUN_STAMP_HUMAN" "$C_CYN" "$C_RST"
     printf '%s╚══════════════════════════════════════════════════════════════╝%s\n' "$C_CYN" "$C_RST"
 }
 
@@ -436,7 +461,7 @@ init_log_target() {
         return 0
     fi
 
-    LOG_FILE="/tmp/${SCRIPT_NAME%.*}-$(date +%Y%m%d-%H%M%S).log"
+    LOG_FILE="/tmp/${SCRIPT_NAME%.*}-${RUN_STAMP}.log"
     : >>"$LOG_FILE" 2>/dev/null || return 1
     chmod 600 "$LOG_FILE" 2>/dev/null || true
     LOG_READY=1
@@ -448,7 +473,9 @@ init_log_target() {
 # Usage: log "message text"
 log() {
     init_log_target || return 0
-    printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG_FILE" 2>/dev/null || true
+    local ts
+    printf -v ts '%(%F %T)T' -1 2>/dev/null || ts="$(date '+%F %T')"
+    printf '%s %s\n' "$ts" "$*" >> "$LOG_FILE" 2>/dev/null || true
 }
 
 # info() - Write informational message to stdout and log (blue color).
@@ -657,8 +684,10 @@ user_home() {
         echo "${_USER_HOME_CACHE[$user]}"
         return 0
     fi
-    local home
-    home="$(getent passwd "$user" | cut -d: -f6)"
+    local entry home
+    entry="$(getent passwd "$user" 2>/dev/null || true)"
+    home="${entry#*:*:*:*:*:}"
+    [[ "$home" == "$entry" ]] && home=""
     _USER_HOME_CACHE[$user]="$home"
     echo "$home"
 }
@@ -937,7 +966,7 @@ get_user_downloads_dir() {
     printf '%s' "$dl"
 }
 
-# init_user_report_dirs() - Create Downloads/results and Downloads/logs with correct ownership.
+# init_user_report_dirs() - Create Downloads/<project>/results and logs with correct ownership.
 init_user_report_dirs() {
     local user="${TARGET_USER:-${SUDO_USER:-}}"
     USER_DOWNLOADS_DIR="$(get_user_downloads_dir 2>/dev/null || true)"
@@ -945,18 +974,23 @@ init_user_report_dirs() {
         warn "No target user set — section reports will only appear in $LOG_FILE."
         return 0
     fi
-    USER_RESULTS_DIR="${USER_DOWNLOADS_DIR}/results"
-    USER_LOGS_DIR="${USER_DOWNLOADS_DIR}/logs"
+    USER_PROJECT_DIR="${USER_DOWNLOADS_DIR}/${PROJECT_NAME}"
+    USER_RESULTS_DIR="${USER_PROJECT_DIR}/results"
+    USER_LOGS_DIR="${USER_PROJECT_DIR}/logs"
     if (( DRY_RUN )); then
+        info "Would create: $USER_PROJECT_DIR"
         info "Would create: $USER_RESULTS_DIR"
         info "Would create: $USER_LOGS_DIR"
         return 0
     fi
+    install -d -m 750 -o "$user" -g "$user" "$USER_PROJECT_DIR" 2>/dev/null \
+        || { warn "Could not create $USER_PROJECT_DIR — reports will only be in $LOG_FILE."; return 0; }
     install -d -m 750 -o "$user" -g "$user" "$USER_RESULTS_DIR" 2>/dev/null \
         || { warn "Could not create $USER_RESULTS_DIR — reports will only be in $LOG_FILE."; return 0; }
     install -d -m 750 -o "$user" -g "$user" "$USER_LOGS_DIR" 2>/dev/null || true
-    ok "Report dirs ready: $USER_RESULTS_DIR"
-    ok "Log copy dir ready: $USER_LOGS_DIR"
+    ok "Project export dir ready: $USER_PROJECT_DIR"
+    ok "Report dir ready: $USER_RESULTS_DIR"
+    ok "Log dir ready: $USER_LOGS_DIR"
 }
 
 # write_user_report() - Read stdin and write to a file in the user results directory.
@@ -1027,8 +1061,8 @@ generate_audit_pdf() {
     else
         {
             printf 'Fedora Hardening Audit Report\n'
-            printf 'Generated: %s\n' "$(date)"
-            printf 'Host: %s\n' "$(hostname 2>/dev/null || echo unknown)"
+            printf 'Generated: %s\n' "$RUN_STAMP_HUMAN"
+            printf 'Host: %s\n' "$HOST_LABEL"
             printf 'Log file: %s\n\n' "$LOG_FILE"
             printf 'Actionable items: %d\n' "${#ACTIONABLE_ITEMS[@]}"
             for item in "${ACTIONABLE_ITEMS[@]}"; do
@@ -1321,7 +1355,7 @@ preflight() {
         warn "Fedora version is '${VERSION_ID:-unknown}' — guide targets Fedora 44+."
         confirm "Proceed on this older version?" || exit 0
     fi
-    info "Host: $(hostname 2>/dev/null || echo unknown)   Distro: ${PRETTY_NAME:-?}   Kernel: $(uname -r 2>/dev/null || echo unknown)"
+    info "Host: $HOST_LABEL   Distro: ${PRETTY_NAME:-?}   Kernel: $KERNEL_LABEL"
     info "Variant: ${FEDORA_VARIANT}"
     info "Release flags: workstation=$IS_WORKSTATION server=$IS_SERVER iot=$IS_IOT cloud=$IS_CLOUD coreos=$IS_COREOS ostree=$IS_OSTREE atomic_desktop=$IS_ATOMIC_DESKTOP"
     if (( IS_OSTREE )); then
@@ -1590,7 +1624,7 @@ sec_07_ssh() {
     else
         install -d -m 755 /etc/ssh/sshd_config.d
         cat >"$drop" <<EOF
-# Written by $SCRIPT_NAME on $(date -Iseconds)
+# Written by $SCRIPT_NAME on $RUN_STAMP_ISO
 PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -1909,11 +1943,11 @@ CRONEOF
     fi
     warn "Re-initialize AIDE after legitimate package updates: 'sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
 
-    # Write section report to user Downloads/results/
+    # Write section report to user Downloads/<project>/results/
     if (( ! DRY_RUN )); then
         {
             printf '=== Section 12: rkhunter + AIDE Report ===\n'
-            printf 'Generated: %s\n\n' "$(date)"
+            printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
             printf '--- rkhunter scan output (%d warning(s)) ---\n' "$rk_warn_count"
             [[ -f "$rk_tmp" ]] && cat "$rk_tmp" || printf '(capture unavailable)\n'
             printf '\n--- AIDE database status ---\n'
@@ -2214,7 +2248,7 @@ EOF
         fi
         {
             printf '=== Section 18: Fail2Ban Report ===\n'
-            printf 'Generated: %s\n\n' "$(date)"
+            printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
             printf '--- Service status ---\n'
             systemctl status fail2ban --no-pager 2>&1 || true
             printf '\n--- Jail summary ---\n%s\n' "$f2b_status"
@@ -2289,7 +2323,7 @@ sec_20_perms() {
     fi
 
     info "Baseline of SUID files (saved for diffing later):"
-    run "find / -xdev -perm /4000 -type f 2>/dev/null | sort > /root/suid-baseline-$(date +%Y%m%d).txt || true"
+    run "find / -xdev -perm /4000 -type f 2>/dev/null | sort > /root/suid-baseline-${RUN_DATE_YMD}.txt || true"
     info "Saved SUID baseline to /root/suid-baseline-*.txt"
 }
 
@@ -2315,7 +2349,7 @@ sec_21_clamav() {
           systemctl is-active --quiet clamd@scan.service 2>/dev/null; } && clamd_active=1 || true
         {
             printf '=== Section 21: ClamAV Report ===\n'
-            printf 'Generated: %s\n\n' "$(date)"
+            printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
             printf '--- clamav-freshclam status ---\n'
             systemctl status clamav-freshclam --no-pager 2>&1 || true
             printf '\n--- clamd@scan status ---\n'
@@ -2375,7 +2409,7 @@ sec_22_openscap() {
         ok "Report: /root/scap-report.html"
     fi
 
-    # Copy results to user Downloads/results/ and generate text summary
+    # Copy results to user Downloads/<project>/results/ and generate text summary
     if (( ! DRY_RUN )); then
         copy_to_user_results /root/scap-report.html  "section-22-openscap-${REPORT_DATE}.html"
         copy_to_user_results /root/scap-results.xml  "section-22-openscap-results-${REPORT_DATE}.xml"
@@ -2392,7 +2426,7 @@ sec_22_openscap() {
             info "OpenSCAP results — pass: $pass_count  fail: $fail_count  not-checked: $notchecked_count"
             {
                 printf '=== Section 22: OpenSCAP Compliance Summary ===\n'
-                printf 'Generated: %s\n\n' "$(date)"
+                printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
                 printf 'Results XML:  /root/scap-results.xml\n'
                 printf 'HTML report:  /root/scap-report.html\n\n'
                 printf 'Pass:         %s\n' "$pass_count"
@@ -2511,7 +2545,7 @@ remediate_item() {
             fi
             local infected; infected="$(awk '/ FOUND$/{count++} END{print count+0}' "$scan_tmp" 2>/dev/null || echo 0)"
             {
-                printf '=== ClamAV Initial Home Scan ===\nDate: %s\nTarget: %s\n\n' "$(date)" "$scan_home"
+                printf '=== ClamAV Initial Home Scan ===\nDate: %s\nTarget: %s\n\n' "$RUN_STAMP_HUMAN" "$scan_home"
                 cat "$scan_tmp"
             } | write_user_report "section-21-clamav-initial-scan-${REPORT_DATE}.txt"
             if (( infected > 0 )); then
@@ -2605,7 +2639,7 @@ remediation_loop() {
 
 # ---------- Summary ---------------------------------------------------------
 # final_summary() - Analyze section 12/18/21/22 findings, write all reports to
-# user Downloads/results and Downloads/logs, display actionable list, and ask
+# user Downloads/<project>/results and Downloads/<project>/logs, display actionable list, and ask
 # whether to implement recommended next steps. If declined, export a PDF audit
 # report plus TXT import bundle into the user's Downloads directory instead of
 # running remediation. If approved, the user can implement all or selected items.
@@ -2613,12 +2647,12 @@ final_summary() {
     local summary_file="harden-summary-${REPORT_DATE}.txt"
     local summary_path=""
 
-    # Write overall human-readable summary to Downloads/results/
+    # Write overall human-readable summary to Downloads/<project>/results/
     if [[ -n "$USER_RESULTS_DIR" ]]; then
         {
             printf '=== Fedora Hardening Run Summary ===\n'
-            printf 'Generated:    %s\n' "$(date)"
-            printf 'Host:         %s\n' "$(hostname 2>/dev/null || echo unknown)"
+            printf 'Generated:    %s\n' "$RUN_STAMP_HUMAN"
+            printf 'Host:         %s\n' "$HOST_LABEL"
             printf 'Log file:     %s\n' "$LOG_FILE"
             printf 'Backups:      %s\n' "$BACKUP_DIR"
             printf 'Target user:  %s\n' "${TARGET_USER:-<none>}"
@@ -2653,7 +2687,7 @@ final_summary() {
             printf '  • AIDE re-init               — after any future package updates.\n'
             printf '  • REBOOT RECOMMENDED         — to apply kernel/sysctl/PAM/GRUB changes.\n'
             (( IS_OSTREE )) && printf '  • rpm-ostree REBOOT         — required for staged/layered package changes.\n'
-            printf '\n=== Section Reports in Downloads/results/ ===\n'
+            printf '\n=== Section Reports in Downloads/%s/results/ ===\n' "$PROJECT_NAME"
             for f in "$USER_RESULTS_DIR"/section-*.txt "$USER_RESULTS_DIR"/section-*.html; do
                 [[ -f "$f" ]] && printf '  %s\n' "$(basename "$f")"
             done || true
@@ -2661,7 +2695,7 @@ final_summary() {
         summary_path="${USER_RESULTS_DIR}/${summary_file}"
     fi
 
-    # Copy the main harden log to Downloads/logs/
+    # Copy the main harden log to Downloads/<project>/logs/
     copy_log_to_user
 
     # Display terminal summary
@@ -2701,7 +2735,7 @@ EOF
     if [[ -n "$USER_RESULTS_DIR" ]] && (( ${#REMEDIATED_ITEMS[@]} > 0 )); then
         {
             printf '=== Fedora Hardening — Post-Remediation Summary Update ===\n'
-            printf 'Generated: %s\n\n' "$(date)"
+            printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
             printf 'Remaining actionable items: %d\n' "${#ACTIONABLE_ITEMS[@]}"
             printf 'Remediated this session:    %d\n\n' "${#REMEDIATED_ITEMS[@]}"
             for item in "${REMEDIATED_ITEMS[@]}"; do
