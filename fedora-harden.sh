@@ -15,6 +15,8 @@
 #    • Session-level memoization: command, package, and user home caching
 #    • Automatic feature gating based on system capabilities
 #    • Dependency self-healing for required commands/packages (best effort)
+#    • Approval-gated remediation with selective item implementation
+#    • Audit PDF/TXT export for later import and deferred remediation
 #
 #  USAGE:
 #    sudo ./fedora-harden.sh [options]
@@ -25,6 +27,7 @@
 #    -n, --dry-run          Print what would run; make no changes
 #        --gui              Enable graphical prompts (kdialog/zenity) when available
 #        --gui-full         Full windowed frontend: GUI progress + GUI status output
+#        --import-audit <p> Import a generated audit PDF/TXT and choose items later
 #        --skip <list>      Comma-separated sections to skip (e.g. 7,8,17)
 #        --only <list>      Comma-separated sections to run exclusively
 #        --list             List all section numbers & names and exit
@@ -84,6 +87,7 @@
 #    • ERR trap: Logs line number + exit code, triggers cleanup on error
 #    • Resource safety: Guaranteed cleanup of /tmp operations
 #    • Fallback strategies: curl → wget, plus best-effort dependency install
+#    • Audit workflow: PDF/TXT export on decline, later import via --import-audit
 #
 # =============================================================================
 
@@ -100,6 +104,7 @@ ASSUME_YES=0
 DRY_RUN=0
 SKIP_LIST=""
 ONLY_LIST=""
+IMPORT_AUDIT_PATH=""
 FORCE_GUI=0
 FORCE_GUI_FULL=0
 GUI_MODE=0
@@ -135,6 +140,8 @@ UI_SECTION_TOTAL=21
 # ---------- Report / Actionable-items globals --------------------------------
 declare -ga ACTIONABLE_ITEMS=()
 declare -ga REMEDIATED_ITEMS=()
+declare -ga SELECTED_ACTIONABLE_ITEMS=()
+declare -ga DEFERRED_ACTIONABLE_ITEMS=()
 USER_DOWNLOADS_DIR=""
 USER_RESULTS_DIR=""
 USER_LOGS_DIR=""
@@ -995,6 +1002,204 @@ copy_log_to_user() {
     ok "Log copied: $dest"
 }
 
+# generate_audit_pdf() - Export a PDF audit report and importable TXT bundle.
+# Usage: generate_audit_pdf [summary_txt_path]
+generate_audit_pdf() {
+    local summary_path="${1:-}"
+    [[ -z "$USER_DOWNLOADS_DIR" ]] && { warn "No Downloads directory available for PDF audit export."; return 1; }
+
+    local user="${TARGET_USER:-${SUDO_USER:-}}"
+    local pdf_path="${USER_DOWNLOADS_DIR}/fedora-hardening-audit-${REPORT_DATE}.pdf"
+    local bundle_path="${USER_DOWNLOADS_DIR}/fedora-hardening-audit-${REPORT_DATE}.txt"
+    local txt_path="/tmp/fedora-hardening-audit-${REPORT_DATE}-$$.txt"
+    local ps_path="/tmp/fedora-hardening-audit-${REPORT_DATE}-$$.ps"
+    register_tmp "$txt_path"
+    register_tmp "$ps_path"
+
+    if (( DRY_RUN )); then
+        info "Would generate audit PDF: $pdf_path"
+        info "Would write audit import bundle: $bundle_path"
+        return 0
+    fi
+
+    if [[ -n "$summary_path" && -f "$summary_path" ]]; then
+        cp -f "$summary_path" "$txt_path"
+    else
+        {
+            printf 'Fedora Hardening Audit Report\n'
+            printf 'Generated: %s\n' "$(date)"
+            printf 'Host: %s\n' "$(hostname 2>/dev/null || echo unknown)"
+            printf 'Log file: %s\n\n' "$LOG_FILE"
+            printf 'Actionable items: %d\n' "${#ACTIONABLE_ITEMS[@]}"
+            for item in "${ACTIONABLE_ITEMS[@]}"; do
+                local section priority tag desc
+                IFS='|' read -r section priority tag desc <<<"$item"
+                printf '  [%s][%s] %s\n' "$priority" "$section" "$desc"
+            done
+            printf '\nManual follow-up remains required. See reports/logs for full details.\n'
+        } > "$txt_path"
+    fi
+
+    {
+        printf '\n=== Importable Action Items ===\n'
+        printf 'Re-import later with: sudo %s --import-audit %s\n\n' "$SCRIPT_NAME" "$pdf_path"
+        for item in "${ACTIONABLE_ITEMS[@]}"; do
+            printf 'ACTION_ITEM|%s\n' "$item"
+        done
+    } >> "$txt_path"
+
+    {
+        [[ -f "$txt_path" ]] && cat "$txt_path"
+    } > "$bundle_path"
+    chown "${user}:${user}" "$bundle_path" 2>/dev/null || true
+    chmod 640 "$bundle_path" 2>/dev/null || true
+
+    ensure_command_dep enscript "audit PDF generation" enscript
+    ensure_command_dep ps2pdf "audit PDF generation" ghostscript
+    if ! cmd_exists enscript || ! cmd_exists ps2pdf; then
+        warn "PDF generation dependencies are unavailable; could not create $pdf_path"
+        return 1
+    fi
+
+    if ! enscript -B -q -f Courier8 "$txt_path" -o "$ps_path" >/dev/null 2>&1; then
+        warn "enscript failed while building the audit PDF source."
+        return 1
+    fi
+    if ! ps2pdf "$ps_path" "$pdf_path" >/dev/null 2>&1; then
+        warn "ps2pdf failed while writing the audit PDF."
+        return 1
+    fi
+
+    chown "${user}:${user}" "$pdf_path" 2>/dev/null || true
+    chmod 640 "$pdf_path" 2>/dev/null || true
+    ok "Audit PDF saved: $pdf_path"
+    ok "Audit import bundle saved: $bundle_path"
+    return 0
+}
+
+# import_audit_items() - Load actionable items from a generated audit PDF or TXT bundle.
+# Accepts either the PDF path or the companion TXT bundle path.
+import_audit_items() {
+    local input_path="$1"
+    local source_path="$input_path"
+    local extract_path="/tmp/fedora-hardening-audit-import-${REPORT_DATE}-$$.txt"
+    register_tmp "$extract_path"
+
+    if [[ ! -f "$input_path" ]]; then
+        err "Audit import file not found: $input_path"
+        return 1
+    fi
+
+    case "$input_path" in
+        *.pdf)
+            source_path="${input_path%.pdf}.txt"
+            if [[ ! -f "$source_path" ]]; then
+                ensure_command_dep pdftotext "audit import from PDF" poppler-utils
+                if ! cmd_exists pdftotext; then
+                    err "Cannot import audit PDF without companion TXT bundle or pdftotext."
+                    return 1
+                fi
+                pdftotext "$input_path" "$extract_path" >/dev/null 2>&1 || {
+                    err "Failed to extract text from audit PDF: $input_path"
+                    return 1
+                }
+                source_path="$extract_path"
+            fi
+            ;;
+    esac
+
+    ACTIONABLE_ITEMS=()
+    while IFS= read -r line; do
+        [[ "$line" == ACTION_ITEM\|* ]] || continue
+        ACTIONABLE_ITEMS+=("${line#ACTION_ITEM|}")
+    done < "$source_path"
+
+    if (( ${#ACTIONABLE_ITEMS[@]} == 0 )); then
+        warn "No importable actionable items found in: $input_path"
+        return 1
+    fi
+    ok "Imported ${#ACTIONABLE_ITEMS[@]} actionable item(s) from audit report."
+    return 0
+}
+
+# select_actionable_items() - Split actionable items into selected and deferred groups.
+# Accepts 'all', item numbers, item tags, or a comma-separated mix of numbers and tags.
+select_actionable_items() {
+    local selection="${1:-all}"
+    local token idx=1
+    declare -A picks=()
+    SELECTED_ACTIONABLE_ITEMS=()
+    DEFERRED_ACTIONABLE_ITEMS=()
+
+    selection="${selection// /}"
+    if [[ -z "$selection" || "${selection,,}" == "all" ]]; then
+        SELECTED_ACTIONABLE_ITEMS=("${ACTIONABLE_ITEMS[@]}")
+        return 0
+    fi
+
+    IFS=',' read -r -a tokens <<< "$selection"
+    for token in "${tokens[@]}"; do
+        [[ -z "$token" ]] && continue
+        if [[ "$token" =~ ^[0-9]+$ ]]; then
+            picks["index:$token"]=1
+        else
+            picks["tag:${token^^}"]=1
+        fi
+    done
+
+    for item in "${ACTIONABLE_ITEMS[@]}"; do
+        local section priority tag desc
+        IFS='|' read -r section priority tag desc <<<"$item"
+        if [[ -n "${picks[index:$idx]:-}" || -n "${picks[tag:$tag]:-}" ]]; then
+            SELECTED_ACTIONABLE_ITEMS+=("$item")
+        else
+            DEFERRED_ACTIONABLE_ITEMS+=("$item")
+        fi
+        ((idx++))
+    done
+
+    (( ${#SELECTED_ACTIONABLE_ITEMS[@]} > 0 ))
+}
+
+# handle_actionable_follow_up() - Gate implementation on approval and optional item selection.
+# If declined, export a PDF audit report plus TXT import bundle; if approved,
+# allow all or selected changes by item number and/or actionable tag.
+handle_actionable_follow_up() {
+    local summary_path="${1:-}"
+    local selection="all"
+
+    show_actionable_items
+    (( ${#ACTIONABLE_ITEMS[@]} > 0 )) || return 0
+
+    if ! confirm "Implement the recommended next steps from the final summary now?"; then
+        info "User declined implementation of recommended changes."
+        generate_audit_pdf "$summary_path" || true
+        info "Actionable items remain recorded in: ${USER_RESULTS_DIR:-$LOG_FILE}"
+        return 0
+    fi
+
+    if (( ${#ACTIONABLE_ITEMS[@]} > 1 )); then
+        info "You can implement all items, or choose specific item numbers/tags from the actionable list."
+        selection="$(prompt_input "Enter 'all' or comma-separated item numbers/tags to implement" "all")"
+        if ! select_actionable_items "$selection"; then
+            warn "Invalid actionable-item selection '$selection' — defaulting to all items."
+            SELECTED_ACTIONABLE_ITEMS=("${ACTIONABLE_ITEMS[@]}")
+            DEFERRED_ACTIONABLE_ITEMS=()
+        fi
+    else
+        SELECTED_ACTIONABLE_ITEMS=("${ACTIONABLE_ITEMS[@]}")
+        DEFERRED_ACTIONABLE_ITEMS=()
+    fi
+
+    ACTIONABLE_ITEMS=("${SELECTED_ACTIONABLE_ITEMS[@]}")
+    remediation_loop
+    if (( ${#DEFERRED_ACTIONABLE_ITEMS[@]} > 0 )); then
+        info "${#DEFERRED_ACTIONABLE_ITEMS[@]} actionable item(s) were deferred by user choice."
+        ACTIONABLE_ITEMS+=("${DEFERRED_ACTIONABLE_ITEMS[@]}")
+    fi
+    return 0
+}
+
 # ---------- Pre-flight Checks -----------------------------------------------
 # Initialize script environment, detect system configuration, and validate prerequisites.
 # Functions in this section handle argument parsing, system detection, and setup.
@@ -1048,12 +1253,14 @@ EOF
 
 parse_args() {
     # parse_args() - Parse command-line arguments and set global flags.
-    # Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui, --skip, --only, --list, -h/--help
+    # Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui, --gui-full,
+    # --import-audit, --skip, --only, --list, -h/--help
     # Validates option syntax and applies settings globally for use throughout script.
     # Usage: parse_args "$@" (called in preflight)
 
     # Parse command-line arguments and set global flags.
-    # Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui, --skip, --only, --list, -h/--help
+    # Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui, --gui-full,
+    # --import-audit, --skip, --only, --list, -h/--help
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -u|--user)      TARGET_USER="$2"; shift 2 ;;
@@ -1061,6 +1268,7 @@ parse_args() {
             -n|--dry-run)   DRY_RUN=1; shift ;;
             --gui)          FORCE_GUI=1; shift ;;
             --gui-full)     FORCE_GUI_FULL=1; shift ;;
+            --import-audit) IMPORT_AUDIT_PATH="$2"; shift 2 ;;
             --skip)         SKIP_LIST="$2"; shift 2 ;;
             --only)         ONLY_LIST="$2"; shift 2 ;;
             --list)         list_sections; exit 0 ;;
@@ -1667,7 +1875,7 @@ sec_12_ids() {
         else
             rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" || true
         fi
-        rk_warn_count="$(grep -c '^\[ Warning \]' "$rk_tmp" 2>/dev/null || echo 0)"
+        rk_warn_count="$(awk '/^\[ Warning \]/{count++} END{print count+0}' "$rk_tmp" 2>/dev/null || echo 0)"
     else
         run "rkhunter --check --sk --rwo || true"
     fi
@@ -2173,9 +2381,14 @@ sec_22_openscap() {
         copy_to_user_results /root/scap-results.xml  "section-22-openscap-results-${REPORT_DATE}.xml"
         local pass_count="?" fail_count="?" notchecked_count="?"
         if [[ -f /root/scap-results.xml ]]; then
-            pass_count="$(grep -c 'result="pass"'        /root/scap-results.xml 2>/dev/null || echo '?')"
-            fail_count="$(grep -c 'result="fail"'        /root/scap-results.xml 2>/dev/null || echo '?')"
-            notchecked_count="$(grep -c 'result="notchecked"' /root/scap-results.xml 2>/dev/null || echo '?')"
+            read -r pass_count fail_count notchecked_count < <(
+                awk '
+                    /result="pass"/ {pass++}
+                    /result="fail"/ {fail++}
+                    /result="notchecked"/ {notchecked++}
+                    END {print pass+0, fail+0, notchecked+0}
+                ' /root/scap-results.xml 2>/dev/null || printf '? ? ?\n'
+            )
             info "OpenSCAP results — pass: $pass_count  fail: $fail_count  not-checked: $notchecked_count"
             {
                 printf '=== Section 22: OpenSCAP Compliance Summary ===\n'
@@ -2296,7 +2509,7 @@ remediate_item() {
             else
                 clamscan -r --infected "$scan_home" 2>&1 | tee "$scan_tmp" || true
             fi
-            local infected; infected="$(grep -c ' FOUND$' "$scan_tmp" 2>/dev/null || echo 0)"
+            local infected; infected="$(awk '/ FOUND$/{count++} END{print count+0}' "$scan_tmp" 2>/dev/null || echo 0)"
             {
                 printf '=== ClamAV Initial Home Scan ===\nDate: %s\nTarget: %s\n\n' "$(date)" "$scan_home"
                 cat "$scan_tmp"
@@ -2350,7 +2563,7 @@ remediate_item() {
     esac
 }
 
-# remediation_loop() - Iteratively display, approve, and resolve all actionable items.
+# remediation_loop() - Iteratively resolve all actionable items after summary approval.
 remediation_loop() {
     (( ${#ACTIONABLE_ITEMS[@]} == 0 )) && return 0
     local round=1 max_rounds=5 prev_count=-1
@@ -2361,10 +2574,6 @@ remediation_loop() {
         printf '\n'
         info "=== Remediation round $round of $max_rounds (${#ACTIONABLE_ITEMS[@]} item(s) remaining) ==="
         show_actionable_items
-        if ! confirm "Attempt automated remediation of the listed items now?"; then
-            info "Remediation skipped. All items are recorded in: ${USER_RESULTS_DIR:-$LOG_FILE}"
-            return 0
-        fi
         local remaining_items=()
         for item in "${ACTIONABLE_ITEMS[@]}"; do
             local section priority tag desc
@@ -2396,10 +2605,13 @@ remediation_loop() {
 
 # ---------- Summary ---------------------------------------------------------
 # final_summary() - Analyze section 12/18/21/22 findings, write all reports to
-# user Downloads/results and Downloads/logs, display actionable list, and run
-# the approval-gated remediation loop.
+# user Downloads/results and Downloads/logs, display actionable list, and ask
+# whether to implement recommended next steps. If declined, export a PDF audit
+# report plus TXT import bundle into the user's Downloads directory instead of
+# running remediation. If approved, the user can implement all or selected items.
 final_summary() {
     local summary_file="harden-summary-${REPORT_DATE}.txt"
+    local summary_path=""
 
     # Write overall human-readable summary to Downloads/results/
     if [[ -n "$USER_RESULTS_DIR" ]]; then
@@ -2446,6 +2658,7 @@ final_summary() {
                 [[ -f "$f" ]] && printf '  %s\n' "$(basename "$f")"
             done || true
         } | write_user_report "$summary_file"
+        summary_path="${USER_RESULTS_DIR}/${summary_file}"
     fi
 
     # Copy the main harden log to Downloads/logs/
@@ -2481,9 +2694,8 @@ EOF
 
     gui_alert info "Fedora hardening finished.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
 
-    # Display the actionable items from sections 12/18/21/22 and enter remediation loop
-    show_actionable_items
-    remediation_loop
+    # Display the actionable items from sections 12/18/21/22 and handle approval/selection.
+    handle_actionable_follow_up "$summary_path"
 
     # Re-write the summary with final state (after remediation updates ACTIONABLE/REMEDIATED lists)
     if [[ -n "$USER_RESULTS_DIR" ]] && (( ${#REMEDIATED_ITEMS[@]} > 0 )); then
@@ -2518,6 +2730,11 @@ main() {
         exit 1
     fi
     init_user_report_dirs
+    if [[ -n "$IMPORT_AUDIT_PATH" ]]; then
+        import_audit_items "$IMPORT_AUDIT_PATH" || exit 1
+        handle_actionable_follow_up ""
+        exit 0
+    fi
     calc_section_total
     gui_progress_start
     abort_if_cancelled
