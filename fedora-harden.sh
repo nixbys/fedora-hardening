@@ -130,64 +130,71 @@ BACKUP_DIR="/root/harden-backups-${RUN_STAMP}"
 printf -v RUN_STAMP_ISO '%(%Y-%m-%dT%H:%M:%S%z)T' -1 2>/dev/null || RUN_STAMP_ISO="$(date -Iseconds)"
 HOST_LABEL="${HOSTNAME:-}"
 if [[ -z "$HOST_LABEL" && -r /etc/hostname ]]; then
-    IFS= read -r HOST_LABEL </etc/hostname || true
+	IFS= read -r HOST_LABEL </etc/hostname || true
 fi
 if [[ -z "$HOST_LABEL" && -r /proc/sys/kernel/hostname ]]; then
-    IFS= read -r HOST_LABEL </proc/sys/kernel/hostname || true
+	IFS= read -r HOST_LABEL </proc/sys/kernel/hostname || true
 fi
 [[ -z "$HOST_LABEL" ]] && HOST_LABEL="unknown"
 if [[ -r /proc/sys/kernel/osrelease ]]; then
-    IFS= read -r KERNEL_LABEL </proc/sys/kernel/osrelease || true
+	IFS= read -r KERNEL_LABEL </proc/sys/kernel/osrelease || true
 fi
 [[ -z "$KERNEL_LABEL" ]] && KERNEL_LABEL="$(uname -r 2>/dev/null || echo unknown)"
 
-TARGET_USER=""
-ASSUME_YES=0
-DRY_RUN=0
-SKIP_LIST=""
-ONLY_LIST=""
-IMPORT_AUDIT_PATH=""
-FORCE_GUI=0
-FORCE_GUI_FULL=0
-GUI_MODE=0
-GUI_FULL_MODE=0
-GUI_TOOL=""
-GUI_PROGRESS_REF=""
-GUI_PROGRESS_PIPE_FD=""
-GUI_PROGRESS_PID=""
-GUI_LAST_STATUS=""
-GUI_CANCEL_REQUESTED=0
-LOG_READY=0
-PRECHECK_FAILED=0
-EXPECTED_ABORT=0
-IS_OSTREE=0
-IS_KINOITE=0
-IS_SILVERBLUE=0
-IS_SERVER=0
-IS_WORKSTATION=0
-IS_IOT=0
-IS_CLOUD=0
-IS_COREOS=0
-IS_ATOMIC_DESKTOP=0
-IS_FEDORA=0
-HAS_KDE=0
-HAS_GNOME=0
-HAS_DESKTOP=0
-DESKTOP_ENVS=""
-FEDORA_VARIANT="unknown"
-FEDORA_MAJOR=0
-UI_SECTION_DONE=0
-UI_SECTION_TOTAL=21
+# ---------- Command-line option flags -----------------------------------------
+TARGET_USER=""       # Target username for SSH/home-dir hardening (--user)
+ASSUME_YES=0         # Non-interactive mode (--yes)
+DRY_RUN=0            # Print what would run without making changes (--dry-run)
+SKIP_LIST=""         # Comma-separated section numbers to skip (--skip)
+ONLY_LIST=""         # Comma-separated sections to run exclusively (--only)
+IMPORT_AUDIT_PATH="" # Path to audit PDF/TXT to import (--import-audit)
+FORCE_GUI=0          # Request graphical prompts (--gui)
+FORCE_GUI_FULL=0     # Full GUI frontend with progress (--gui-full)
+
+# ---------- GUI mode state ------------------------------------------------
+GUI_MODE=0              # Set to 1 if kdialog/zenity available and enabled
+GUI_FULL_MODE=0         # Set to 1 if --gui-full requested and display available
+GUI_TOOL=""             # Selected dialog tool: "kdialog" or "zenity"
+GUI_PROGRESS_REF=""     # D-Bus reference for kdialog progress tracking
+GUI_PROGRESS_PIPE_FD="" # File descriptor for GUI progress updates
+GUI_PROGRESS_PID=""     # PID of running GUI progress process
+GUI_LAST_STATUS=""      # Last status message sent to GUI
+GUI_CANCEL_REQUESTED=0  # Set to 1 if user cancels via GUI
+
+# ---------- Execution state flags -------------------------------------------
+LOG_READY=0       # Set to 1 after log file initialized
+PRECHECK_FAILED=0 # Set to 1 if preflight checks fail
+EXPECTED_ABORT=0  # Set to 1 if clean exit expected (--list, --rollback)
+
+# ---------- Platform/variant detection flags --------------------------------
+IS_OSTREE=0              # Set to 1 if system uses immutable rpm-ostree
+IS_KINOITE=0             # Set to 1 if Fedora Kinoite (immutable + KDE)
+IS_SILVERBLUE=0          # Set to 1 if Fedora Silverblue (immutable)
+IS_SERVER=0              # Set to 1 if Fedora Server
+IS_WORKSTATION=0         # Set to 1 if Fedora Workstation
+IS_IOT=0                 # Set to 1 if Fedora IoT (immutable)
+IS_CLOUD=0               # Set to 1 if Fedora Cloud
+IS_COREOS=0              # Set to 1 if Fedora CoreOS (immutable)
+IS_ATOMIC_DESKTOP=0      # Set to 1 if Atomic Desktop variant
+IS_FEDORA=0              # Set to 1 if any Fedora detected
+HAS_KDE=0                # Set to 1 if KDE Plasma session detected
+HAS_GNOME=0              # Set to 1 if GNOME session detected
+HAS_DESKTOP=0            # Set to 1 if any desktop environment detected
+DESKTOP_ENVS=""          # Comma-separated list of detected desktop environments
+FEDORA_VARIANT="unknown" # Human-readable Fedora variant name
+FEDORA_MAJOR=0           # Fedora major version number
+UI_SECTION_DONE=0        # Count of completed sections for progress tracking
+UI_SECTION_TOTAL=21      # Total hardening sections to execute
 
 # Error tracking & remediation infrastructure
-ERROR_LOG=""                                # Structured error log file path
-ERROR_CAPTURE_FILE=""                       # Temp file for capturing command stderr
-declare -ga ERROR_DETAILS=()                # Array: "line|cmd|exit_code|stderr|timestamp"
-declare -gi LAST_ERROR_COUNT=0              # Track errors for remediation loop
-declare -gi REMEDIATION_PASS=0              # Current pass through remediation
-declare -gi MAX_REMEDIATION_PASSES=3        # Max auto-remediation attempts
-                                             # Prevents infinite loops; persistent errors typically need manual intervention
-LAST_RUN_CMD=""                             # Last command dispatched via run()
+ERROR_LOG=""                         # Structured error log file path
+ERROR_CAPTURE_FILE=""                # Temp file for capturing command stderr
+declare -ga ERROR_DETAILS=()         # Array: "line|cmd|exit_code|stderr|timestamp"
+declare -gi LAST_ERROR_COUNT=0       # Track errors for remediation loop
+declare -gi REMEDIATION_PASS=0       # Current pass through remediation
+declare -gi MAX_REMEDIATION_PASSES=3 # Max auto-remediation attempts
+# Prevents infinite loops; persistent errors typically need manual intervention
+LAST_RUN_CMD="" # Last command dispatched via run()
 
 # ---------- Report / Actionable-items globals --------------------------------
 declare -ga ACTIONABLE_ITEMS=()
@@ -199,370 +206,381 @@ USER_PROJECT_DIR=""
 USER_RESULTS_DIR=""
 USER_LOGS_DIR=""
 REPORT_DATE="$RUN_STAMP"
-declare -ga TEMP_FILES=()          # All temp paths to auto-clean on EXIT
+declare -ga TEMP_FILES=() # All temp paths to auto-clean on EXIT
 
 # ---------- Rollback & session-tracking globals ------------------------------
-ROLLBACK_JOURNAL=""                # Path to per-run change journal inside BACKUP_DIR
+ROLLBACK_JOURNAL=""                  # Path to per-run change journal inside BACKUP_DIR
 SESSION_DIR="${SCRIPT_DIR}/sessions" # Project-relative sessions report directory
-SESSION_REPORT_FILE=""             # Path to current session's report in SESSION_DIR
-SESSION_STATUS="running"           # Updated to 'completed' or 'aborted' on exit
-SESSION_REPORT_WRITTEN=0           # Guards against double-write on abort path
-ROLLBACK_SESSION_ID=""             # Session ID to roll back (set by --rollback)
-LIST_SESSIONS_MODE=0               # Set by --list-sessions
+SESSION_REPORT_FILE=""               # Path to current session's report in SESSION_DIR
+SESSION_STATUS="running"             # Updated to 'completed' or 'aborted' on exit
+SESSION_REPORT_WRITTEN=0             # Guards against double-write on abort path
+ROLLBACK_SESSION_ID=""               # Session ID to roll back (set by --rollback)
+LIST_SESSIONS_MODE=0                 # Set by --list-sessions
 
 # Colors (disabled if not a tty)
 if [[ -t 1 ]]; then
-    C_RED=$'\033[0;31m'; C_GRN=$'\033[0;32m'; C_YEL=$'\033[0;33m'
-    C_BLU=$'\033[0;34m'; C_CYN=$'\033[0;36m'; C_BLD=$'\033[1m'; C_RST=$'\033[0m'
+	C_RED=$'\033[0;31m'
+	C_GRN=$'\033[0;32m'
+	C_YEL=$'\033[0;33m'
+	C_BLU=$'\033[0;34m'
+	C_CYN=$'\033[0;36m'
+	C_BLD=$'\033[1m'
+	C_RST=$'\033[0m'
 else
-    C_RED=""; C_GRN=""; C_YEL=""; C_BLU=""; C_CYN=""; C_BLD=""; C_RST=""
+	C_RED=""
+	C_GRN=""
+	C_YEL=""
+	C_BLU=""
+	C_CYN=""
+	C_BLD=""
+	C_RST=""
 fi
 
 # draw_banner() - Render startup banner for improved terminal readability.
 # Uses concise host/date metadata so long runs are easier to track at a glance.
 draw_banner() {
-    printf '\n%s╔══════════════════════════════════════════════════════════════╗%s\n' "$C_CYN" "$C_RST"
-    printf '%s║%s Fedora Hardening Orchestrator                              %s║%s\n' "$C_CYN" "$C_BLD" "$C_CYN" "$C_RST"
-    local who
-    who="${SUDO_USER:-${USER:-root}}"
-    printf '%s║%s %s@%s  %s                                        %s║%s\n' \
-        "$C_CYN" "$C_RST" "$who" "$HOST_LABEL" "$RUN_STAMP_HUMAN" "$C_CYN" "$C_RST"
-    printf '%s╚══════════════════════════════════════════════════════════════╝%s\n' "$C_CYN" "$C_RST"
+	printf '\n%s╔══════════════════════════════════════════════════════════════╗%s\n' "$C_CYN" "$C_RST"
+	printf '%s║%s Fedora Hardening Orchestrator                              %s║%s\n' "$C_CYN" "$C_BLD" "$C_CYN" "$C_RST"
+	local who
+	who="${SUDO_USER:-${USER:-root}}"
+	printf '%s║%s %s@%s  %s                                        %s║%s\n' \
+		"$C_CYN" "$C_RST" "$who" "$HOST_LABEL" "$RUN_STAMP_HUMAN" "$C_CYN" "$C_RST"
+	printf '%s╚══════════════════════════════════════════════════════════════╝%s\n' "$C_CYN" "$C_RST"
 }
 
 # progress_bar() - Build a fixed-width textual progress bar.
 # Usage: progress_bar <current> <total> [width]
 progress_bar() {
-    local current="$1" total="$2" width="${3:-28}"
-    (( total <= 0 )) && total=1
-    (( current < 0 )) && current=0
-    (( current > total )) && current=total
-    local filled=$(( current * width / total ))
-    local empty=$(( width - filled ))
-    printf '['
-    printf '%*s' "$filled" '' | tr ' ' '#'
-    printf '%*s' "$empty" '' | tr ' ' '-'
-    printf ']'
+	local current="$1" total="$2" width="${3:-28}"
+	((total <= 0)) && total=1
+	((current < 0)) && current=0
+	((current > total)) && current=total
+	local filled=$((current * width / total))
+	local empty=$((width - filled))
+	printf '['
+	printf '%*s' "$filled" '' | tr ' ' '#'
+	printf '%*s' "$empty" '' | tr ' ' '-'
+	printf ']'
 }
 
 # setup_ui_mode() - Configure GUI prompt mode if requested and available.
 # Prefers kdialog on KDE systems, then zenity, otherwise falls back to TTY prompts.
 setup_ui_mode() {
-    local has_display=0
-    local prefers_kde=0
-    [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] && has_display=1
-    [[ "${XDG_CURRENT_DESKTOP:-}${DESKTOP_SESSION:-}" =~ [Kk][Dd][Ee]|[Pp]lasma ]] && prefers_kde=1
+	local has_display=0
+	local prefers_kde=0
+	[[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] && has_display=1
+	[[ "${XDG_CURRENT_DESKTOP:-}${DESKTOP_SESSION:-}" =~ ([Kk][Dd][Ee]|[Pp]lasma) ]] && prefers_kde=1
 
-    # If GUI mode is requested, try to satisfy missing GUI dialog dependencies.
-    if (( has_display && (FORCE_GUI || FORCE_GUI_FULL) )); then
-        if (( prefers_kde )); then
-            cmd_exists kdialog || ensure_command_dep kdialog "GUI dialog mode" kdialog
-        fi
-        if ! cmd_exists kdialog; then
-            cmd_exists zenity || ensure_command_dep zenity "GUI dialog fallback" zenity
-        fi
-    fi
+	# If GUI mode is requested, try to satisfy missing GUI dialog dependencies.
+	if ((has_display && (FORCE_GUI || FORCE_GUI_FULL))); then
+		if ((prefers_kde)); then
+			cmd_exists kdialog || ensure_command_dep kdialog "GUI dialog mode" kdialog
+		fi
+		if ! cmd_exists kdialog; then
+			cmd_exists zenity || ensure_command_dep zenity "GUI dialog fallback" zenity
+		fi
+	fi
 
-    if (( has_display )) && cmd_exists kdialog; then
-        GUI_TOOL="kdialog"
-    elif (( has_display )) && cmd_exists zenity; then
-        GUI_TOOL="zenity"
-    fi
+	if ((has_display)) && cmd_exists kdialog; then
+		GUI_TOOL="kdialog"
+	elif ((has_display)) && cmd_exists zenity; then
+		GUI_TOOL="zenity"
+	fi
 
-    if (( FORCE_GUI )); then
-        if [[ -n "$GUI_TOOL" ]]; then
-            GUI_MODE=1
-            info "GUI mode enabled using $GUI_TOOL dialogs."
-        else
-            GUI_MODE=0
-            warn "--gui requested, but no supported GUI dialog tool was found. Falling back to terminal prompts."
-            warn "Install 'kdialog' (KDE) or 'zenity' (GTK) to use GUI prompts."
-        fi
-    fi
+	if ((FORCE_GUI)); then
+		if [[ -n "$GUI_TOOL" ]]; then
+			GUI_MODE=1
+			info "GUI mode enabled using $GUI_TOOL dialogs."
+		else
+			GUI_MODE=0
+			warn "--gui requested, but no supported GUI dialog tool was found. Falling back to terminal prompts."
+			warn "Install 'kdialog' (KDE) or 'zenity' (GTK) to use GUI prompts."
+		fi
+	fi
 
-    if (( FORCE_GUI_FULL )); then
-        FORCE_GUI=1
-        if [[ -n "$GUI_TOOL" ]]; then
-            if [[ "$GUI_TOOL" == "kdialog" ]]; then
-                cmd_exists qdbus || ensure_command_dep qdbus "kdialog full progress mode" qt6-qttools qt5-qttools
-            fi
-            GUI_MODE=1
-            GUI_FULL_MODE=1
-            info "Full GUI frontend enabled using $GUI_TOOL."
-        else
-            GUI_MODE=0
-            GUI_FULL_MODE=0
-            warn "--gui-full requested, but no supported GUI dialog tool was found. Falling back to terminal output."
-            warn "Install 'kdialog' or 'zenity' and rerun with --gui-full."
-        fi
-    fi
+	if ((FORCE_GUI_FULL)); then
+		FORCE_GUI=1
+		if [[ -n "$GUI_TOOL" ]]; then
+			if [[ "$GUI_TOOL" == "kdialog" ]]; then
+				cmd_exists qdbus || ensure_command_dep qdbus "kdialog full progress mode" qt6-qttools qt5-qttools
+			fi
+			GUI_MODE=1
+			GUI_FULL_MODE=1
+			info "Full GUI frontend enabled using $GUI_TOOL."
+		else
+			GUI_MODE=0
+			GUI_FULL_MODE=0
+			warn "--gui-full requested, but no supported GUI dialog tool was found. Falling back to terminal output."
+			warn "Install 'kdialog' or 'zenity' and rerun with --gui-full."
+		fi
+	fi
 }
 
 # calc_section_total() - Estimate number of sections that will run for progress display.
 # Uses current --only/--skip filters against the fixed execution plan.
 calc_section_total() {
-    local planned=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 12 19 20 8)
-    local s n=0
-    for s in "${planned[@]}"; do
-        [[ -n "$ONLY_LIST" ]] && ! in_list "$s" "$ONLY_LIST" && continue
-        [[ -n "$SKIP_LIST" ]] && in_list "$s" "$SKIP_LIST" && continue
-        (( ++n ))
-    done
-    (( n > 0 )) && UI_SECTION_TOTAL="$n" || UI_SECTION_TOTAL="${#planned[@]}"
-    UI_SECTION_DONE=0
+	local planned=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 12 19 20 8)
+	local s n=0
+	for s in "${planned[@]}"; do
+		[[ -n "$ONLY_LIST" ]] && ! in_list "$s" "$ONLY_LIST" && continue
+		[[ -n "$SKIP_LIST" ]] && in_list "$s" "$SKIP_LIST" && continue
+		((++n))
+	done
+	((n > 0)) && UI_SECTION_TOTAL="$n" || UI_SECTION_TOTAL="${#planned[@]}"
+	UI_SECTION_DONE=0
 }
 
 # gui_alert() - Show concise GUI notifications for summary and fatal errors.
 # Usage: gui_alert <info|warning|error> <message>
 gui_alert() {
-    local level="$1" message="$2"
-    (( GUI_MODE )) || return 0
-    case "$GUI_TOOL" in
-        kdialog)
-            case "$level" in
-                info) kdialog --title "$SCRIPT_NAME" --msgbox "$message" ;;
-                warning) kdialog --title "$SCRIPT_NAME" --sorry "$message" ;;
-                error) kdialog --title "$SCRIPT_NAME" --error "$message" ;;
-            esac
-            ;;
-        zenity)
-            case "$level" in
-                info) zenity --info --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
-                warning) zenity --warning --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
-                error) zenity --error --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
-            esac
-            ;;
-    esac
+	local level="$1" message="$2"
+	((GUI_MODE)) || return 0
+	case "$GUI_TOOL" in
+	kdialog)
+		case "$level" in
+		info) kdialog --title "$SCRIPT_NAME" --msgbox "$message" ;;
+		warning) kdialog --title "$SCRIPT_NAME" --sorry "$message" ;;
+		error) kdialog --title "$SCRIPT_NAME" --error "$message" ;;
+		esac
+		;;
+	zenity)
+		case "$level" in
+		info) zenity --info --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
+		warning) zenity --warning --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
+		error) zenity --error --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
+		esac
+		;;
+	esac
 }
 
 # prompt_input() - Request free-form input from user in GUI or terminal mode.
 # Usage: prompt_input <prompt> [default_value]
 prompt_input() {
-    local prompt="$1" default_value="${2:-}" value=""
+	local prompt="$1" default_value="${2:-}" value=""
 
-    if (( GUI_MODE )); then
-        case "$GUI_TOOL" in
-            kdialog)
-                value="$(kdialog --title "$SCRIPT_NAME" --inputbox "$prompt" "$default_value" 2>/dev/null || true)"
-                ;;
-            zenity)
-                value="$(zenity --entry --title="$SCRIPT_NAME" --text="$prompt" --entry-text="$default_value" --width=520 2>/dev/null || true)"
-                ;;
-        esac
-    else
-        read -r -p "$(printf '%s[??]%s  %s ' "$C_YEL" "$C_RST" "$prompt")" value || true
-    fi
+	if ((GUI_MODE)); then
+		case "$GUI_TOOL" in
+		kdialog)
+			value="$(kdialog --title "$SCRIPT_NAME" --inputbox "$prompt" "$default_value" 2>/dev/null || true)"
+			;;
+		zenity)
+			value="$(zenity --entry --title="$SCRIPT_NAME" --text="$prompt" --entry-text="$default_value" --width=520 2>/dev/null || true)"
+			;;
+		esac
+	else
+		read -r -p "$(printf '%s[??]%s  %s ' "$C_YEL" "$C_RST" "$prompt")" value || true
+	fi
 
-    printf '%s' "$value"
+	printf '%s' "$value"
 }
 
 # gui_progress_start() - Start full-GUI progress stream with minimal I/O overhead.
 gui_progress_start() {
-    (( GUI_FULL_MODE )) || return 0
+	((GUI_FULL_MODE)) || return 0
 
-    case "$GUI_TOOL" in
-        kdialog)
-            if cmd_exists qdbus; then
-                GUI_PROGRESS_REF="$(kdialog --title "$SCRIPT_NAME" --progressbar "Initializing hardening..." "$UI_SECTION_TOTAL")"
-                if [[ -n "$GUI_PROGRESS_REF" ]]; then
-                    qdbus "$GUI_PROGRESS_REF" showCancelButton true >/dev/null 2>&1 || true
-                    qdbus "$GUI_PROGRESS_REF" setLabelText "Preparing section execution..." >/dev/null 2>&1 || true
-                    qdbus "$GUI_PROGRESS_REF" Set "" value 0 >/dev/null 2>&1 || true
-                fi
-            else
-                warn "qdbus not found; kdialog progress updates are limited."
-            fi
-            ;;
-        zenity)
-            coproc GUI_ZENITY_PROGRESS {
-                zenity --progress \
-                    --title="$SCRIPT_NAME" \
-                    --text="Preparing section execution..." \
-                    --percentage=0 \
-                    --auto-close \
-                    --width=640
-            }
-            GUI_PROGRESS_PIPE_FD="${GUI_ZENITY_PROGRESS[1]:-}"
-            GUI_PROGRESS_PID="$COPROC_PID"
-            ;;
-    esac
+	case "$GUI_TOOL" in
+	kdialog)
+		if cmd_exists qdbus; then
+			GUI_PROGRESS_REF="$(kdialog --title "$SCRIPT_NAME" --progressbar "Initializing hardening..." "$UI_SECTION_TOTAL")"
+			if [[ -n "$GUI_PROGRESS_REF" ]]; then
+				qdbus "$GUI_PROGRESS_REF" showCancelButton true >/dev/null 2>&1 || true
+				qdbus "$GUI_PROGRESS_REF" setLabelText "Preparing section execution..." >/dev/null 2>&1 || true
+				qdbus "$GUI_PROGRESS_REF" Set "" value 0 >/dev/null 2>&1 || true
+			fi
+		else
+			warn "qdbus not found; kdialog progress updates are limited."
+		fi
+		;;
+	zenity)
+		coproc GUI_ZENITY_PROGRESS {
+			zenity --progress \
+				--title="$SCRIPT_NAME" \
+				--text="Preparing section execution..." \
+				--percentage=0 \
+				--auto-close \
+				--width=640
+		}
+		GUI_PROGRESS_PIPE_FD="${GUI_ZENITY_PROGRESS[1]:-}"
+		GUI_PROGRESS_PID="$COPROC_PID"
+		;;
+	esac
 }
 
 # gui_progress_update() - Stream progress updates directly to GUI widgets.
 # Usage: gui_progress_update <current> <total> <message>
 gui_progress_update() {
-    local current="$1" total="$2" message="$3"
-    (( GUI_FULL_MODE )) || return 0
-    (( total <= 0 )) && total=1
-    (( current < 0 )) && current=0
-    (( current > total )) && current=total
-    local pct=$(( current * 100 / total ))
-    GUI_LAST_STATUS="$message"
+	local current="$1" total="$2" message="$3"
+	((GUI_FULL_MODE)) || return 0
+	((total <= 0)) && total=1
+	((current < 0)) && current=0
+	((current > total)) && current=total
+	local pct=$((current * 100 / total))
+	GUI_LAST_STATUS="$message"
 
-    case "$GUI_TOOL" in
-        kdialog)
-            [[ -n "$GUI_PROGRESS_REF" ]] || return 0
-            if cmd_exists qdbus && [[ "$(qdbus "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
-                GUI_CANCEL_REQUESTED=1
-                return 0
-            fi
-            qdbus "$GUI_PROGRESS_REF" Set "" value "$current" >/dev/null 2>&1 || true
-            qdbus "$GUI_PROGRESS_REF" setLabelText "$message" >/dev/null 2>&1 || true
-            ;;
-        zenity)
-            [[ -n "$GUI_PROGRESS_PIPE_FD" ]] || return 0
-            if ! printf '%s\n# %s\n' "$pct" "$message" 1>&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null; then
-                GUI_CANCEL_REQUESTED=1
-            fi
-            ;;
-    esac
+	case "$GUI_TOOL" in
+	kdialog)
+		[[ -n "$GUI_PROGRESS_REF" ]] || return 0
+		if cmd_exists qdbus && [[ "$(qdbus "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
+			GUI_CANCEL_REQUESTED=1
+			return 0
+		fi
+		qdbus "$GUI_PROGRESS_REF" Set "" value "$current" >/dev/null 2>&1 || true
+		qdbus "$GUI_PROGRESS_REF" setLabelText "$message" >/dev/null 2>&1 || true
+		;;
+	zenity)
+		[[ -n "$GUI_PROGRESS_PIPE_FD" ]] || return 0
+		if ! printf '%s\n# %s\n' "$pct" "$message" 1>&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null; then
+			GUI_CANCEL_REQUESTED=1
+		fi
+		;;
+	esac
 }
 
 # gui_progress_close() - Gracefully close full-GUI progress resources.
 gui_progress_close() {
-    (( GUI_FULL_MODE )) || return 0
+	((GUI_FULL_MODE)) || return 0
 
-    case "$GUI_TOOL" in
-        kdialog)
-            if [[ -n "$GUI_PROGRESS_REF" ]]; then
-                qdbus "$GUI_PROGRESS_REF" close >/dev/null 2>&1 || true
-                GUI_PROGRESS_REF=""
-            fi
-            ;;
-        zenity)
-            if [[ -n "$GUI_PROGRESS_PIPE_FD" ]]; then
-                exec {GUI_PROGRESS_PIPE_FD}>&- || true
-                GUI_PROGRESS_PIPE_FD=""
-            fi
-            if [[ -n "$GUI_PROGRESS_PID" ]]; then
-                wait "$GUI_PROGRESS_PID" 2>/dev/null || true
-                GUI_PROGRESS_PID=""
-            fi
-            ;;
-    esac
+	case "$GUI_TOOL" in
+	kdialog)
+		if [[ -n "$GUI_PROGRESS_REF" ]]; then
+			qdbus "$GUI_PROGRESS_REF" close >/dev/null 2>&1 || true
+			GUI_PROGRESS_REF=""
+		fi
+		;;
+	zenity)
+		if [[ -n "$GUI_PROGRESS_PIPE_FD" ]]; then
+			exec {GUI_PROGRESS_PIPE_FD}>&- || true
+			GUI_PROGRESS_PIPE_FD=""
+		fi
+		if [[ -n "$GUI_PROGRESS_PID" ]]; then
+			wait "$GUI_PROGRESS_PID" 2>/dev/null || true
+			GUI_PROGRESS_PID=""
+		fi
+		;;
+	esac
 }
 
 # gui_status_event() - Route status messages to GUI widgets without file polling.
 # Usage: gui_status_event <info|ok|warning|error> <message>
 gui_status_event() {
-    local level="$1" message="$2"
-    (( GUI_FULL_MODE )) || return 0
+	local level="$1" message="$2"
+	((GUI_FULL_MODE)) || return 0
 
-    case "$level" in
-        info|ok)
-            gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-            ;;
-        warning)
-            gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-            gui_alert warning "$message"
-            ;;
-        error)
-            gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-            gui_alert error "$message"
-            ;;
-    esac
+	case "$level" in
+	info | ok)
+		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
+		;;
+	warning)
+		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
+		gui_alert warning "$message"
+		;;
+	error)
+		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
+		gui_alert error "$message"
+		;;
+	esac
 }
 
 # gui_check_cancel() - Poll for GUI cancel requests across supported frontends.
 gui_check_cancel() {
-    (( GUI_FULL_MODE )) || return 1
-    (( GUI_CANCEL_REQUESTED )) && return 0
+	((GUI_FULL_MODE)) || return 1
+	((GUI_CANCEL_REQUESTED)) && return 0
 
-    case "$GUI_TOOL" in
-        kdialog)
-            if cmd_exists qdbus && [[ -n "$GUI_PROGRESS_REF" ]] && [[ "$(qdbus "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
-                GUI_CANCEL_REQUESTED=1
-                return 0
-            fi
-            ;;
-    esac
-    return 1
+	case "$GUI_TOOL" in
+	kdialog)
+		if cmd_exists qdbus && [[ -n "$GUI_PROGRESS_REF" ]] && [[ "$(qdbus "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
+			GUI_CANCEL_REQUESTED=1
+			return 0
+		fi
+		;;
+	esac
+	return 1
 }
 
 # abort_if_cancelled() - Gracefully terminate when user cancels from GUI frontend.
 # Includes the last status message in the error for context when available.
 abort_if_cancelled() {
-    if gui_check_cancel; then
-        local ctx="${GUI_LAST_STATUS:+ (last: $GUI_LAST_STATUS)}"
-        err "Execution cancelled by user from GUI frontend.${ctx}"
-        exit 130
-    fi
+	if gui_check_cancel; then
+		local ctx="${GUI_LAST_STATUS:+ (last: $GUI_LAST_STATUS)}"
+		err "Execution cancelled by user from GUI frontend.${ctx}"
+		exit 130
+	fi
 }
 
 # ---------- Logging helpers -------------------------------------------------
 # init_log_target() - Ensure log destination exists, with /tmp fallback when needed.
 init_log_target() {
-    (( LOG_READY )) && return 0
+	((LOG_READY)) && return 0
 
-    local d
-    d="${LOG_FILE%/*}"
-    if mkdir -p "$d" 2>/dev/null && : >>"$LOG_FILE" 2>/dev/null; then
-        chmod 640 "$LOG_FILE" 2>/dev/null || true
-        LOG_READY=1
-    else
-        LOG_FILE="/tmp/${SCRIPT_NAME%.*}-${RUN_STAMP}.log"
-        : >>"$LOG_FILE" 2>/dev/null || return 1
-        chmod 640 "$LOG_FILE" 2>/dev/null || true
-        LOG_READY=1
-    fi
-    
-    # Initialize error log with same base directory
-    if (( LOG_READY )); then
-        ERROR_LOG="${LOG_FILE%.log}-errors.log"
-        : >>"$ERROR_LOG" 2>/dev/null || ERROR_LOG="/tmp/$(basename "$LOG_FILE" .log)-errors.log"
-        chmod 640 "$ERROR_LOG" 2>/dev/null || true
-        
-        # Create temp file for capturing stderr from commands
-        ERROR_CAPTURE_FILE="/tmp/fedora-harden-stderr-$$.tmp"
-        register_tmp "$ERROR_CAPTURE_FILE"
-    fi
-    return 0
+	local d
+	d="${LOG_FILE%/*}"
+	if mkdir -p "$d" 2>/dev/null && : >>"$LOG_FILE" 2>/dev/null; then
+		chmod 640 "$LOG_FILE" 2>/dev/null || true
+		LOG_READY=1
+	else
+		LOG_FILE="/tmp/${SCRIPT_NAME%.*}-${RUN_STAMP}.log"
+		: >>"$LOG_FILE" 2>/dev/null || return 1
+		chmod 640 "$LOG_FILE" 2>/dev/null || true
+		LOG_READY=1
+	fi
+
+	# Initialize error log with same base directory
+	if ((LOG_READY)); then
+		ERROR_LOG="${LOG_FILE%.log}-errors.log"
+		: >>"$ERROR_LOG" 2>/dev/null || ERROR_LOG="/tmp/$(basename "$LOG_FILE" .log)-errors.log"
+		chmod 640 "$ERROR_LOG" 2>/dev/null || true
+
+		# Create temp file for capturing stderr from commands
+		ERROR_CAPTURE_FILE="/tmp/fedora-harden-stderr-$$.tmp"
+		register_tmp "$ERROR_CAPTURE_FILE"
+	fi
+	return 0
 }
 
 # log() - Write timestamped message to persistent log file for audit trail.
 # All log entries are appended with date/time for complete audit history.
 # Usage: log "message text"
 log() {
-    init_log_target || return 0
-    local ts
-    printf -v ts '%(%F %T)T' -1 2>/dev/null || ts="$(date '+%F %T')"
-    printf '%s %s\n' "$ts" "$*" >> "$LOG_FILE" 2>/dev/null || true
+	init_log_target || return 0
+	local ts
+	printf -v ts '%(%F %T)T' -1 2>/dev/null || ts="$(date '+%F %T')"
+	printf '%s %s\n' "$ts" "$*" >>"$LOG_FILE" 2>/dev/null || true
 }
 
 # info() - Write informational message to stdout and log (blue color).
 # Used for status updates and intermediate steps.
 # Usage: info "message text"
 info() {
-    (( ! GUI_FULL_MODE )) && printf '%s[INFO]%s  %s\n' "$C_BLU" "$C_RST" "$*"
-    log "[INFO]  $*"
-    gui_status_event info "$*"
+	((!GUI_FULL_MODE)) && printf '%s[INFO]%s  %s\n' "$C_BLU" "$C_RST" "$*"
+	log "[INFO]  $*"
+	gui_status_event info "$*"
 }
 
 # ok() - Write success message to stdout and log (green color).
 # Indicates successful completion of a task or verification.
 # Usage: ok "message text"
 ok() {
-    (( ! GUI_FULL_MODE )) && printf '%s[ OK ]%s  %s\n' "$C_GRN" "$C_RST" "$*"
-    log "[OK]    $*"
-    gui_status_event ok "$*"
+	((!GUI_FULL_MODE)) && printf '%s[ OK ]%s  %s\n' "$C_GRN" "$C_RST" "$*"
+	log "[OK]    $*"
+	gui_status_event ok "$*"
 }
 
 # warn() - Write warning message to stdout and log (yellow color).
 # Alerts about non-critical issues, skipped steps, or prerequisites.
 # Usage: warn "message text"
 warn() {
-    (( ! GUI_FULL_MODE )) && printf '%s[WARN]%s  %s\n' "$C_YEL" "$C_RST" "$*"
-    log "[WARN]  $*"
-    gui_status_event warning "$*"
+	((!GUI_FULL_MODE)) && printf '%s[WARN]%s  %s\n' "$C_YEL" "$C_RST" "$*"
+	log "[WARN]  $*"
+	gui_status_event warning "$*"
 }
 
 # err() - Write error message to stderr and log (red color).
 # Indicates a problem that may prevent further execution.
 # Usage: err "message text"
 err() {
-    (( ! GUI_FULL_MODE )) && printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2
-    log "[ERROR] $*"
-    gui_status_event error "$*"
+	((!GUI_FULL_MODE)) && printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2
+	log "[ERROR] $*"
+	gui_status_event error "$*"
 }
 
 # capture_error_context() - Log detailed error information including command, exit code, and stderr.
@@ -570,52 +588,53 @@ err() {
 # Called by trap_err and soft-fail handlers to capture full error context.
 # Usage: capture_error_context <line> <cmd> <exit_code> [stderr_file]
 capture_error_context() {
-    local line="$1" cmd="$2" ec="$3" stderr_file="${4:-}"
-    local ts stderr_content
-    
-    init_log_target || return 0
-    ts=$(date '+%F %T') || ts="(date failed)"
-    
-    # Read stderr if captured in file
-    if [[ -n "$stderr_file" && -f "$stderr_file" ]]; then
-        stderr_content=$(<"$stderr_file")
-        stderr_content="${stderr_content//\"/\\\"}"  # Escape quotes
-        stderr_content="${stderr_content//$'\n'/ | }"  # Replace newlines with |
-    else
-        stderr_content="(no stderr captured)"
-    fi
-    
-    # Store as: "line|cmd|exit_code|stderr|timestamp"
-    ERROR_DETAILS+=("${line}|${cmd}|${ec}|${stderr_content}|${ts}")
-    
-    # Write to structured error log
-    {
-        printf '{"timestamp":"%s","line":%d,"exit_code":%d,"command":"%s","stderr":"%s"}\n' \
-            "$ts" "$line" "$ec" "${cmd//\"/\\\"}" "$stderr_content"
-    } >> "$ERROR_LOG" 2>/dev/null || true
-    
-    log "[DEBUG] Error at line $line: cmd='$cmd' exit=$ec"
+	local line="$1" cmd="$2" ec="$3" stderr_file="${4:-}"
+	local ts stderr_content
+
+	init_log_target || return 0
+	ts=$(date '+%F %T') || ts="(date failed)"
+
+	# Read stderr if captured in file
+	if [[ -n "$stderr_file" && -f "$stderr_file" ]]; then
+		stderr_content=$(<"$stderr_file")
+		stderr_content="${stderr_content//\"/\\\"}"   # Escape quotes
+		stderr_content="${stderr_content//$'\n'/ | }" # Replace newlines with |
+	else
+		stderr_content="(no stderr captured)"
+	fi
+
+	# Store as: "line|cmd|exit_code|stderr|timestamp"
+	ERROR_DETAILS+=("${line}|${cmd}|${ec}|${stderr_content}|${ts}")
+
+	# Write to structured error log
+	{
+		printf '{"timestamp":"%s","line":%d,"exit_code":%d,"command":"%s","stderr":"%s"}\n' \
+			"$ts" "$line" "$ec" "${cmd//\"/\\\"}" "$stderr_content"
+	} >>"$ERROR_LOG" 2>/dev/null || true
+
+	log "[DEBUG] Error at line $line: cmd='$cmd' exit=$ec"
 }
 
 # section() - Print formatted section header with visual divider and log entry.
 # Displays section number and title with colored borders for visual clarity.
 # All section headers are logged for audit trail with timestamps.
 # Usage: section <number> <title...>
-section(){
-    abort_if_cancelled
-    local n="$1"; shift
-    (( ++UI_SECTION_DONE ))
-    local pct=$(( UI_SECTION_DONE * 100 / UI_SECTION_TOTAL ))
-    local pb
-    pb="$(progress_bar "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" 28)"
-    if (( ! GUI_FULL_MODE )); then
-        printf '\n%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
-        printf '%s Section %s: %s%s\n' "$C_BLD" "$n" "$*" "$C_RST"
-        printf '%s Progress:%s %s %d/%d (%d%%)\n' "$C_BLU" "$C_RST" "$pb" "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$pct"
-        printf '%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
-    fi
-    gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "Section $n: $*"
-    log "==== Section $n: $* ===="
+section() {
+	abort_if_cancelled
+	local n="$1"
+	shift
+	((++UI_SECTION_DONE))
+	local pct=$((UI_SECTION_DONE * 100 / UI_SECTION_TOTAL))
+	local pb
+	pb="$(progress_bar "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" 28)"
+	if ((!GUI_FULL_MODE)); then
+		printf '\n%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
+		printf '%s Section %s: %s%s\n' "$C_BLD" "$n" "$*" "$C_RST"
+		printf '%s Progress:%s %s %d/%d (%d%%)\n' "$C_BLU" "$C_RST" "$pb" "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$pct"
+		printf '%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
+	fi
+	gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "Section $n: $*"
+	log "==== Section $n: $* ===="
 }
 
 # run() - Execute shell command or simulate execution in --dry-run mode.
@@ -624,71 +643,71 @@ section(){
 # Captures stderr from failed commands for later error analysis and remediation.
 # Usage: run "command" "with" "args"
 run() {
-    abort_if_cancelled
-    LAST_RUN_CMD="$*"
-    if (( DRY_RUN )); then
-        (( ! GUI_FULL_MODE )) && printf '%s[DRY ]%s  %s\n' "$C_YEL" "$C_RST" "$*"
-        (( GUI_FULL_MODE )) && gui_status_event info "DRY RUN: $*"
-        log "[DRY]   $*"
-        return 0
-    fi
-    log "[RUN]   $*"
-    local rc=0
-    if (( GUI_FULL_MODE )); then
-        : >"$ERROR_CAPTURE_FILE" 2>/dev/null || true
-        # shellcheck disable=SC2294
-        eval "$@" >>"$LOG_FILE" 2>>"$ERROR_CAPTURE_FILE" || rc=$?
-    else
-        # Capture stderr for error analysis
-        : >"$ERROR_CAPTURE_FILE" 2>/dev/null || true
-        # shellcheck disable=SC2294
-        eval "$@" 2>>"$ERROR_CAPTURE_FILE" || rc=$?
-    fi
-    # Log stderr if command failed (applies to GUI and non-GUI modes).
-    if (( rc != 0 )) && [[ -f "$ERROR_CAPTURE_FILE" && -s "$ERROR_CAPTURE_FILE" ]]; then
-        log "[STDERR] $*"
-        local line
-        while IFS= read -r line; do
-            log "[STDERR]   $line"
-        done <"$ERROR_CAPTURE_FILE"
-        capture_error_context "${BASH_LINENO[0]}" "$*" "$rc" "$ERROR_CAPTURE_FILE"
-    fi
-    # Record service enable/disable transitions for rollback journal.
-    if (( rc == 0 )); then
-        local _cmd_str="$*"
-        if [[ "$_cmd_str" =~ ^[[:space:]]*systemctl[[:space:]]+(enable|disable)[[:space:]] ]]; then
-            local _sctl_op="${BASH_REMATCH[1]}"
-            local _sctl_rest="${_cmd_str#*systemctl }"
-            _sctl_rest="${_sctl_rest#enable }"
-            _sctl_rest="${_sctl_rest#disable }"
-            _sctl_rest="${_sctl_rest#--now }"
-            local _sctl_unit="${_sctl_rest%% *}"
-            _sctl_unit="${_sctl_unit%%||*}"
-            _sctl_unit="${_sctl_unit%%&*}"
-            [[ -n "$_sctl_unit" && "$_sctl_unit" != '--'* ]] && \
-                record_change "SERVICE_${_sctl_op^^}" "$_sctl_unit"
-        fi
-    fi
-    return "$rc"
+	abort_if_cancelled
+	LAST_RUN_CMD="$*"
+	if ((DRY_RUN)); then
+		((!GUI_FULL_MODE)) && printf '%s[DRY ]%s  %s\n' "$C_YEL" "$C_RST" "$*"
+		((GUI_FULL_MODE)) && gui_status_event info "DRY RUN: $*"
+		log "[DRY]   $*"
+		return 0
+	fi
+	log "[RUN]   $*"
+	local rc=0
+	if ((GUI_FULL_MODE)); then
+		: >"$ERROR_CAPTURE_FILE" 2>/dev/null || true
+		# shellcheck disable=SC2294
+		eval "$@" >>"$LOG_FILE" 2>>"$ERROR_CAPTURE_FILE" || rc=$?
+	else
+		# Capture stderr for error analysis
+		: >"$ERROR_CAPTURE_FILE" 2>/dev/null || true
+		# shellcheck disable=SC2294
+		eval "$@" 2>>"$ERROR_CAPTURE_FILE" || rc=$?
+	fi
+	# Log stderr if command failed (applies to GUI and non-GUI modes).
+	if ((rc != 0)) && [[ -f "$ERROR_CAPTURE_FILE" && -s "$ERROR_CAPTURE_FILE" ]]; then
+		log "[STDERR] $*"
+		local line
+		while IFS= read -r line; do
+			log "[STDERR]   $line"
+		done <"$ERROR_CAPTURE_FILE"
+		capture_error_context "${BASH_LINENO[0]}" "$*" "$rc" "$ERROR_CAPTURE_FILE"
+	fi
+	# Record service enable/disable transitions for rollback journal.
+	if ((rc == 0)); then
+		local _cmd_str="$*"
+		if [[ "$_cmd_str" =~ ^[[:space:]]*systemctl[[:space:]]+(enable|disable)[[:space:]] ]]; then
+			local _sctl_op="${BASH_REMATCH[1]}"
+			local _sctl_rest="${_cmd_str#*systemctl }"
+			_sctl_rest="${_sctl_rest#enable }"
+			_sctl_rest="${_sctl_rest#disable }"
+			_sctl_rest="${_sctl_rest#--now }"
+			local _sctl_unit="${_sctl_rest%% *}"
+			_sctl_unit="${_sctl_unit%%||*}"
+			_sctl_unit="${_sctl_unit%%&*}"
+			[[ -n "$_sctl_unit" && "$_sctl_unit" != '--'* ]] &&
+				record_change "SERVICE_${_sctl_op^^}" "$_sctl_unit"
+		fi
+	fi
+	return "$rc"
 }
 
 # have_cmd() - Check if a command exists in PATH.
 # Returns 0 (success) if command is available, 1 (failure) otherwise.
 # Usage: have_cmd <command_name>
 have_cmd() {
-    command -v "$1" >/dev/null 2>&1
+	command -v "$1" >/dev/null 2>&1
 }
 
 # pkg_upgrade() - Upgrade system packages using appropriate mechanism for platform.
 # On immutable systems (rpm-ostree), changes are staged for next reboot.
 # On mutable systems, updates are applied immediately via dnf.
 pkg_upgrade() {
-    if (( IS_OSTREE )); then
-        run "rpm-ostree upgrade"
-        warn "rpm-ostree upgrades are applied on reboot. Reboot when this script completes."
-    else
-        run "dnf upgrade --refresh -y"
-    fi
+	if ((IS_OSTREE)); then
+		run "rpm-ostree upgrade"
+		warn "rpm-ostree upgrades are applied on reboot. Reboot when this script completes."
+	else
+		run "dnf upgrade --refresh -y"
+	fi
 }
 
 # _load_ostree_staged_packages() - Populate _PKG_PENDING_CACHE from the live rpm-ostree
@@ -697,21 +716,21 @@ pkg_upgrade() {
 # but the system has not yet been rebooted.
 _OSTREE_STAGED_LOADED=0
 _load_ostree_staged_packages() {
-    (( _OSTREE_STAGED_LOADED )) && return 0
-    (( IS_OSTREE )) || return 0
-    _OSTREE_STAGED_LOADED=1
-    local pkg
-    # Parse LayeredPackages tokens in one awk pass to avoid extra sed/tr/grep forks.
-    while IFS= read -r pkg; do
-        [[ -n "$pkg" ]] && _PKG_PENDING_CACHE[$pkg]=1
-    done < <(
-        local out rc=0
-        out=$(rpm-ostree status 2>&1) || rc=$?
-        if (( rc != 0 )); then
-            warn "Failed to query rpm-ostree staged packages"
-            return 1
-        fi
-        echo "$out" | awk '
+	((_OSTREE_STAGED_LOADED)) && return 0
+	((IS_OSTREE)) || return 0
+	_OSTREE_STAGED_LOADED=1
+	local pkg
+	# Parse LayeredPackages tokens in one awk pass to avoid extra sed/tr/grep forks.
+	while IFS= read -r pkg; do
+		[[ -n "$pkg" ]] && _PKG_PENDING_CACHE[$pkg]=1
+	done < <(
+		local out rc=0
+		out=$(rpm-ostree status 2>&1) || rc=$?
+		if ((rc != 0)); then
+			warn "Failed to query rpm-ostree staged packages"
+			return 1
+		fi
+		echo "$out" | awk '
             /LayeredPackages:/ {
                 sub(/.*LayeredPackages:[[:space:]]*/, "", $0)
                 for (i=1; i<=NF; i++) {
@@ -719,7 +738,7 @@ _load_ostree_staged_packages() {
                 }
             }
         '
-    )
+	)
 }
 
 # pkg_install() - Install packages via appropriate package manager (skips if already cached).
@@ -731,82 +750,88 @@ _load_ostree_staged_packages() {
 # Honors --dry-run in both mutable and immutable code paths.
 # Usage: pkg_install <package1> [package2] ...
 pkg_install() {
-    local pkgs=("$@") needed=() pkg
-    (( ${#pkgs[@]} == 0 )) && return 0
+	local pkgs=("$@") needed=() pkg
+	((${#pkgs[@]} == 0)) && return 0
 
-    # On rpm-ostree, pre-load staged packages so we don't re-request them.
-    (( IS_OSTREE )) && _load_ostree_staged_packages
+	# On rpm-ostree, pre-load staged packages so we don't re-request them.
+	((IS_OSTREE)) && _load_ostree_staged_packages
 
-    # Filter already-cached/installed packages from install list (caching optimization)
-    for pkg in "${pkgs[@]}"; do
-        # On rpm-ostree, skip packages already queued (this run or a prior pending layer).
-        if (( IS_OSTREE )) && [[ "${_PKG_PENDING_CACHE[$pkg]:-0}" -eq 1 ]]; then
-            info "Package '${pkg}' already in rpm-ostree pending layer — skipping."
-            continue
-        fi
-        pkg_cached "$pkg" || needed+=("$pkg")
-    done
+	# Filter already-cached/installed packages from install list (caching optimization)
+	for pkg in "${pkgs[@]}"; do
+		# On rpm-ostree, skip packages already queued (this run or a prior pending layer).
+		if ((IS_OSTREE)) && [[ "${_PKG_PENDING_CACHE[$pkg]:-0}" -eq 1 ]]; then
+			info "Package '${pkg}' already in rpm-ostree pending layer — skipping."
+			continue
+		fi
+		pkg_cached "$pkg" || needed+=("$pkg")
+	done
 
-    (( ${#needed[@]} == 0 )) && { info "All packages already installed (cached)."; return 0; }
+	((${#needed[@]} == 0)) && {
+		info "All packages already installed (cached)."
+		return 0
+	}
 
-    if (( DRY_RUN )); then
-        if (( IS_OSTREE )); then
-            info "Would run: rpm-ostree install ${needed[*]}"
-        else
-            info "Would run: dnf install -y ${needed[*]}"
-        fi
-        return 0
-    fi
+	if ((DRY_RUN)); then
+		if ((IS_OSTREE)); then
+			info "Would run: rpm-ostree install ${needed[*]}"
+		else
+			info "Would run: dnf install -y ${needed[*]}"
+		fi
+		return 0
+	fi
 
-    if (( IS_OSTREE )); then
-        local out rc
-        log "[RUN]   rpm-ostree install ${needed[*]}"
-        # Capture output and exit code without triggering set -e abort on failure
-        out="$(rpm-ostree install "${needed[@]}" 2>&1)" || rc=$?
-        rc=${rc:-0}
-        [[ -n "${out}" ]] && printf '%s\n' "$out" >>"$LOG_FILE"
+	if ((IS_OSTREE)); then
+		local out rc
+		log "[RUN]   rpm-ostree install ${needed[*]}"
+		# Capture output and exit code without triggering set -e abort on failure
+		out="$(rpm-ostree install "${needed[@]}" 2>&1)" || rc=$?
+		rc=${rc:-0}
+		[[ -n "${out}" ]] && printf '%s\n' "$out" >>"$LOG_FILE"
 
-        if (( rc != 0 )); then
-            # Idempotent rpm-ostree no-op cases should not abort under strict mode.
-            if [[ "$out" =~ already[[:space:]]requested|already[[:space:]]provided|No[[:space:]]packages[[:space:]]in[[:space:]]transaction|is[[:space:]]already[[:space:]]provided ]]; then
-                warn "rpm-ostree reports package(s) already queued/provided; treating as up-to-date."
-            else
-                capture_error_context "${BASH_LINENO[0]:-?}" "rpm-ostree install ${needed[*]}" "$rc" "/dev/null" || true
-                return "$rc"
-            fi
-        fi
+		if ((rc != 0)); then
+			# Idempotent rpm-ostree no-op cases should not abort under strict mode.
+			if [[ "$out" =~ already[[:space:]]requested|already[[:space:]]provided|No[[:space:]]packages[[:space:]]in[[:space:]]transaction|is[[:space:]]already[[:space:]]provided ]]; then
+				warn "rpm-ostree reports package(s) already queued/provided; treating as up-to-date."
+			else
+				capture_error_context "${BASH_LINENO[0]:-?}" "rpm-ostree install ${needed[*]}" "$rc" "/dev/null" || true
+				return "$rc"
+			fi
+		fi
 
-        # Mark requested packages as pending to avoid redundant layering attempts this run.
-        for pkg in "${needed[@]}"; do
-            _PKG_PENDING_CACHE[$pkg]=1
-        done
-        record_change PKG_INSTALL "${needed[*]}"
-        warn "Layered packages are applied on reboot. Reboot when this script completes."
-    else
-        run "dnf install -y ${needed[*]}"
-        # Keep package cache coherent after successful mutable-system installs.
-        for pkg in "${needed[@]}"; do
-            _PKG_CACHE[$pkg]=0
-        done
-        record_change PKG_INSTALL "${needed[*]}"
-        # New binaries may now exist; refresh command cache.
-        unset _CMD_CACHE
-        declare -gA _CMD_CACHE=()
-    fi
+		# Mark requested packages as pending to avoid redundant layering attempts this run.
+		for pkg in "${needed[@]}"; do
+			_PKG_PENDING_CACHE[$pkg]=1
+		done
+		record_change PKG_INSTALL "${needed[*]}"
+		warn "Layered packages are applied on reboot. Reboot when this script completes."
+	else
+		run "dnf install -y ${needed[*]}"
+		# Keep package cache coherent after successful mutable-system installs.
+		for pkg in "${needed[@]}"; do
+			_PKG_CACHE[$pkg]=0
+		done
+		record_change PKG_INSTALL "${needed[*]}"
+		# New binaries may now exist; refresh command cache.
+		unset _CMD_CACHE
+		declare -gA _CMD_CACHE=()
+	fi
 }
 
 # install_dep_candidates() - Best-effort install of dependency package candidates.
 # Attempts each package and continues even if one candidate fails.
 install_dep_candidates() {
-    local pkg attempted=0
-    (( DRY_RUN )) && { info "Would install dependency package(s): $*"; return 0; }
-    for pkg in "$@"; do
-        [[ -z "$pkg" ]] && continue
-        attempted=1
-        pkg_install "$pkg" || true
-    done
-    (( attempted )) && return 0
-    return 1
+	local pkg attempted=0
+	((DRY_RUN)) && {
+		info "Would install dependency package(s): $*"
+		return 0
+	}
+	for pkg in "$@"; do
+		[[ -z "$pkg" ]] && continue
+		attempted=1
+		pkg_install "$pkg" || true
+	done
+	((attempted)) && return 0
+	return 1
 }
 
 # flatpak_install_or_update() - Idempotent Flatpak install/update (never aborts the script).
@@ -821,119 +846,119 @@ install_dep_candidates() {
 # "update available" → no-op update loop on every run.
 # Usage: flatpak_install_or_update <remote> <app-id>
 flatpak_install_or_update() {
-    local remote="$1" app_id="$2"
+	local remote="$1" app_id="$2"
 
-    if (( DRY_RUN )); then
-        info "Would ensure Flatpak ${app_id} from ${remote} is installed and up-to-date."
-        return 0
-    fi
+	if ((DRY_RUN)); then
+		info "Would ensure Flatpak ${app_id} from ${remote} is installed and up-to-date."
+		return 0
+	fi
 
-    if flatpak info "${app_id}" &>/dev/null; then
-        # Resolve the actual origin remote the app was installed from.
-        local origin update_check
-        origin=$(flatpak info --show-origin "${app_id}" 2>/dev/null || true)
-        origin="${origin:-${remote}}"
-        # Delegate the up-to-date check to flatpak's own resolver rather than comparing
-        # raw commit hashes.  The installed object-store commit and remote-metadata commit
-        # use different SHA representations and will never match even when the app is
-        # current, causing an endless "update available" → no-op update loop.
-        # --no-pull checks against the locally cached remote metadata (no download).
-        update_check=$(flatpak update --no-pull -y "${app_id}" 2>&1 || true)
-        if [[ "${update_check}" =~ ([Nn]othing[[:space:]]to[[:space:]]update|[Uu]p[[:space:]]to[[:space:]]date|[Nn]othing[[:space:]]to[[:space:]]do) ]]; then
-            info "Flatpak ${app_id}: already up-to-date (${origin}) — skipping."
-            return 0
-        fi
-        info "Flatpak ${app_id}: update available (${origin}) — updating."
-        flatpak update -y "${app_id}" 2>/dev/null || \
-            warn "Flatpak update of ${app_id} failed — will retry next run."
-        return 0
-    fi
+	if flatpak info "${app_id}" &>/dev/null; then
+		# Resolve the actual origin remote the app was installed from.
+		local origin update_check
+		origin=$(flatpak info --show-origin "${app_id}" 2>/dev/null || true)
+		origin="${origin:-${remote}}"
+		# Delegate the up-to-date check to flatpak's own resolver rather than comparing
+		# raw commit hashes.  The installed object-store commit and remote-metadata commit
+		# use different SHA representations and will never match even when the app is
+		# current, causing an endless "update available" → no-op update loop.
+		# --no-pull checks against the locally cached remote metadata (no download).
+		update_check=$(flatpak update --no-pull -y "${app_id}" 2>&1 || true)
+		if [[ "${update_check}" =~ ([Nn]othing[[:space:]]to[[:space:]]update|[Uu]p[[:space:]]to[[:space:]]date|[Nn]othing[[:space:]]to[[:space:]]do) ]]; then
+			info "Flatpak ${app_id}: already up-to-date (${origin}) — skipping."
+			return 0
+		fi
+		info "Flatpak ${app_id}: update available (${origin}) — updating."
+		flatpak update -y "${app_id}" 2>/dev/null ||
+			warn "Flatpak update of ${app_id} failed — will retry next run."
+		return 0
+	fi
 
-    info "Flatpak ${app_id}: not installed — installing from ${remote}."
-    if ! flatpak install -y "${remote}" "${app_id}" 2>/dev/null; then
-        warn "Flatpak ${app_id} install failed."
-        add_action_item "13" "MEDIUM" \
-            "FLATPAK_INSTALL_FAILED_${app_id//[^a-zA-Z0-9]/_}" \
-            "Flatpak ${app_id} could not be installed automatically — run: flatpak install ${remote} ${app_id}"
-    else
-        record_change FLATPAK_INSTALL "$app_id"
-    fi
+	info "Flatpak ${app_id}: not installed — installing from ${remote}."
+	if ! flatpak install -y "${remote}" "${app_id}" 2>/dev/null; then
+		warn "Flatpak ${app_id} install failed."
+		add_action_item "13" "MEDIUM" \
+			"FLATPAK_INSTALL_FAILED_${app_id//[^a-zA-Z0-9]/_}" \
+			"Flatpak ${app_id} could not be installed automatically — run: flatpak install ${remote} ${app_id}"
+	else
+		record_change FLATPAK_INSTALL "$app_id"
+	fi
 }
 
 # ensure_command_dep() - Ensure command exists, attempting package install if missing.
 # Usage: ensure_command_dep <command> <reason> <pkg1> [pkg2 ...]
 ensure_command_dep() {
-    local cmd="$1" reason="$2"
-    shift 2
-    cmd_exists "$cmd" && return 0
+	local cmd="$1" reason="$2"
+	shift 2
+	cmd_exists "$cmd" && return 0
 
-    warn "Missing dependency '$cmd' required for: $reason"
-    if (( EUID != 0 )); then
-        warn "Cannot auto-install '$cmd' without root privileges."
-        return 1
-    fi
-    (( $# > 0 )) || return 1
+	warn "Missing dependency '$cmd' required for: $reason"
+	if ((EUID != 0)); then
+		warn "Cannot auto-install '$cmd' without root privileges."
+		return 1
+	fi
+	(($# > 0)) || return 1
 
-    local pkg
-    for pkg in "$@"; do
-        info "Attempting to install '$pkg' for missing command '$cmd'..."
-        install_dep_candidates "$pkg"
-        unset "_CMD_CACHE[$cmd]" 2>/dev/null || true
-        if cmd_exists "$cmd"; then
-            ok "Dependency resolved: '$cmd'"
-            return 0
-        fi
-    done
+	local pkg
+	for pkg in "$@"; do
+		info "Attempting to install '$pkg' for missing command '$cmd'..."
+		install_dep_candidates "$pkg"
+		unset "_CMD_CACHE[$cmd]" 2>/dev/null || true
+		if cmd_exists "$cmd"; then
+			ok "Dependency resolved: '$cmd'"
+			return 0
+		fi
+	done
 
-    warn "Dependency '$cmd' is still unavailable after install attempts."
-    return 1
+	warn "Dependency '$cmd' is still unavailable after install attempts."
+	return 1
 }
 
 # download_file() - Download file from URL (with smart tool selection and error handling).
 # Tries curl first (preferred), falls back to wget. Returns 0 on success, 1 on failure.
 # Usage: download_file <url> <destination_path>
 download_file() {
-    local url="$1" dest="$2"
-    local dest_dir="${dest%/*}"
-    
-    # Ensure destination directory exists before attempting download
-    if [[ "$dest_dir" != "$dest" && ! -d "$dest_dir" ]]; then
-        if ! install -d -m 700 "$dest_dir" 2>/dev/null; then
-            err "Cannot create destination directory: $dest_dir"
-            return 1
-        fi
-    fi
-    
-    if ! cmd_exists curl && ! cmd_exists wget; then
-        ensure_command_dep curl "download operations" curl
-        cmd_exists curl || ensure_command_dep wget "download operations fallback" wget
-    fi
-    if cmd_exists curl; then
-        run "curl -fsSL '$url' -o '$dest' 2>/dev/null" && return 0
-    fi
-    if cmd_exists wget; then
-        run "wget -qO '$dest' '$url' 2>/dev/null" && return 0
-    fi
-    err "Neither curl nor wget is available; cannot download $url"
-    return 1
+	local url="$1" dest="$2"
+	local dest_dir="${dest%/*}"
+
+	# Ensure destination directory exists before attempting download
+	if [[ "$dest_dir" != "$dest" && ! -d "$dest_dir" ]]; then
+		if ! install -d -m 700 "$dest_dir" 2>/dev/null; then
+			err "Cannot create destination directory: $dest_dir"
+			return 1
+		fi
+	fi
+
+	if ! cmd_exists curl && ! cmd_exists wget; then
+		ensure_command_dep curl "download operations" curl
+		cmd_exists curl || ensure_command_dep wget "download operations fallback" wget
+	fi
+	if cmd_exists curl; then
+		run "curl -fsSL '$url' -o '$dest' 2>/dev/null" && return 0
+	fi
+	if cmd_exists wget; then
+		run "wget -qO '$dest' '$url' 2>/dev/null" && return 0
+	fi
+	err "Neither curl nor wget is available; cannot download $url"
+	return 1
 }
 
 # user_home() - Retrieve home directory for specified local user (cached for this session).
 # Caches results to avoid repeated /etc/passwd lookups.
 # Usage: user_home <username>
-declare -gA _USER_HOME_CACHE=()  # Session cache for user home dirs
+declare -gA _USER_HOME_CACHE=() # Session cache for user home dirs
 user_home() {
-    local user="$1"
-    if [[ -v _USER_HOME_CACHE[$user] ]]; then
-        echo "${_USER_HOME_CACHE[$user]}"
-        return 0
-    fi
-    local entry home
-    entry="$(getent passwd "$user" 2>/dev/null || true)"
-    home="${entry#*:*:*:*:*:}"
-    [[ "$home" == "$entry" ]] && home=""
-    _USER_HOME_CACHE[$user]="$home"
-    echo "$home"
+	local user="$1"
+	if [[ -v _USER_HOME_CACHE[$user] ]]; then
+		echo "${_USER_HOME_CACHE[$user]}"
+		return 0
+	fi
+	local entry home
+	entry="$(getent passwd "$user" 2>/dev/null || true)"
+	home="${entry#*:*:*:*:*:}"
+	[[ "$home" == "$entry" ]] && home=""
+	_USER_HOME_CACHE[$user]="$home"
+	echo "$home"
 }
 
 # confirm() - Prompt user for yes/no confirmation (respects --yes flag).
@@ -941,28 +966,28 @@ user_home() {
 # In --yes mode, automatically assumes affirmative response.
 # Usage: confirm ["prompt text"]
 confirm() {
-    local prompt="${1:-Continue?}"
-    if (( ASSUME_YES )); then
-        info "Auto-yes: $prompt"
-        return 0
-    fi
+	local prompt="${1:-Continue?}"
+	if ((ASSUME_YES)); then
+		info "Auto-yes: $prompt"
+		return 0
+	fi
 
-    if (( GUI_MODE )); then
-        case "$GUI_TOOL" in
-            kdialog)
-                kdialog --title "$SCRIPT_NAME" --yesno "$prompt"
-                return $?
-                ;;
-            zenity)
-                zenity --question --title="$SCRIPT_NAME" --text="$prompt" --width=480
-                return $?
-                ;;
-        esac
-    fi
+	if ((GUI_MODE)); then
+		case "$GUI_TOOL" in
+		kdialog)
+			kdialog --title "$SCRIPT_NAME" --yesno "$prompt"
+			return $?
+			;;
+		zenity)
+			zenity --question --title="$SCRIPT_NAME" --text="$prompt" --width=480
+			return $?
+			;;
+		esac
+	fi
 
-    local reply
-    read -r -p "$(printf '%s[??]%s  %s [y/N] ' "$C_YEL" "$C_RST" "$prompt")" reply
-    [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]
+	local reply
+	read -r -p "$(printf '%s[??]%s  %s [y/N] ' "$C_YEL" "$C_RST" "$prompt")" reply
+	[[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]
 }
 
 # backup_file() - Create backup of file in designated backup directory.
@@ -970,17 +995,23 @@ confirm() {
 # All backups are organized by timestamp in /root/harden-backups-YYYYMMDD-HHMMSS/
 # Usage: backup_file <file_path>
 backup_file() {
-    local f="$1"
-    if [[ -f "$f" ]]; then
-        if [[ ! -r "$f" ]]; then
-            warn "Cannot read $f for backup (permission denied); backup skipped"
-            return 0
-        fi
-        run "install -d -m 700 '$BACKUP_DIR'" || { warn "Failed to create backup directory"; return 1; }
-        run "cp -a --parents '$f' '$BACKUP_DIR/'" || { warn "Failed to backup $f"; return 1; }
-        record_change FILE_BACKUP "$f"
-        info "Backed up $f → $BACKUP_DIR"
-    fi
+	local f="$1"
+	if [[ -f "$f" ]]; then
+		if [[ ! -r "$f" ]]; then
+			warn "Cannot read $f for backup (permission denied); backup skipped"
+			return 0
+		fi
+		run "install -d -m 700 '$BACKUP_DIR'" || {
+			warn "Failed to create backup directory"
+			return 1
+		}
+		run "cp -a --parents '$f' '$BACKUP_DIR/'" || {
+			warn "Failed to backup $f"
+			return 1
+		}
+		record_change FILE_BACKUP "$f"
+		info "Backed up $f → $BACKUP_DIR"
+	fi
 }
 
 # in_list() - Check if needle is present in comma-separated list.
@@ -988,123 +1019,128 @@ backup_file() {
 # Used for --skip and --only section filtering logic.
 # Usage: in_list <needle> <comma,separated,list>
 in_list() {
-    [[ -z "$2" ]] && return 1
-    local IFS=','; for item in $2; do [[ "$item" == "$1" ]] && return 0; done
-    return 1
+	[[ -z "$2" ]] && return 1
+	local IFS=','
+	for item in $2; do [[ "$item" == "$1" ]] && return 0; done
+	return 1
 }
 
 # batch_sed() - Apply multiple sed patterns in a single pass (more efficient).
 # Reduces I/O overhead by batching replacements on same file.
 # Usage: batch_sed <file> <pattern1> <pattern2> ...
 batch_sed() {
-    local f="$1"; shift
-    if (( DRY_RUN )); then
-        info "Would apply sed patterns to $f"
-        return 0
-    fi
-    # Build combined -e flags for all patterns at once
-    local args=()
-    for pattern in "$@"; do
-        args+=(-e "$pattern")
-    done
-    if ! sed -i "${args[@]}" "$f" 2>/dev/null; then
-        warn "sed failed on $f (file may be read-only or missing)"
-        return 1
-    fi
+	local f="$1"
+	shift
+	if ((DRY_RUN)); then
+		info "Would apply sed patterns to $f"
+		return 0
+	fi
+	# Build combined -e flags for all patterns at once
+	local args=()
+	for pattern in "$@"; do
+		args+=(-e "$pattern")
+	done
+	if ! sed -i "${args[@]}" "$f" 2>/dev/null; then
+		warn "sed failed on $f (file may be read-only or missing)"
+		return 1
+	fi
 }
 
 # cmd_exists() - Fast check if command exists in PATH (cached for this session).
 # Uses have_cmd() with zero overhead after first check.
 # Usage: cmd_exists <command_name>
-declare -gA _CMD_CACHE=()  # Session cache for command existence
+declare -gA _CMD_CACHE=() # Session cache for command existence
 cmd_exists() {
-    local cmd="$1"
-    if [[ -v _CMD_CACHE[$cmd] ]]; then
-        return "${_CMD_CACHE[$cmd]}"
-    fi
-    if have_cmd "$cmd"; then
-        _CMD_CACHE[$cmd]=0
-        return 0
-    else
-        _CMD_CACHE[$cmd]=1
-        return 1
-    fi
+	local cmd="$1"
+	if [[ -v _CMD_CACHE[$cmd] ]]; then
+		return "${_CMD_CACHE[$cmd]}"
+	fi
+	if have_cmd "$cmd"; then
+		_CMD_CACHE[$cmd]=0
+		return 0
+	else
+		_CMD_CACHE[$cmd]=1
+		return 1
+	fi
 }
 
 # pkg_cached() - Check if package is already installed (cached for session).
 # Avoids repeated rpm -q calls for the same package.
 # Usage: pkg_cached <package_name>
-declare -gA _PKG_CACHE=()  # Session cache for package status
-declare -gA _PKG_PENDING_CACHE=()  # rpm-ostree pending/staged layer packages (pre-loaded from live status + current-run requests)
+declare -gA _PKG_CACHE=()         # Session cache for package status
+declare -gA _PKG_PENDING_CACHE=() # rpm-ostree pending/staged layer packages (pre-loaded from live status + current-run requests)
 pkg_cached() {
-    local pkg="$1"
-    if [[ -v _PKG_CACHE[$pkg] ]]; then
-        return "${_PKG_CACHE[$pkg]}"
-    fi
-    if rpm -q "$pkg" >/dev/null 2>&1; then
-        _PKG_CACHE[$pkg]=0
-        return 0
-    else
-        _PKG_CACHE[$pkg]=1
-        return 1
-    fi
+	local pkg="$1"
+	if [[ -v _PKG_CACHE[$pkg] ]]; then
+		return "${_PKG_CACHE[$pkg]}"
+	fi
+	if rpm -q "$pkg" >/dev/null 2>&1; then
+		_PKG_CACHE[$pkg]=0
+		return 0
+	else
+		_PKG_CACHE[$pkg]=1
+		return 1
+	fi
 }
 
 # detect_fedora_release_type() - Classify Fedora release family from os-release metadata.
 detect_fedora_release_type() {
-    local release_blob
-    release_blob="${NAME:-} ${PRETTY_NAME:-} ${VARIANT:-} ${VARIANT_ID:-} ${CPE_NAME:-} ${PLATFORM_ID:-} ${ID_LIKE:-}"
-    release_blob="${release_blob,,}"
+	local release_blob
+	release_blob="${NAME:-} ${PRETTY_NAME:-} ${VARIANT:-} ${VARIANT_ID:-} ${CPE_NAME:-} ${PLATFORM_ID:-} ${ID_LIKE:-}"
+	release_blob="${release_blob,,}"
 
-    [[ "$release_blob" == *"workstation"* ]] && IS_WORKSTATION=1
-    [[ "$release_blob" == *"server"* ]] && IS_SERVER=1
-    [[ "$release_blob" == *"kinoite"* ]] && IS_KINOITE=1
-    [[ "$release_blob" == *"silverblue"* ]] && IS_SILVERBLUE=1
-    [[ "$release_blob" == *"iot"* ]] && IS_IOT=1
-    [[ "$release_blob" == *"cloud"* ]] && IS_CLOUD=1
-    [[ "$release_blob" == *"coreos"* ]] && IS_COREOS=1
+	[[ "$release_blob" == *"workstation"* ]] && IS_WORKSTATION=1
+	[[ "$release_blob" == *"server"* ]] && IS_SERVER=1
+	[[ "$release_blob" == *"kinoite"* ]] && IS_KINOITE=1
+	[[ "$release_blob" == *"silverblue"* ]] && IS_SILVERBLUE=1
+	[[ "$release_blob" == *"iot"* ]] && IS_IOT=1
+	[[ "$release_blob" == *"cloud"* ]] && IS_CLOUD=1
+	[[ "$release_blob" == *"coreos"* ]] && IS_COREOS=1
 
-    # Fedora Atomic desktops include Kinoite/Silverblue and the named Atomic editions.
-    if (( IS_KINOITE || IS_SILVERBLUE )) \
-       || [[ "$release_blob" == *"atomic"* && "$release_blob" == *"fedora"* ]]; then
-        IS_ATOMIC_DESKTOP=1
-    fi
+	# Fedora Atomic desktops include Kinoite/Silverblue and the named Atomic editions.
+	if ((IS_KINOITE || IS_SILVERBLUE)) ||
+		[[ "$release_blob" == *"atomic"* && "$release_blob" == *"fedora"* ]]; then
+		IS_ATOMIC_DESKTOP=1
+	fi
 }
 
 # detect_desktop_envs() - Detect active/installed desktop environments for feature gating.
 detect_desktop_envs() {
-    local detected=()
-    local xdg_blob="${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}"
-    xdg_blob="${xdg_blob,,}"
+	local detected=()
+	local xdg_blob="${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}"
+	xdg_blob="${xdg_blob,,}"
 
-    # Running session hints.
-    if [[ "$xdg_blob" == *"kde"* || "$xdg_blob" == *"plasma"* ]]; then
-        HAS_KDE=1
-        [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
-    fi
-    if [[ "$xdg_blob" == *"gnome"* ]]; then
-        HAS_GNOME=1
-        [[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
-    fi
-    if [[ "$xdg_blob" == *"sway"* ]]; then
-        [[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
-    fi
+	# Running session hints.
+	if [[ "$xdg_blob" == *"kde"* || "$xdg_blob" == *"plasma"* ]]; then
+		HAS_KDE=1
+		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+	fi
+	if [[ "$xdg_blob" == *"gnome"* ]]; then
+		HAS_GNOME=1
+		[[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+	fi
+	if [[ "$xdg_blob" == *"sway"* ]]; then
+		[[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+	fi
 
-    # Installed desktop/tooling hints.
-    if cmd_exists kwriteconfig6 || cmd_exists kwriteconfig5 || pkg_cached plasma-workspace; then
-        HAS_KDE=1
-        [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
-    fi
-    if cmd_exists gnome-shell || pkg_cached gnome-shell || pkg_cached gnome-session; then
-        HAS_GNOME=1
-        [[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
-    fi
-    if cmd_exists sway || pkg_cached sway; then
-        [[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
-    fi
+	# Installed desktop/tooling hints.
+	if cmd_exists kwriteconfig6 || cmd_exists kwriteconfig5 || pkg_cached plasma-workspace; then
+		HAS_KDE=1
+		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+	fi
+	if cmd_exists gnome-shell || pkg_cached gnome-shell || pkg_cached gnome-session; then
+		HAS_GNOME=1
+		[[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+	fi
+	if cmd_exists sway || pkg_cached sway; then
+		[[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+	fi
 
-    (( HAS_KDE || HAS_GNOME || ${#detected[@]} > 0 )) && HAS_DESKTOP=1
-    DESKTOP_ENVS="$(IFS=,; echo "${detected[*]}")"
+	((HAS_KDE || HAS_GNOME || ${#detected[@]} > 0)) && HAS_DESKTOP=1
+	DESKTOP_ENVS="$(
+		IFS=,
+		echo "${detected[*]}"
+	)"
 }
 
 # section_compatible() - Check if a section is compatible with current system.
@@ -1113,30 +1149,30 @@ detect_desktop_envs() {
 # Returns 0 (compatible) or 1 (incompatible/should skip).
 # Usage: section_compatible <section_number>
 section_compatible() {
-    local s="$1"
-    case "$s" in
-        15)
-            # Section 15 requires KDE/Plasma to be installed and available.
-            if (( ! HAS_KDE )); then
-                info "Skipping section 15: KDE/Plasma tooling is not installed on this host."
-                return 1
-            fi
-            ;;
-        16)
-            # Section 16 is desktop-focused and should run if any desktop environment is installed.
-            if (( ! HAS_DESKTOP )); then
-                info "Skipping section 16: no desktop environment detected on this host."
-                return 1
-            fi
-            ;;
-        8)
-            # Section 8 can interfere with remote access if USB input devices are not whitelisted.
-            if (( IS_SERVER )) && (( ! ASSUME_YES )); then
-                warn "Section 8 (USBGuard) can disrupt remote-only server access if input devices are blocked."
-            fi
-            ;;
-    esac
-    return 0
+	local s="$1"
+	case "$s" in
+	15)
+		# Section 15 requires KDE/Plasma to be installed and available.
+		if ((!HAS_KDE)); then
+			info "Skipping section 15: KDE/Plasma tooling is not installed on this host."
+			return 1
+		fi
+		;;
+	16)
+		# Section 16 is desktop-focused and should run if any desktop environment is installed.
+		if ((!HAS_DESKTOP)); then
+			info "Skipping section 16: no desktop environment detected on this host."
+			return 1
+		fi
+		;;
+	8)
+		# Section 8 can interfere with remote access if USB input devices are not whitelisted.
+		if ((IS_SERVER)) && ((!ASSUME_YES)); then
+			warn "Section 8 (USBGuard) can disrupt remote-only server access if input devices are blocked."
+		fi
+		;;
+	esac
+	return 0
 }
 
 # should_run() - Determine whether a section should execute based on user options.
@@ -1145,188 +1181,188 @@ section_compatible() {
 # Returns 0 (should run) or 1 (should skip).
 # Usage: should_run <section_number>
 should_run() {
-    local s="$1"
-    # Check --only flag: if set, only run sections in the list.
-    if [[ -n "$ONLY_LIST" ]]; then
-        in_list "$s" "$ONLY_LIST" || return 1
-    fi
-    # Check --skip flag: skip sections in the list.
-    if [[ -n "$SKIP_LIST" ]] && in_list "$s" "$SKIP_LIST"; then
-        info "Skipping section $s (per --skip)"
-        return 1
-    fi
-    # Check system compatibility: skip if section incompatible with this platform.
-    section_compatible "$s" || return 1
-    return 0
+	local s="$1"
+	# Check --only flag: if set, only run sections in the list.
+	if [[ -n "$ONLY_LIST" ]]; then
+		in_list "$s" "$ONLY_LIST" || return 1
+	fi
+	# Check --skip flag: skip sections in the list.
+	if [[ -n "$SKIP_LIST" ]] && in_list "$s" "$SKIP_LIST"; then
+		info "Skipping section $s (per --skip)"
+		return 1
+	fi
+	# Check system compatibility: skip if section incompatible with this platform.
+	section_compatible "$s" || return 1
+	return 0
 }
 
 # analyze_error_log() - Parse error log and identify patterns for auto-remediation.
 # Populates LAST_ERROR_COUNT and emits categorized findings.
 # Usage: analyze_error_log
 analyze_error_log() {
-    init_log_target || return 1
-    LAST_ERROR_COUNT=0
-    
-    if [[ ! -f "$ERROR_LOG" ]]; then
-        info "No errors logged — script executed cleanly."
-        return 0
-    fi
-    
-    local error_count=0 line
-    local permission_errors=0 package_errors=0 service_errors=0 connection_errors=0
-    
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        (( error_count++ ))
-        
-        # Pattern matching for auto-remediation categories
-        if [[ "$line" =~ Permission\ denied || "$line" =~ not\ in\ sudoers ]]; then
-            (( permission_errors++ ))
-        elif [[ "$line" =~ No\ such\ file\ or\ directory || "$line" =~ package.*not\ found ]]; then
-            (( package_errors++ ))
-        elif [[ "$line" =~ service.*not\ available || "$line" =~ Unit.*not\ found ]]; then
-            (( service_errors++ ))
-        elif [[ "$line" =~ Connection\ refused || "$line" =~ Network.*unreachable ]]; then
-            (( connection_errors++ ))
-        fi
-    done < "$ERROR_LOG"
-    
-    LAST_ERROR_COUNT=$error_count
-    if (( error_count == 0 )); then
-        ok "Error analysis: No errors found."
-        return 0
-    fi
-    
-    warn "Error analysis: Found $error_count error(s)"
-    (( permission_errors > 0 )) && warn "  ↳ Permission issues: $permission_errors"
-    (( package_errors > 0 )) && warn "  ↳ Package/file issues: $package_errors"
-    (( service_errors > 0 )) && warn "  ↳ Service issues: $service_errors"
-    (( connection_errors > 0 )) && warn "  ↳ Connection issues: $connection_errors"
-    
-    return 0
+	init_log_target || return 1
+	LAST_ERROR_COUNT=0
+
+	if [[ ! -f "$ERROR_LOG" ]]; then
+		info "No errors logged — script executed cleanly."
+		return 0
+	fi
+
+	local error_count=0 line
+	local permission_errors=0 package_errors=0 service_errors=0 connection_errors=0
+
+	while IFS= read -r line; do
+		[[ -z "$line" ]] && continue
+		((error_count++))
+
+		# Pattern matching for auto-remediation categories
+		if [[ "$line" =~ Permission\ denied || "$line" =~ not\ in\ sudoers ]]; then
+			((permission_errors++))
+		elif [[ "$line" =~ No\ such\ file\ or\ directory || "$line" =~ package.*not\ found ]]; then
+			((package_errors++))
+		elif [[ "$line" =~ service.*not\ available || "$line" =~ Unit.*not\ found ]]; then
+			((service_errors++))
+		elif [[ "$line" =~ Connection\ refused || "$line" =~ Network.*unreachable ]]; then
+			((connection_errors++))
+		fi
+	done <"$ERROR_LOG"
+
+	LAST_ERROR_COUNT=$error_count
+	if ((error_count == 0)); then
+		ok "Error analysis: No errors found."
+		return 0
+	fi
+
+	warn "Error analysis: Found $error_count error(s)"
+	((permission_errors > 0)) && warn "  ↳ Permission issues: $permission_errors"
+	((package_errors > 0)) && warn "  ↳ Package/file issues: $package_errors"
+	((service_errors > 0)) && warn "  ↳ Service issues: $service_errors"
+	((connection_errors > 0)) && warn "  ↳ Connection issues: $connection_errors"
+
+	return 0
 }
 
 # auto_remediate_errors() - Attempt to fix common errors identified in log analysis.
 # Handles permission fixes, missing files, service issues, and network problems.
 # Usage: auto_remediate_errors
 auto_remediate_errors() {
-    init_log_target || return 1
-    
-    [[ ! -f "$ERROR_LOG" ]] && return 0
-    (( ++REMEDIATION_PASS ))
-    
-    if (( REMEDIATION_PASS > MAX_REMEDIATION_PASSES )); then
-        warn "Reached maximum remediation attempts ($MAX_REMEDIATION_PASSES); stopping auto-remediation."
-        return 1
-    fi
-    
-    warn "Starting auto-remediation pass $REMEDIATION_PASS of $MAX_REMEDIATION_PASSES..."
-    
-    # Fix 1: Log file permissions
-    if [[ -f "$LOG_FILE" ]]; then
-        chmod 640 "$LOG_FILE" 2>/dev/null || true
-        chmod 640 "$ERROR_LOG" 2>/dev/null || true
-    fi
-    
-    # Fix 2: Cached package status might be stale after failures
-    unset _PKG_CACHE _CMD_CACHE 2>/dev/null || true
-    declare -gA _PKG_CACHE=()
-    declare -gA _CMD_CACHE=()
-    info "Cleared package/command caches for fresh validation"
-    
-    # Fix 3: Re-initialize ostree staged packages cache
-    _OSTREE_STAGED_LOADED=0
-    
-    # Fix 4: Check for permission-related errors and attempt fixes
-    if grep -q "Permission denied\|not in sudoers" "$ERROR_LOG" 2>/dev/null; then
-        warn "Detected permission errors — verifying EUID and sudo context..."
-        if (( EUID != 0 )); then
-            err "Still running as non-root (EUID=$EUID) — cannot remediate."
-            return 1
-        fi
-        info "Running as root — permission errors may have been transient"
-    fi
-    
-    # Fix 5: Check for missing package manager states (Fedora-specific checks)
-    if (( IS_FEDORA )) && grep -q "rpm -q.*not installed\|dnf.*not found" "$ERROR_LOG" 2>/dev/null; then
-        warn "Detected package lookup errors — refreshing package lists..."
-        run "dnf check-update -q || rpm-ostree status >/dev/null" || true
-    fi
-    
-    ok "Auto-remediation pass $REMEDIATION_PASS complete"
-    return 0
+	init_log_target || return 1
+
+	[[ ! -f "$ERROR_LOG" ]] && return 0
+	((++REMEDIATION_PASS))
+
+	if ((REMEDIATION_PASS > MAX_REMEDIATION_PASSES)); then
+		warn "Reached maximum remediation attempts ($MAX_REMEDIATION_PASSES); stopping auto-remediation."
+		return 1
+	fi
+
+	warn "Starting auto-remediation pass $REMEDIATION_PASS of $MAX_REMEDIATION_PASSES..."
+
+	# Fix 1: Log file permissions
+	if [[ -f "$LOG_FILE" ]]; then
+		chmod 640 "$LOG_FILE" 2>/dev/null || true
+		chmod 640 "$ERROR_LOG" 2>/dev/null || true
+	fi
+
+	# Fix 2: Cached package status might be stale after failures
+	unset _PKG_CACHE _CMD_CACHE 2>/dev/null || true
+	declare -gA _PKG_CACHE=()
+	declare -gA _CMD_CACHE=()
+	info "Cleared package/command caches for fresh validation"
+
+	# Fix 3: Re-initialize ostree staged packages cache
+	_OSTREE_STAGED_LOADED=0
+
+	# Fix 4: Check for permission-related errors and attempt fixes
+	if grep -q "Permission denied\|not in sudoers" "$ERROR_LOG" 2>/dev/null; then
+		warn "Detected permission errors — verifying EUID and sudo context..."
+		if ((EUID != 0)); then
+			err "Still running as non-root (EUID=$EUID) — cannot remediate."
+			return 1
+		fi
+		info "Running as root — permission errors may have been transient"
+	fi
+
+	# Fix 5: Check for missing package manager states (Fedora-specific checks)
+	if ((IS_FEDORA)) && grep -q "rpm -q.*not installed\|dnf.*not found" "$ERROR_LOG" 2>/dev/null; then
+		warn "Detected package lookup errors — refreshing package lists..."
+		run "dnf check-update -q || rpm-ostree status >/dev/null" || true
+	fi
+
+	ok "Auto-remediation pass $REMEDIATION_PASS complete"
+	return 0
 }
 
 # validate_and_remediate_loop() - Run analysis and remediation until resolved or max attempts.
 # This implements the recursive fix loop: analyze → remediate → validate → repeat.
 # Usage: validate_and_remediate_loop
 validate_and_remediate_loop() {
-    info "Starting error validation and remediation loop..."
-    REMEDIATION_PASS=0
-    LAST_ERROR_COUNT=0
-    
-    while (( REMEDIATION_PASS < MAX_REMEDIATION_PASSES )); do
-        analyze_error_log
-        local error_count=$LAST_ERROR_COUNT
-        
-        if (( error_count == 0 )); then
-            ok "✓ All errors resolved after $REMEDIATION_PASS pass(es)"
-            return 0
-        fi
-        
-        auto_remediate_errors || break
-    done
-    
-    if (( LAST_ERROR_COUNT > 0 )); then
-        warn "Could not fully auto-remediate errors after $MAX_REMEDIATION_PASSES pass(es)"
-        warn "Review logs for manual remediation: $LOG_FILE and $ERROR_LOG"
-        return 1
-    fi
-    return 0
+	info "Starting error validation and remediation loop..."
+	REMEDIATION_PASS=0
+	LAST_ERROR_COUNT=0
+
+	while ((REMEDIATION_PASS < MAX_REMEDIATION_PASSES)); do
+		analyze_error_log
+		local error_count=$LAST_ERROR_COUNT
+
+		if ((error_count == 0)); then
+			ok "✓ All errors resolved after $REMEDIATION_PASS pass(es)"
+			return 0
+		fi
+
+		auto_remediate_errors || break
+	done
+
+	if ((LAST_ERROR_COUNT > 0)); then
+		warn "Could not fully auto-remediate errors after $MAX_REMEDIATION_PASSES pass(es)"
+		warn "Review logs for manual remediation: $LOG_FILE and $ERROR_LOG"
+		return 1
+	fi
+	return 0
 }
 
 # trap_cleanup() - Emergency cleanup handler for EXIT/ERR traps.
 # Removes temporary files and performs resource cleanup on script failure.
 # Also writes the session report to sessions/ on every exit (normal or abort).
 trap_cleanup() {
-    local rc=$?
-    gui_progress_close || true
-    # Clean all registered temp files (registered via register_tmp())
-    local _f
-    for _f in "${TEMP_FILES[@]}"; do
-        [[ -f "$_f" ]] && rm -f "$_f"
-    done
+	local rc=$?
+	gui_progress_close || true
+	# Clean all registered temp files (registered via register_tmp())
+	local _f
+	for _f in "${TEMP_FILES[@]}"; do
+		[[ -f "$_f" ]] && rm -f "$_f"
+	done
 
-    # Finalize the session report on every exit path.
-    write_session_report || true
+	# Finalize the session report on every exit path.
+	write_session_report || true
 
-    # Ensure logs remain accessible for post-script analysis
-    if [[ -f "$LOG_FILE" ]]; then
-        chmod 640 "$LOG_FILE" 2>/dev/null || true
-    fi
-    if [[ -f "$ERROR_LOG" ]]; then
-        chmod 640 "$ERROR_LOG" 2>/dev/null || true
-    fi
+	# Ensure logs remain accessible for post-script analysis
+	if [[ -f "$LOG_FILE" ]]; then
+		chmod 640 "$LOG_FILE" 2>/dev/null || true
+	fi
+	if [[ -f "$ERROR_LOG" ]]; then
+		chmod 640 "$ERROR_LOG" 2>/dev/null || true
+	fi
 
-    return "$rc"
+	return "$rc"
 }
 
 # trap_err() - Error handler for ERR trap.
 # Captures exit code + command context, logs with full detail, then exits.
 # Usage: Called automatically on error via trap.
 trap_err() {
-    local rc=$? line=${BASH_LINENO[0]:-?}
-    local cmd_ctx="${BASH_COMMAND:-${LAST_RUN_CMD:-script execution}}"
-    if (( EXPECTED_ABORT )); then
-        exit "$rc"
-    fi
-    SESSION_STATUS="aborted"
-    trap_cleanup || true
-    capture_error_context "$line" "$cmd_ctx" "$rc" "$ERROR_CAPTURE_FILE" 2>/dev/null || true
-    err "Aborted at line $line (exit $rc). See log: $LOG_FILE"
-    warn "Error details saved to: $ERROR_LOG"
-    gui_alert error "Hardening aborted at line $line (exit $rc).\n\nSee logs:\n$LOG_FILE\n$ERROR_LOG"
-    exit "$rc"
+	local rc=$? line=${BASH_LINENO[0]:-?}
+	local cmd_ctx="${BASH_COMMAND:-${LAST_RUN_CMD:-script execution}}"
+	if ((EXPECTED_ABORT)); then
+		exit "$rc"
+	fi
+	SESSION_STATUS="aborted"
+	trap_cleanup || true
+	capture_error_context "$line" "$cmd_ctx" "$rc" "$ERROR_CAPTURE_FILE" 2>/dev/null || true
+	err "Aborted at line $line (exit $rc). See log: $LOG_FILE"
+	warn "Error details saved to: $ERROR_LOG"
+	gui_alert error "Hardening aborted at line $line (exit $rc).\n\nSee logs:\n$LOG_FILE\n$ERROR_LOG"
+	exit "$rc"
 }
 # Enable error and exit traps to catch unexpected failures and clean resources.
 trap trap_cleanup EXIT
@@ -1337,7 +1373,7 @@ trap trap_err ERR
 # Format stored in ACTIONABLE_ITEMS: "S<num>|<priority>|<tag>|<description>"
 # Usage: add_action_item <section_num> <priority: HIGH|MEDIUM|LOW> <tag> <desc>
 add_action_item() {
-    ACTIONABLE_ITEMS+=("S${1}|${2}|${3}|${4}")
+	ACTIONABLE_ITEMS+=("S${1}|${2}|${3}|${4}")
 }
 
 # register_tmp() - Track a temp file path for guaranteed cleanup on EXIT.
@@ -1352,51 +1388,51 @@ register_tmp() { TEMP_FILES+=("$1"); }
 # No-ops in --dry-run mode or when journal is not yet initialized.
 # Usage: record_change <type> <detail>
 record_change() {
-    [[ -z "$ROLLBACK_JOURNAL" ]] && return 0
-    (( DRY_RUN )) && return 0
-    local ts
-    printf -v ts '%(%F %T)T' -1 2>/dev/null || ts="$(date '+%F %T')"
-    printf '%s|%s|%s\n' "$ts" "$1" "$2" >> "$ROLLBACK_JOURNAL" 2>/dev/null || true
+	[[ -z "$ROLLBACK_JOURNAL" ]] && return 0
+	((DRY_RUN)) && return 0
+	local ts
+	printf -v ts '%(%F %T)T' -1 2>/dev/null || ts="$(date '+%F %T')"
+	printf '%s|%s|%s\n' "$ts" "$1" "$2" >>"$ROLLBACK_JOURNAL" 2>/dev/null || true
 }
 
 # init_rollback_journal() - Create BACKUP_DIR and the per-session change journal.
 # Called during preflight after log initialization.
 # Usage: init_rollback_journal
 init_rollback_journal() {
-    (( DRY_RUN )) && return 0
-    install -d -m 700 "$BACKUP_DIR" 2>/dev/null || true
-    ROLLBACK_JOURNAL="${BACKUP_DIR}/.rollback-journal"
-    {
-        printf '# Fedora Hardening Rollback Journal\n'
-        printf '# Session:  %s\n' "$RUN_STAMP"
-        printf '# Host:     %s\n' "$HOST_LABEL"
-        printf '# Started:  %s\n' "$RUN_STAMP_ISO"
-        printf '# Format:   TIMESTAMP|CHANGE_TYPE|DETAIL\n'
-        printf '#\n'
-    } > "$ROLLBACK_JOURNAL" 2>/dev/null || ROLLBACK_JOURNAL=""
-    [[ -n "$ROLLBACK_JOURNAL" ]] && chmod 600 "$ROLLBACK_JOURNAL" 2>/dev/null || true
+	((DRY_RUN)) && return 0
+	install -d -m 700 "$BACKUP_DIR" 2>/dev/null || true
+	ROLLBACK_JOURNAL="${BACKUP_DIR}/.rollback-journal"
+	{
+		printf '# Fedora Hardening Rollback Journal\n'
+		printf '# Session:  %s\n' "$RUN_STAMP"
+		printf '# Host:     %s\n' "$HOST_LABEL"
+		printf '# Started:  %s\n' "$RUN_STAMP_ISO"
+		printf '# Format:   TIMESTAMP|CHANGE_TYPE|DETAIL\n'
+		printf '#\n'
+	} >"$ROLLBACK_JOURNAL" 2>/dev/null || ROLLBACK_JOURNAL=""
+	[[ -n "$ROLLBACK_JOURNAL" ]] && chmod 600 "$ROLLBACK_JOURNAL" 2>/dev/null || true
 }
 
 # init_session_dir() - Create ./sessions/ and write the session header stub.
 # The stub is overwritten with full content by write_session_report() on exit.
 # Usage: init_session_dir
 init_session_dir() {
-    if ! install -d -m 755 "$SESSION_DIR" 2>/dev/null; then
-        warn "Could not create sessions directory: $SESSION_DIR — session reports disabled."
-        SESSION_DIR=""
-        return 0
-    fi
-    SESSION_REPORT_FILE="${SESSION_DIR}/session-${RUN_STAMP}.txt"
-    {
-        printf '=== Fedora Hardening Session Report ===\n'
-        printf 'Session:   %s\n' "$RUN_STAMP"
-        printf 'Status:    running\n'
-        printf 'Host:      %s\n' "$HOST_LABEL"
-        printf 'Started:   %s\n' "$RUN_STAMP_ISO"
-        printf 'Log:       %s\n' "$LOG_FILE"
-        printf 'Backups:   %s\n' "$BACKUP_DIR"
-        printf '\n(Script still running — full report written on exit)\n'
-    } > "$SESSION_REPORT_FILE" 2>/dev/null || SESSION_REPORT_FILE=""
+	if ! install -d -m 755 "$SESSION_DIR" 2>/dev/null; then
+		warn "Could not create sessions directory: $SESSION_DIR — session reports disabled."
+		SESSION_DIR=""
+		return 0
+	fi
+	SESSION_REPORT_FILE="${SESSION_DIR}/session-${RUN_STAMP}.txt"
+	{
+		printf '=== Fedora Hardening Session Report ===\n'
+		printf 'Session:   %s\n' "$RUN_STAMP"
+		printf 'Status:    running\n'
+		printf 'Host:      %s\n' "$HOST_LABEL"
+		printf 'Started:   %s\n' "$RUN_STAMP_ISO"
+		printf 'Log:       %s\n' "$LOG_FILE"
+		printf 'Backups:   %s\n' "$BACKUP_DIR"
+		printf '\n(Script still running — full report written on exit)\n'
+	} >"$SESSION_REPORT_FILE" 2>/dev/null || SESSION_REPORT_FILE=""
 }
 
 # write_session_report() - Finalize and persist the session report to sessions/.
@@ -1404,106 +1440,106 @@ init_session_dir() {
 # Idempotent: skips if already written (SESSION_REPORT_WRITTEN guard).
 # Usage: write_session_report
 write_session_report() {
-    (( SESSION_REPORT_WRITTEN )) && return 0
-    SESSION_REPORT_WRITTEN=1
-    [[ -z "$SESSION_REPORT_FILE" ]] && return 0
+	((SESSION_REPORT_WRITTEN)) && return 0
+	SESSION_REPORT_WRITTEN=1
+	[[ -z "$SESSION_REPORT_FILE" ]] && return 0
 
-    local plat
-    (( IS_OSTREE )) && plat="rpm-ostree (immutable)" || plat="dnf (mutable)"
+	local plat
+	((IS_OSTREE)) && plat="rpm-ostree (immutable)" || plat="dnf (mutable)"
 
-    local change_count=0 file_backups=0 pkg_installs=0
-    local svc_enables=0 svc_disables=0 flatpak_installs=0
+	local change_count=0 file_backups=0 pkg_installs=0
+	local svc_enables=0 svc_disables=0 flatpak_installs=0
 
-    if [[ -n "$ROLLBACK_JOURNAL" && -f "$ROLLBACK_JOURNAL" ]]; then
-        while IFS='|' read -r _ts ctype _detail; do
-            [[ "$_ts" == '#'* || -z "${ctype:-}" ]] && continue
-            (( change_count++ ))
-            case "$ctype" in
-                FILE_BACKUP)     (( file_backups++ ))     ;;
-                PKG_INSTALL)     (( pkg_installs++ ))     ;;
-                SERVICE_ENABLE)  (( svc_enables++ ))      ;;
-                SERVICE_DISABLE) (( svc_disables++ ))     ;;
-                FLATPAK_INSTALL) (( flatpak_installs++ )) ;;
-            esac
-        done < "$ROLLBACK_JOURNAL"
-    fi
+	if [[ -n "$ROLLBACK_JOURNAL" && -f "$ROLLBACK_JOURNAL" ]]; then
+		while IFS='|' read -r _ts ctype _detail; do
+			[[ "$_ts" == '#'* || -z "${ctype:-}" ]] && continue
+			((change_count++))
+			case "$ctype" in
+			FILE_BACKUP) ((file_backups++)) ;;
+			PKG_INSTALL) ((pkg_installs++)) ;;
+			SERVICE_ENABLE) ((svc_enables++)) ;;
+			SERVICE_DISABLE) ((svc_disables++)) ;;
+			FLATPAK_INSTALL) ((flatpak_installs++)) ;;
+			esac
+		done <"$ROLLBACK_JOURNAL"
+	fi
 
-    {
-        printf '=== Fedora Hardening Session Report ===\n'
-        printf 'Session:   %s\n' "$RUN_STAMP"
-        printf 'Status:    %s\n' "$SESSION_STATUS"
-        printf 'Host:      %s\n' "$HOST_LABEL"
-        printf 'Kernel:    %s\n' "$KERNEL_LABEL"
-        printf 'Platform:  %s\n' "$plat"
-        printf 'Started:   %s\n' "$RUN_STAMP_ISO"
-        printf 'Log:       %s\n' "$LOG_FILE"
-        printf 'Backups:   %s\n' "$BACKUP_DIR"
-        printf '\n'
-        printf '=== Change Summary (%d total) ===\n' "$change_count"
-        printf '  File backups created:    %d\n' "$file_backups"
-        printf '  Packages installed:      %d\n' "$pkg_installs"
-        printf '  Services enabled:        %d\n' "$svc_enables"
-        printf '  Services disabled:       %d\n' "$svc_disables"
-        printf '  Flatpak apps installed:  %d\n' "$flatpak_installs"
-        printf '\n'
-        printf '=== Detailed Changes ===\n'
-        if (( DRY_RUN )); then
-            printf '  No changes recorded (dry-run mode).\n'
-        elif [[ -n "$ROLLBACK_JOURNAL" && -f "$ROLLBACK_JOURNAL" && "$change_count" -gt 0 ]]; then
-            while IFS='|' read -r _ts ctype detail; do
-                [[ "$_ts" == '#'* || -z "${ctype:-}" ]] && continue
-                printf '  [%s] %-18s %s\n' "$_ts" "$ctype" "$detail"
-            done < "$ROLLBACK_JOURNAL"
-        else
-            printf '  No changes were applied this session.\n'
-        fi
-        printf '\n'
-        printf '=== Actionable Items (%d) ===\n' "${#ACTIONABLE_ITEMS[@]}"
-        if (( ${#ACTIONABLE_ITEMS[@]} > 0 )); then
-            local idx=1
-            for item in "${ACTIONABLE_ITEMS[@]}"; do
-                local section priority tag desc
-                IFS='|' read -r section priority tag desc <<<"$item"
-                printf '  [%2d] [%s][%s] %s\n' "$idx" "$priority" "$section" "$desc"
-                (( idx++ ))
-            done
-        else
-            printf '  None.\n'
-        fi
-        printf '\n'
-        printf '=== Remediated Items (%d) ===\n' "${#REMEDIATED_ITEMS[@]}"
-        if (( ${#REMEDIATED_ITEMS[@]} > 0 )); then
-            for item in "${REMEDIATED_ITEMS[@]}"; do
-                local section priority tag desc
-                IFS='|' read -r section priority tag desc <<<"$item"
-                printf '  [RESOLVED][%s][%s] %s\n' "$priority" "$section" "$desc"
-            done
-        else
-            printf '  None.\n'
-        fi
-        printf '\n'
-        if [[ "$SESSION_STATUS" == "aborted" ]]; then
-            printf '=== Abort Information ===\n'
-            printf '  The script was aborted before completing all sections.\n'
-            printf '  Some changes may have been applied; see detailed changes above.\n'
-            printf '  Error log: %s\n\n' "$ERROR_LOG"
-        fi
-        printf '=== Rollback Instructions ===\n'
-        if (( change_count > 0 )); then
-            printf '  To undo all changes from this session:\n'
-            printf '    sudo %s --rollback %s\n\n' "$SCRIPT_NAME" "$RUN_STAMP"
-            printf '  To undo ALL changes from every session (full reset):\n'
-            printf '    sudo %s --rollback all\n\n' "$SCRIPT_NAME"
-            printf '  Manual restore of config files from:\n'
-            printf '    %s\n' "$BACKUP_DIR"
-        elif (( DRY_RUN )); then
-            printf '  No changes were made (dry-run mode) — nothing to roll back.\n'
-        else
-            printf '  No changes were recorded — nothing to roll back.\n'
-        fi
-    } > "$SESSION_REPORT_FILE" 2>/dev/null || true
-    chmod 644 "$SESSION_REPORT_FILE" 2>/dev/null || true
-    log "[SESSION] Session report written: $SESSION_REPORT_FILE"
+	{
+		printf '=== Fedora Hardening Session Report ===\n'
+		printf 'Session:   %s\n' "$RUN_STAMP"
+		printf 'Status:    %s\n' "$SESSION_STATUS"
+		printf 'Host:      %s\n' "$HOST_LABEL"
+		printf 'Kernel:    %s\n' "$KERNEL_LABEL"
+		printf 'Platform:  %s\n' "$plat"
+		printf 'Started:   %s\n' "$RUN_STAMP_ISO"
+		printf 'Log:       %s\n' "$LOG_FILE"
+		printf 'Backups:   %s\n' "$BACKUP_DIR"
+		printf '\n'
+		printf '=== Change Summary (%d total) ===\n' "$change_count"
+		printf '  File backups created:    %d\n' "$file_backups"
+		printf '  Packages installed:      %d\n' "$pkg_installs"
+		printf '  Services enabled:        %d\n' "$svc_enables"
+		printf '  Services disabled:       %d\n' "$svc_disables"
+		printf '  Flatpak apps installed:  %d\n' "$flatpak_installs"
+		printf '\n'
+		printf '=== Detailed Changes ===\n'
+		if ((DRY_RUN)); then
+			printf '  No changes recorded (dry-run mode).\n'
+		elif [[ -n "$ROLLBACK_JOURNAL" && -f "$ROLLBACK_JOURNAL" && "$change_count" -gt 0 ]]; then
+			while IFS='|' read -r _ts ctype detail; do
+				[[ "$_ts" == '#'* || -z "${ctype:-}" ]] && continue
+				printf '  [%s] %-18s %s\n' "$_ts" "$ctype" "$detail"
+			done <"$ROLLBACK_JOURNAL"
+		else
+			printf '  No changes were applied this session.\n'
+		fi
+		printf '\n'
+		printf '=== Actionable Items (%d) ===\n' "${#ACTIONABLE_ITEMS[@]}"
+		if ((${#ACTIONABLE_ITEMS[@]} > 0)); then
+			local idx=1
+			for item in "${ACTIONABLE_ITEMS[@]}"; do
+				local section priority tag desc
+				IFS='|' read -r section priority tag desc <<<"$item"
+				printf '  [%2d] [%s][%s] %s\n' "$idx" "$priority" "$section" "$desc"
+				((idx++))
+			done
+		else
+			printf '  None.\n'
+		fi
+		printf '\n'
+		printf '=== Remediated Items (%d) ===\n' "${#REMEDIATED_ITEMS[@]}"
+		if ((${#REMEDIATED_ITEMS[@]} > 0)); then
+			for item in "${REMEDIATED_ITEMS[@]}"; do
+				local section priority tag desc
+				IFS='|' read -r section priority tag desc <<<"$item"
+				printf '  [RESOLVED][%s][%s] %s\n' "$priority" "$section" "$desc"
+			done
+		else
+			printf '  None.\n'
+		fi
+		printf '\n'
+		if [[ "$SESSION_STATUS" == "aborted" ]]; then
+			printf '=== Abort Information ===\n'
+			printf '  The script was aborted before completing all sections.\n'
+			printf '  Some changes may have been applied; see detailed changes above.\n'
+			printf '  Error log: %s\n\n' "$ERROR_LOG"
+		fi
+		printf '=== Rollback Instructions ===\n'
+		if ((change_count > 0)); then
+			printf '  To undo all changes from this session:\n'
+			printf '    sudo %s --rollback %s\n\n' "$SCRIPT_NAME" "$RUN_STAMP"
+			printf '  To undo ALL changes from every session (full reset):\n'
+			printf '    sudo %s --rollback all\n\n' "$SCRIPT_NAME"
+			printf '  Manual restore of config files from:\n'
+			printf '    %s\n' "$BACKUP_DIR"
+		elif ((DRY_RUN)); then
+			printf '  No changes were made (dry-run mode) — nothing to roll back.\n'
+		else
+			printf '  No changes were recorded — nothing to roll back.\n'
+		fi
+	} >"$SESSION_REPORT_FILE" 2>/dev/null || true
+	chmod 644 "$SESSION_REPORT_FILE" 2>/dev/null || true
+	log "[SESSION] Session report written: $SESSION_REPORT_FILE"
 }
 
 # ---------- Rollback session helpers ----------------------------------------
@@ -1512,61 +1548,61 @@ write_session_report() {
 # Prints the directory path on success; returns 1 if not found.
 # Usage: find_session_backup_dir <stamp>
 find_session_backup_dir() {
-    local stamp="$1"
-    local dir="/root/harden-backups-${stamp}"
-    if [[ -d "$dir" ]]; then
-        printf '%s' "$dir"
-        return 0
-    fi
-    return 1
+	local stamp="$1"
+	local dir="/root/harden-backups-${stamp}"
+	if [[ -d "$dir" ]]; then
+		printf '%s' "$dir"
+		return 0
+	fi
+	return 1
 }
 
 # list_sessions_cmd() - Display all past sessions from the sessions/ directory.
 # Also surfaces backup directories that have no matching session report (pre-feature runs).
 # Usage: list_sessions_cmd
 list_sessions_cmd() {
-    printf '\n%s════════ Past Hardening Sessions ════════%s\n' "$C_CYN" "$C_RST"
+	printf '\n%s════════ Past Hardening Sessions ════════%s\n' "$C_CYN" "$C_RST"
 
-    local found=0
-    local -A seen_stamps=()   # track stamps that have session reports
+	local found=0
+	local -A seen_stamps=() # track stamps that have session reports
 
-    if [[ -d "$SESSION_DIR" ]]; then
-        for f in "$SESSION_DIR"/session-*.txt; do
-            [[ -f "$f" ]] || continue
-            (( found++ ))
-            local session_id status
-            session_id="$(awk '/^Session:/{print $2; exit}' "$f" 2>/dev/null || echo unknown)"
-            status="$(awk '/^Status:/{print $2; exit}' "$f" 2>/dev/null || echo unknown)"
-            seen_stamps["$session_id"]=1
-            case "$status" in
-                completed) printf '  %s[✓]%s %s  (completed)\n'   "$C_GRN" "$C_RST" "$session_id" ;;
-                aborted)   printf '  %s[✗]%s %s  (aborted)\n'     "$C_RED" "$C_RST" "$session_id" ;;
-                running)   printf '  %s[~]%s %s  (interrupted)\n' "$C_YEL" "$C_RST" "$session_id" ;;
-                *)         printf '       %s  (%s)\n' "$session_id" "$status" ;;
-            esac
-            printf '       Report: %s\n' "$f"
-        done
-    fi
+	if [[ -d "$SESSION_DIR" ]]; then
+		for f in "$SESSION_DIR"/session-*.txt; do
+			[[ -f "$f" ]] || continue
+			((found++))
+			local session_id status
+			session_id="$(awk '/^Session:/{print $2; exit}' "$f" 2>/dev/null || echo unknown)"
+			status="$(awk '/^Status:/{print $2; exit}' "$f" 2>/dev/null || echo unknown)"
+			seen_stamps["$session_id"]=1
+			case "$status" in
+			completed) printf '  %s[✓]%s %s  (completed)\n' "$C_GRN" "$C_RST" "$session_id" ;;
+			aborted) printf '  %s[✗]%s %s  (aborted)\n' "$C_RED" "$C_RST" "$session_id" ;;
+			running) printf '  %s[~]%s %s  (interrupted)\n' "$C_YEL" "$C_RST" "$session_id" ;;
+			*) printf '       %s  (%s)\n' "$session_id" "$status" ;;
+			esac
+			printf '       Report: %s\n' "$f"
+		done
+	fi
 
-    # Show backup dirs that have no session report (pre-session-feature runs)
-    for d in /root/harden-backups-*/; do
-        [[ -d "$d" ]] || continue
-        local stamp="${d%/}"
-        stamp="${stamp##*/harden-backups-}"
-        [[ -n "${seen_stamps[$stamp]:-}" ]] && continue
-        (( found++ ))
-        local journal_note="no journal"
-        [[ -f "${d}.rollback-journal" ]] && journal_note="journal present"
-        printf '  %s[?]%s %s  (no session report — %s)\n' "$C_YEL" "$C_RST" "$stamp" "$journal_note"
-        printf '       Backup dir: %s\n' "$d"
-    done
+	# Show backup dirs that have no session report (pre-session-feature runs)
+	for d in /root/harden-backups-*/; do
+		[[ -d "$d" ]] || continue
+		local stamp="${d%/}"
+		stamp="${stamp##*/harden-backups-}"
+		[[ -n "${seen_stamps[$stamp]:-}" ]] && continue
+		((found++))
+		local journal_note="no journal"
+		[[ -f "${d}.rollback-journal" ]] && journal_note="journal present"
+		printf '  %s[?]%s %s  (no session report — %s)\n' "$C_YEL" "$C_RST" "$stamp" "$journal_note"
+		printf '       Backup dir: %s\n' "$d"
+	done
 
-    if (( found == 0 )); then
-        printf '  No sessions found.\n'
-    fi
-    printf '%s═════════════════════════════════════════%s\n\n' "$C_CYN" "$C_RST"
-    printf 'To roll back a single session:  sudo %s --rollback <session-id>\n' "$SCRIPT_NAME"
-    printf 'To roll back ALL sessions:      sudo %s --rollback all\n\n' "$SCRIPT_NAME"
+	if ((found == 0)); then
+		printf '  No sessions found.\n'
+	fi
+	printf '%s═════════════════════════════════════════%s\n\n' "$C_CYN" "$C_RST"
+	printf 'To roll back a single session:  sudo %s --rollback <session-id>\n' "$SCRIPT_NAME"
+	printf 'To roll back ALL sessions:      sudo %s --rollback all\n\n' "$SCRIPT_NAME"
 }
 
 # _apply_rollback_journal() - Process journal entries in reverse, applying rollback actions.
@@ -1574,120 +1610,120 @@ list_sessions_cmd() {
 # Modifies globals: _RBJ_RESTORED, _RBJ_ERRORS (caller must initialize).
 # Arguments: <journal_file> <backup_dir> <rb_report>
 _apply_rollback_journal() {
-    local journal_file="$1" backup_dir="$2" rb_report="$3"
+	local journal_file="$1" backup_dir="$2" rb_report="$3"
 
-    _rjl() { [[ -n "$rb_report" ]] && printf '%s\n' "$*" >> "$rb_report" 2>/dev/null || true; }
+	_rjl() { [[ -n "$rb_report" ]] && printf '%s\n' "$*" >>"$rb_report" 2>/dev/null || true; }
 
-    local -a journal_lines=()
-    while IFS= read -r jline; do
-        [[ "$jline" == '#'* || -z "$jline" ]] && continue
-        journal_lines+=("$jline")
-    done < "$journal_file"
+	local -a journal_lines=()
+	while IFS= read -r jline; do
+		[[ "$jline" == '#'* || -z "$jline" ]] && continue
+		journal_lines+=("$jline")
+	done <"$journal_file"
 
-    local i n=${#journal_lines[@]}
-    for (( i = n-1; i >= 0; i-- )); do
-        local ts ctype detail
-        IFS='|' read -r ts ctype detail <<<"${journal_lines[$i]}"
-        [[ -z "${ctype:-}" ]] && continue
+	local i n=${#journal_lines[@]}
+	for ((i = n - 1; i >= 0; i--)); do
+		local ts ctype detail
+		IFS='|' read -r ts ctype detail <<<"${journal_lines[$i]}"
+		[[ -z "${ctype:-}" ]] && continue
 
-        case "$ctype" in
-            FILE_BACKUP)
-                local restored_path="/${detail#/}"
-                local backup_copy="${backup_dir}${detail}"
-                if [[ -f "$backup_copy" ]]; then
-                    if (( DRY_RUN )); then
-                        info "Would restore: $restored_path"
-                    elif cp -a "$backup_copy" "$restored_path" 2>/dev/null; then
-                        ok "Restored: $restored_path"
-                        _rjl "  [OK]   RESTORE  $restored_path"
-                        (( _RBJ_RESTORED++ ))
-                    else
-                        warn "Failed to restore: $restored_path"
-                        _rjl "  [FAIL] RESTORE  $restored_path"
-                        (( _RBJ_ERRORS++ ))
-                    fi
-                else
-                    warn "Backup copy not found: $backup_copy — skipping restore of $detail"
-                    _rjl "  [SKIP] RESTORE  $detail (backup copy missing)"
-                fi
-                ;;
+		case "$ctype" in
+		FILE_BACKUP)
+			local restored_path="/${detail#/}"
+			local backup_copy="${backup_dir}${detail}"
+			if [[ -f "$backup_copy" ]]; then
+				if ((DRY_RUN)); then
+					info "Would restore: $restored_path"
+				elif cp -a "$backup_copy" "$restored_path" 2>/dev/null; then
+					ok "Restored: $restored_path"
+					_rjl "  [OK]   RESTORE  $restored_path"
+					((_RBJ_RESTORED++))
+				else
+					warn "Failed to restore: $restored_path"
+					_rjl "  [FAIL] RESTORE  $restored_path"
+					((_RBJ_ERRORS++))
+				fi
+			else
+				warn "Backup copy not found: $backup_copy — skipping restore of $detail"
+				_rjl "  [SKIP] RESTORE  $detail (backup copy missing)"
+			fi
+			;;
 
-            PKG_INSTALL)
-                if (( IS_OSTREE )); then
-                    if (( DRY_RUN )); then
-                        info "Would run: rpm-ostree uninstall $detail"
-                    elif run "rpm-ostree uninstall $detail" 2>/dev/null; then
-                        ok "rpm-ostree uninstall queued: $detail (reboot required)"
-                        _rjl "  [OK]   RPM_OSTREE_UNINSTALL  $detail"
-                        (( _RBJ_RESTORED++ ))
-                    else
-                        warn "rpm-ostree uninstall failed for: $detail (may not have been layered)"
-                        _rjl "  [WARN] RPM_OSTREE_UNINSTALL  $detail"
-                        (( _RBJ_ERRORS++ ))
-                    fi
-                else
-                    if (( DRY_RUN )); then
-                        info "Would run: dnf remove -y $detail"
-                    elif run "dnf remove -y $detail" 2>/dev/null; then
-                        ok "Packages removed: $detail"
-                        _rjl "  [OK]   PKG_REMOVE  $detail"
-                        (( _RBJ_RESTORED++ ))
-                    else
-                        warn "dnf remove failed for: $detail (may have been pre-existing)"
-                        _rjl "  [WARN] PKG_REMOVE  $detail"
-                        (( _RBJ_ERRORS++ ))
-                    fi
-                fi
-                ;;
+		PKG_INSTALL)
+			if ((IS_OSTREE)); then
+				if ((DRY_RUN)); then
+					info "Would run: rpm-ostree uninstall $detail"
+				elif run "rpm-ostree uninstall $detail" 2>/dev/null; then
+					ok "rpm-ostree uninstall queued: $detail (reboot required)"
+					_rjl "  [OK]   RPM_OSTREE_UNINSTALL  $detail"
+					((_RBJ_RESTORED++))
+				else
+					warn "rpm-ostree uninstall failed for: $detail (may not have been layered)"
+					_rjl "  [WARN] RPM_OSTREE_UNINSTALL  $detail"
+					((_RBJ_ERRORS++))
+				fi
+			else
+				if ((DRY_RUN)); then
+					info "Would run: dnf remove -y $detail"
+				elif run "dnf remove -y $detail" 2>/dev/null; then
+					ok "Packages removed: $detail"
+					_rjl "  [OK]   PKG_REMOVE  $detail"
+					((_RBJ_RESTORED++))
+				else
+					warn "dnf remove failed for: $detail (may have been pre-existing)"
+					_rjl "  [WARN] PKG_REMOVE  $detail"
+					((_RBJ_ERRORS++))
+				fi
+			fi
+			;;
 
-            SERVICE_ENABLE)
-                if (( DRY_RUN )); then
-                    info "Would run: systemctl disable $detail"
-                elif systemctl disable "$detail" 2>/dev/null; then
-                    ok "Service disabled: $detail"
-                    _rjl "  [OK]   SERVICE_DISABLE  $detail"
-                    (( _RBJ_RESTORED++ ))
-                else
-                    warn "Could not disable service: $detail"
-                    _rjl "  [WARN] SERVICE_DISABLE  $detail"
-                    (( _RBJ_ERRORS++ ))
-                fi
-                ;;
+		SERVICE_ENABLE)
+			if ((DRY_RUN)); then
+				info "Would run: systemctl disable $detail"
+			elif systemctl disable "$detail" 2>/dev/null; then
+				ok "Service disabled: $detail"
+				_rjl "  [OK]   SERVICE_DISABLE  $detail"
+				((_RBJ_RESTORED++))
+			else
+				warn "Could not disable service: $detail"
+				_rjl "  [WARN] SERVICE_DISABLE  $detail"
+				((_RBJ_ERRORS++))
+			fi
+			;;
 
-            SERVICE_DISABLE)
-                if (( DRY_RUN )); then
-                    info "Would run: systemctl enable $detail"
-                elif systemctl enable "$detail" 2>/dev/null; then
-                    ok "Service re-enabled: $detail"
-                    _rjl "  [OK]   SERVICE_ENABLE  $detail"
-                    (( _RBJ_RESTORED++ ))
-                else
-                    warn "Could not re-enable service: $detail"
-                    _rjl "  [WARN] SERVICE_ENABLE  $detail"
-                    (( _RBJ_ERRORS++ ))
-                fi
-                ;;
+		SERVICE_DISABLE)
+			if ((DRY_RUN)); then
+				info "Would run: systemctl enable $detail"
+			elif systemctl enable "$detail" 2>/dev/null; then
+				ok "Service re-enabled: $detail"
+				_rjl "  [OK]   SERVICE_ENABLE  $detail"
+				((_RBJ_RESTORED++))
+			else
+				warn "Could not re-enable service: $detail"
+				_rjl "  [WARN] SERVICE_ENABLE  $detail"
+				((_RBJ_ERRORS++))
+			fi
+			;;
 
-            FLATPAK_INSTALL)
-                if (( DRY_RUN )); then
-                    info "Would run: flatpak uninstall -y $detail"
-                elif have_cmd flatpak && flatpak uninstall -y "$detail" 2>/dev/null; then
-                    ok "Flatpak removed: $detail"
-                    _rjl "  [OK]   FLATPAK_REMOVE  $detail"
-                    (( _RBJ_RESTORED++ ))
-                else
-                    warn "Flatpak uninstall failed for: $detail"
-                    _rjl "  [WARN] FLATPAK_REMOVE  $detail"
-                    (( _RBJ_ERRORS++ ))
-                fi
-                ;;
+		FLATPAK_INSTALL)
+			if ((DRY_RUN)); then
+				info "Would run: flatpak uninstall -y $detail"
+			elif have_cmd flatpak && flatpak uninstall -y "$detail" 2>/dev/null; then
+				ok "Flatpak removed: $detail"
+				_rjl "  [OK]   FLATPAK_REMOVE  $detail"
+				((_RBJ_RESTORED++))
+			else
+				warn "Flatpak uninstall failed for: $detail"
+				_rjl "  [WARN] FLATPAK_REMOVE  $detail"
+				((_RBJ_ERRORS++))
+			fi
+			;;
 
-            *)
-                warn "Unknown journal entry type '$ctype' — skipping"
-                _rjl "  [SKIP] UNKNOWN  $ctype: $detail"
-                ;;
-        esac
-    done
+		*)
+			warn "Unknown journal entry type '$ctype' — skipping"
+			_rjl "  [SKIP] UNKNOWN  $ctype: $detail"
+			;;
+		esac
+	done
 }
 
 # _restore_backup_dir_files() - Restore all backed-up files from a directory with no journal.
@@ -1695,32 +1731,32 @@ _apply_rollback_journal() {
 # Modifies globals: _RBJ_RESTORED, _RBJ_ERRORS.
 # Arguments: <backup_dir> <rb_report>
 _restore_backup_dir_files() {
-    local backup_dir="$1" rb_report="$2"
+	local backup_dir="$1" rb_report="$2"
 
-    _rbfl() { [[ -n "$rb_report" ]] && printf '%s\n' "$*" >> "$rb_report" 2>/dev/null || true; }
+	_rbfl() { [[ -n "$rb_report" ]] && printf '%s\n' "$*" >>"$rb_report" 2>/dev/null || true; }
 
-    local found_any=0
-    while IFS= read -r bfile; do
-        found_any=1
-        local rel="${bfile#"${backup_dir}"}"
-        local restored_path="/${rel#/}"
-        if (( DRY_RUN )); then
-            info "Would restore: $restored_path"
-        elif cp -a "$bfile" "$restored_path" 2>/dev/null; then
-            ok "Restored: $restored_path"
-            _rbfl "  [OK]   RESTORE  $restored_path"
-            (( _RBJ_RESTORED++ ))
-        else
-            warn "Failed to restore: $restored_path"
-            _rbfl "  [FAIL] RESTORE  $restored_path"
-            (( _RBJ_ERRORS++ ))
-        fi
-    done < <(find "$backup_dir" -type f ! -name '.rollback-journal' 2>/dev/null | sort)
+	local found_any=0
+	while IFS= read -r bfile; do
+		found_any=1
+		local rel="${bfile#"${backup_dir}"}"
+		local restored_path="/${rel#/}"
+		if ((DRY_RUN)); then
+			info "Would restore: $restored_path"
+		elif cp -a "$bfile" "$restored_path" 2>/dev/null; then
+			ok "Restored: $restored_path"
+			_rbfl "  [OK]   RESTORE  $restored_path"
+			((_RBJ_RESTORED++))
+		else
+			warn "Failed to restore: $restored_path"
+			_rbfl "  [FAIL] RESTORE  $restored_path"
+			((_RBJ_ERRORS++))
+		fi
+	done < <(find "$backup_dir" -type f ! -name '.rollback-journal' 2>/dev/null | sort)
 
-    if (( ! found_any )); then
-        warn "No backup files found in: $backup_dir"
-        _rbfl "  [INFO] No files found in backup dir: $backup_dir"
-    fi
+	if ((!found_any)); then
+		warn "No backup files found in: $backup_dir"
+		_rbfl "  [INFO] No files found in backup dir: $backup_dir"
+	fi
 }
 
 # rollback_session() - Reverse all changes recorded in a single session rollback journal.
@@ -1729,122 +1765,122 @@ _restore_backup_dir_files() {
 # the sessions/ directory.
 # Usage: rollback_session <session-id|last>
 rollback_session() {
-    local session_id="${1:-last}"
-    local backup_dir journal_file
+	local session_id="${1:-last}"
+	local backup_dir journal_file
 
-    # Resolve 'last' to the most recent known session stamp
-    if [[ "$session_id" == "last" ]]; then
-        local latest=""
-        if [[ -d "$SESSION_DIR" ]]; then
-            for f in "$SESSION_DIR"/session-*.txt; do
-                [[ -f "$f" ]] || continue
-                local stamp
-                stamp="$(basename "$f" .txt)"
-                stamp="${stamp#session-}"
-                [[ -z "$latest" || "$stamp" > "$latest" ]] && latest="$stamp"
-            done
-        fi
-        if [[ -z "$latest" ]]; then
-            for d in /root/harden-backups-*/; do
-                [[ -d "$d" ]] || continue
-                local stamp
-                stamp="${d%/}"
-                stamp="${stamp##*/harden-backups-}"
-                [[ -z "$latest" || "$stamp" > "$latest" ]] && latest="$stamp"
-            done
-        fi
-        if [[ -z "$latest" ]]; then
-            err "No previous sessions found to roll back."
-            return 1
-        fi
-        session_id="$latest"
-        info "Most recent session found: $session_id"
-    fi
+	# Resolve 'last' to the most recent known session stamp
+	if [[ "$session_id" == "last" ]]; then
+		local latest=""
+		if [[ -d "$SESSION_DIR" ]]; then
+			for f in "$SESSION_DIR"/session-*.txt; do
+				[[ -f "$f" ]] || continue
+				local stamp
+				stamp="$(basename "$f" .txt)"
+				stamp="${stamp#session-}"
+				[[ -z "$latest" || "$stamp" > "$latest" ]] && latest="$stamp"
+			done
+		fi
+		if [[ -z "$latest" ]]; then
+			for d in /root/harden-backups-*/; do
+				[[ -d "$d" ]] || continue
+				local stamp
+				stamp="${d%/}"
+				stamp="${stamp##*/harden-backups-}"
+				[[ -z "$latest" || "$stamp" > "$latest" ]] && latest="$stamp"
+			done
+		fi
+		if [[ -z "$latest" ]]; then
+			err "No previous sessions found to roll back."
+			return 1
+		fi
+		session_id="$latest"
+		info "Most recent session found: $session_id"
+	fi
 
-    backup_dir="$(find_session_backup_dir "$session_id")" || {
-        err "Backup directory not found for session: $session_id"
-        err "Expected location: /root/harden-backups-${session_id}"
-        return 1
-    }
+	backup_dir="$(find_session_backup_dir "$session_id")" || {
+		err "Backup directory not found for session: $session_id"
+		err "Expected location: /root/harden-backups-${session_id}"
+		return 1
+	}
 
-    journal_file="${backup_dir}/.rollback-journal"
-    local has_journal=1
-    if [[ ! -f "$journal_file" ]]; then
-        has_journal=0
-        warn "No rollback journal found in: $backup_dir"
-        warn "This appears to be a pre-journal run — backed-up files will be restored."
-        warn "Package installs and service state changes cannot be automatically reversed."
-    fi
+	journal_file="${backup_dir}/.rollback-journal"
+	local has_journal=1
+	if [[ ! -f "$journal_file" ]]; then
+		has_journal=0
+		warn "No rollback journal found in: $backup_dir"
+		warn "This appears to be a pre-journal run — backed-up files will be restored."
+		warn "Package installs and service state changes cannot be automatically reversed."
+	fi
 
-    info "Session:     $session_id"
-    info "Backup dir:  $backup_dir"
-    if (( has_journal )); then
-        info "Journal:     $journal_file"
-    else
-        info "Journal:     (none)"
-    fi
+	info "Session:     $session_id"
+	info "Backup dir:  $backup_dir"
+	if ((has_journal)); then
+		info "Journal:     $journal_file"
+	else
+		info "Journal:     (none)"
+	fi
 
-    if ! confirm "Proceed with rollback of session ${session_id}?"; then
-        info "Rollback cancelled."
-        return 0
-    fi
+	if ! confirm "Proceed with rollback of session ${session_id}?"; then
+		info "Rollback cancelled."
+		return 0
+	fi
 
-    local rb_stamp
-    printf -v rb_stamp '%(%Y%m%d-%H%M%S)T' -1 2>/dev/null || rb_stamp="$(date +%Y%m%d-%H%M%S)"
-    local rb_report=""
-    if [[ -d "$SESSION_DIR" ]]; then
-        rb_report="${SESSION_DIR}/rollback-${session_id}-at-${rb_stamp}.txt"
-    fi
+	local rb_stamp
+	printf -v rb_stamp '%(%Y%m%d-%H%M%S)T' -1 2>/dev/null || rb_stamp="$(date +%Y%m%d-%H%M%S)"
+	local rb_report=""
+	if [[ -d "$SESSION_DIR" ]]; then
+		rb_report="${SESSION_DIR}/rollback-${session_id}-at-${rb_stamp}.txt"
+	fi
 
-    _RBJ_RESTORED=0
-    _RBJ_ERRORS=0
+	_RBJ_RESTORED=0
+	_RBJ_ERRORS=0
 
-    if [[ -n "$rb_report" ]]; then
-        {
-            printf '=== Fedora Hardening Rollback Report ===\n'
-            printf 'Rolling back session:  %s\n' "$session_id"
-            printf 'Rollback started:      %s\n' "$(date '+%F %T')"
-            printf 'Host:                  %s\n' "$HOST_LABEL"
-            printf 'Backup dir:            %s\n' "$backup_dir"
-            if (( has_journal )); then
-                printf 'Journal:               %s\n' "$journal_file"
-            else
-                printf 'Journal:               NONE (pre-journal run — file restore only)\n'
-                printf '\nNOTE: Package installs and service state changes from this session\n'
-                printf '      cannot be automatically reversed. Review manually.\n'
-            fi
-            printf '\n=== Rollback Actions ===\n'
-        } > "$rb_report" 2>/dev/null || rb_report=""
-    fi
+	if [[ -n "$rb_report" ]]; then
+		{
+			printf '=== Fedora Hardening Rollback Report ===\n'
+			printf 'Rolling back session:  %s\n' "$session_id"
+			printf 'Rollback started:      %s\n' "$(date '+%F %T')"
+			printf 'Host:                  %s\n' "$HOST_LABEL"
+			printf 'Backup dir:            %s\n' "$backup_dir"
+			if ((has_journal)); then
+				printf 'Journal:               %s\n' "$journal_file"
+			else
+				printf 'Journal:               NONE (pre-journal run — file restore only)\n'
+				printf '\nNOTE: Package installs and service state changes from this session\n'
+				printf '      cannot be automatically reversed. Review manually.\n'
+			fi
+			printf '\n=== Rollback Actions ===\n'
+		} >"$rb_report" 2>/dev/null || rb_report=""
+	fi
 
-    if (( has_journal )); then
-        _apply_rollback_journal "$journal_file" "$backup_dir" "$rb_report"
-    else
-        _restore_backup_dir_files "$backup_dir" "$rb_report"
-    fi
+	if ((has_journal)); then
+		_apply_rollback_journal "$journal_file" "$backup_dir" "$rb_report"
+	else
+		_restore_backup_dir_files "$backup_dir" "$rb_report"
+	fi
 
-    if [[ -n "$rb_report" ]]; then
-        {
-            printf '\n=== Rollback Summary ===\n'
-            printf 'Session rolled back:  %s\n' "$session_id"
-            printf 'Changes reverted:     %d\n' "$_RBJ_RESTORED"
-            printf 'Errors/warnings:      %d\n' "$_RBJ_ERRORS"
-            printf 'Completed:            %s\n' "$(date '+%F %T')"
-            (( IS_OSTREE )) && printf '\nNOTE: rpm-ostree uninstalls require a reboot to take effect.\n'
-            printf '\nA reboot is recommended to ensure all rollback changes are applied.\n'
-        } >> "$rb_report" 2>/dev/null || true
-        chmod 644 "$rb_report" 2>/dev/null || true
-        ok "Rollback report saved: $rb_report"
-    fi
+	if [[ -n "$rb_report" ]]; then
+		{
+			printf '\n=== Rollback Summary ===\n'
+			printf 'Session rolled back:  %s\n' "$session_id"
+			printf 'Changes reverted:     %d\n' "$_RBJ_RESTORED"
+			printf 'Errors/warnings:      %d\n' "$_RBJ_ERRORS"
+			printf 'Completed:            %s\n' "$(date '+%F %T')"
+			((IS_OSTREE)) && printf '\nNOTE: rpm-ostree uninstalls require a reboot to take effect.\n'
+			printf '\nA reboot is recommended to ensure all rollback changes are applied.\n'
+		} >>"$rb_report" 2>/dev/null || true
+		chmod 644 "$rb_report" 2>/dev/null || true
+		ok "Rollback report saved: $rb_report"
+	fi
 
-    if (( _RBJ_ERRORS > 0 )); then
-        warn "Rollback completed with $_RBJ_ERRORS warning(s) — manual review may be needed."
-    else
-        ok "Rollback complete: $_RBJ_RESTORED change(s) reversed for session $session_id."
-    fi
-    (( IS_OSTREE )) && warn "A reboot is required for rpm-ostree changes to take effect."
-    info "A system reboot is recommended to finalize all rollback changes."
-    return 0
+	if ((_RBJ_ERRORS > 0)); then
+		warn "Rollback completed with $_RBJ_ERRORS warning(s) — manual review may be needed."
+	else
+		ok "Rollback complete: $_RBJ_RESTORED change(s) reversed for session $session_id."
+	fi
+	((IS_OSTREE)) && warn "A reboot is required for rpm-ostree changes to take effect."
+	info "A system reboot is recommended to finalize all rollback changes."
+	return 0
 }
 
 # rollback_all_sessions() - Reverse ALL changes from every hardening session, newest first.
@@ -1855,476 +1891,498 @@ rollback_session() {
 # A combined rollback report AND a dedicated log file are written to sessions/.
 # Usage: rollback_all_sessions
 rollback_all_sessions() {
-    printf '\n%s╔══════════════════════════════════════════════╗%s\n' "$C_RED" "$C_RST"
-    printf '%s║   FULL SYSTEM ROLLBACK — ALL SESSIONS        ║%s\n' "$C_RED" "$C_RST"
-    printf '%s╚══════════════════════════════════════════════╝%s\n\n' "$C_RED" "$C_RST"
-    warn "This will attempt to reverse ALL changes from ALL hardening sessions."
-    warn "File restores, package removals, and service state reversals will be applied."
-    printf '\n'
+	printf '\n%s╔══════════════════════════════════════════════╗%s\n' "$C_RED" "$C_RST"
+	printf '%s║   FULL SYSTEM ROLLBACK — ALL SESSIONS        ║%s\n' "$C_RED" "$C_RST"
+	printf '%s╚══════════════════════════════════════════════╝%s\n\n' "$C_RED" "$C_RST"
+	warn "This will attempt to reverse ALL changes from ALL hardening sessions."
+	warn "File restores, package removals, and service state reversals will be applied."
+	printf '\n'
 
-    # 1. Discover all backup directories
-    local -a all_stamps=()
-    for d in /root/harden-backups-*/; do
-        [[ -d "$d" ]] || continue
-        local stamp="${d%/}"
-        stamp="${stamp##*/harden-backups-}"
-        all_stamps+=("$stamp")
-    done
+	# 1. Discover all backup directories
+	local -a all_stamps=()
+	for d in /root/harden-backups-*/; do
+		[[ -d "$d" ]] || continue
+		local stamp="${d%/}"
+		stamp="${stamp##*/harden-backups-}"
+		all_stamps+=("$stamp")
+	done
 
-    if [[ ${#all_stamps[@]} -eq 0 ]]; then
-        err "No hardening backup directories found under /root/harden-backups-*."
-        warn "If the script was run before backup support existed, no automatic rollback is possible."
-        warn "Check /root/ manually for any files that may have been modified."
-        return 1
-    fi
+	if [[ ${#all_stamps[@]} -eq 0 ]]; then
+		err "No hardening backup directories found under /root/harden-backups-*."
+		warn "If the script was run before backup support existed, no automatic rollback is possible."
+		warn "Check /root/ manually for any files that may have been modified."
+		return 1
+	fi
 
-    # Sort stamps lexicographically — YYYYMMDD-HHMMSS sorts correctly as strings
-    local -a sorted_stamps=()
-    while IFS= read -r s; do sorted_stamps+=("$s"); done \
-        < <(printf '%s\n' "${all_stamps[@]}" | sort)
+	# Sort stamps lexicographically — YYYYMMDD-HHMMSS sorts correctly as strings
+	local -a sorted_stamps=()
+	while IFS= read -r s; do sorted_stamps+=("$s"); done \
+		< <(printf '%s\n' "${all_stamps[@]}" | sort)
 
-    local total_sessions=${#sorted_stamps[@]}
-    info "Found $total_sessions session(s) to roll back (will process newest first):"
-    local i
-    for (( i = total_sessions-1; i >= 0; i-- )); do
-        local s="${sorted_stamps[$i]}"
-        if [[ -f "/root/harden-backups-${s}/.rollback-journal" ]]; then
-            printf '  %s[journal]%s  %s\n' "$C_GRN" "$C_RST" "$s"
-        else
-            printf '  %s[no journal — file restore only]%s  %s\n' "$C_YEL" "$C_RST" "$s"
-        fi
-    done
-    printf '\n'
+	local total_sessions=${#sorted_stamps[@]}
+	info "Found $total_sessions session(s) to roll back (will process newest first):"
+	local i
+	for ((i = total_sessions - 1; i >= 0; i--)); do
+		local s="${sorted_stamps[$i]}"
+		if [[ -f "/root/harden-backups-${s}/.rollback-journal" ]]; then
+			printf '  %s[journal]%s  %s\n' "$C_GRN" "$C_RST" "$s"
+		else
+			printf '  %s[no journal — file restore only]%s  %s\n' "$C_YEL" "$C_RST" "$s"
+		fi
+	done
+	printf '\n'
 
-    if ! confirm "Proceed with FULL rollback of all $total_sessions session(s)?"; then
-        info "Full rollback cancelled."
-        return 0
-    fi
+	if ! confirm "Proceed with FULL rollback of all $total_sessions session(s)?"; then
+		info "Full rollback cancelled."
+		return 0
+	fi
 
-    # 2. Set up combined report and log files
-    local rb_stamp
-    printf -v rb_stamp '%(%Y%m%d-%H%M%S)T' -1 2>/dev/null || rb_stamp="$(date +%Y%m%d-%H%M%S)"
+	# 2. Set up combined report and log files
+	local rb_stamp
+	printf -v rb_stamp '%(%Y%m%d-%H%M%S)T' -1 2>/dev/null || rb_stamp="$(date +%Y%m%d-%H%M%S)"
 
-    # Ensure sessions dir exists — it may not if this is a pre-session-feature environment
-    if [[ -z "$SESSION_DIR" ]] || ! install -d -m 755 "$SESSION_DIR" 2>/dev/null; then
-        SESSION_DIR="/tmp"
-        warn "sessions/ directory unavailable; writing report to /tmp/"
-    fi
+	# Ensure sessions dir exists — it may not if this is a pre-session-feature environment
+	if [[ -z "$SESSION_DIR" ]] || ! install -d -m 755 "$SESSION_DIR" 2>/dev/null; then
+		SESSION_DIR="/tmp"
+		warn "sessions/ directory unavailable; writing report to /tmp/"
+	fi
 
-    local rb_report="${SESSION_DIR}/rollback-full-at-${rb_stamp}.txt"
-    local rb_log="${SESSION_DIR}/rollback-full-at-${rb_stamp}.log"
+	local rb_report="${SESSION_DIR}/rollback-full-at-${rb_stamp}.txt"
+	local rb_log="${SESSION_DIR}/rollback-full-at-${rb_stamp}.log"
 
-    _frblog() {
-        local msg="$*"
-        printf '[%s] %s\n' "$(date '+%F %T')" "$msg" >> "$rb_log" 2>/dev/null || true
-        log "[FULL-ROLLBACK] $msg"
-    }
+	_frblog() {
+		local msg="$*"
+		printf '[%s] %s\n' "$(date '+%F %T')" "$msg" >>"$rb_log" 2>/dev/null || true
+		log "[FULL-ROLLBACK] $msg"
+	}
 
-    {
-        printf '=== Fedora Hardening — Full System Rollback Report ===\n'
-        printf 'Started:        %s\n' "$(date '+%F %T')"
-        printf 'Host:           %s\n' "$HOST_LABEL"
-        printf 'Sessions found: %d\n' "$total_sessions"
-        printf 'Processing:     newest-first (reverse chronological)\n'
-        printf '\n'
-        printf 'Sessions discovered:\n'
-        for (( i = total_sessions-1; i >= 0; i-- )); do
-            local s="${sorted_stamps[$i]}"
-            if [[ -f "/root/harden-backups-${s}/.rollback-journal" ]]; then
-                printf '  %s  [journal present]\n' "$s"
-            else
-                printf '  %s  [no journal — file restore only]\n' "$s"
-            fi
-        done
-        printf '\n'
-        printf 'NOTE: Sessions without a rollback journal (runs predating this feature)\n'
-        printf '      will have their backed-up config files restored. Package installs\n'
-        printf '      and service state changes from those sessions cannot be automatically\n'
-        printf '      reversed and must be reviewed manually.\n'
-        printf '\n'
-    } > "$rb_report" 2>/dev/null || { warn "Could not create rollback report file."; rb_report=""; }
-    : > "$rb_log" 2>/dev/null || true
+	{
+		printf '=== Fedora Hardening — Full System Rollback Report ===\n'
+		printf 'Started:        %s\n' "$(date '+%F %T')"
+		printf 'Host:           %s\n' "$HOST_LABEL"
+		printf 'Sessions found: %d\n' "$total_sessions"
+		printf 'Processing:     newest-first (reverse chronological)\n'
+		printf '\n'
+		printf 'Sessions discovered:\n'
+		for ((i = total_sessions - 1; i >= 0; i--)); do
+			local s="${sorted_stamps[$i]}"
+			if [[ -f "/root/harden-backups-${s}/.rollback-journal" ]]; then
+				printf '  %s  [journal present]\n' "$s"
+			else
+				printf '  %s  [no journal — file restore only]\n' "$s"
+			fi
+		done
+		printf '\n'
+		printf 'NOTE: Sessions without a rollback journal (runs predating this feature)\n'
+		printf '      will have their backed-up config files restored. Package installs\n'
+		printf '      and service state changes from those sessions cannot be automatically\n'
+		printf '      reversed and must be reviewed manually.\n'
+		printf '\n'
+	} >"$rb_report" 2>/dev/null || {
+		warn "Could not create rollback report file."
+		rb_report=""
+	}
+	: >"$rb_log" 2>/dev/null || true
 
-    _frblog "Full rollback started. Sessions (${total_sessions}): ${sorted_stamps[*]}"
+	_frblog "Full rollback started. Sessions (${total_sessions}): ${sorted_stamps[*]}"
 
-    # 3. Process sessions newest-first
-    local total_restored=0 total_errors=0 sessions_ok=0 sessions_skipped=0
-    for (( i = total_sessions-1; i >= 0; i-- )); do
-        local s="${sorted_stamps[$i]}"
-        local bdir="/root/harden-backups-${s}"
-        local jfile="${bdir}/.rollback-journal"
+	# 3. Process sessions newest-first
+	local total_restored=0 total_errors=0 sessions_ok=0 sessions_skipped=0
+	for ((i = total_sessions - 1; i >= 0; i--)); do
+		local s="${sorted_stamps[$i]}"
+		local bdir="/root/harden-backups-${s}"
+		local jfile="${bdir}/.rollback-journal"
 
-        {
-            printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
-            printf 'Session:    %s\n' "$s"
-            printf 'Backup dir: %s\n' "$bdir"
-        } >> "$rb_report" 2>/dev/null || true
+		{
+			printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+			printf 'Session:    %s\n' "$s"
+			printf 'Backup dir: %s\n' "$bdir"
+		} >>"$rb_report" 2>/dev/null || true
 
-        _frblog "Processing session $s"
+		_frblog "Processing session $s"
 
-        if [[ ! -d "$bdir" ]]; then
-            warn "Backup directory missing for session $s — skipping."
-            printf '  [SKIP] Backup directory not found.\n' >> "$rb_report" 2>/dev/null || true
-            _frblog "Session $s skipped: backup dir missing"
-            (( sessions_skipped++ ))
-            continue
-        fi
+		if [[ ! -d "$bdir" ]]; then
+			warn "Backup directory missing for session $s — skipping."
+			printf '  [SKIP] Backup directory not found.\n' >>"$rb_report" 2>/dev/null || true
+			_frblog "Session $s skipped: backup dir missing"
+			((sessions_skipped++))
+			continue
+		fi
 
-        _RBJ_RESTORED=0
-        _RBJ_ERRORS=0
+		_RBJ_RESTORED=0
+		_RBJ_ERRORS=0
 
-        if [[ -f "$jfile" ]]; then
-            printf 'Journal:    %s\n\nRollback actions:\n' "$jfile" >> "$rb_report" 2>/dev/null || true
-            _frblog "Session $s: processing journal"
-            _apply_rollback_journal "$jfile" "$bdir" "$rb_report"
-        else
-            {
-                printf 'Journal:    NONE (pre-journal run — restoring files only)\n\n'
-                printf 'NOTE: Package installs and service state changes from this session\n'
-                printf '      cannot be automatically reversed. Review manually.\n\n'
-                printf 'Rollback actions:\n'
-            } >> "$rb_report" 2>/dev/null || true
-            warn "Session $s: no journal — restoring backed-up files only."
-            _frblog "Session $s: no journal found; attempting raw file restore"
-            _restore_backup_dir_files "$bdir" "$rb_report"
-        fi
+		if [[ -f "$jfile" ]]; then
+			printf 'Journal:    %s\n\nRollback actions:\n' "$jfile" >>"$rb_report" 2>/dev/null || true
+			_frblog "Session $s: processing journal"
+			_apply_rollback_journal "$jfile" "$bdir" "$rb_report"
+		else
+			{
+				printf 'Journal:    NONE (pre-journal run — restoring files only)\n\n'
+				printf 'NOTE: Package installs and service state changes from this session\n'
+				printf '      cannot be automatically reversed. Review manually.\n\n'
+				printf 'Rollback actions:\n'
+			} >>"$rb_report" 2>/dev/null || true
+			warn "Session $s: no journal — restoring backed-up files only."
+			_frblog "Session $s: no journal found; attempting raw file restore"
+			_restore_backup_dir_files "$bdir" "$rb_report"
+		fi
 
-        printf '\n  Session result: restored=%d  errors/warnings=%d\n' \
-            "$_RBJ_RESTORED" "$_RBJ_ERRORS" >> "$rb_report" 2>/dev/null || true
-        _frblog "Session $s done: restored=$_RBJ_RESTORED errors=$_RBJ_ERRORS"
+		printf '\n  Session result: restored=%d  errors/warnings=%d\n' \
+			"$_RBJ_RESTORED" "$_RBJ_ERRORS" >>"$rb_report" 2>/dev/null || true
+		_frblog "Session $s done: restored=$_RBJ_RESTORED errors=$_RBJ_ERRORS"
 
-        (( total_restored += _RBJ_RESTORED ))
-        (( total_errors   += _RBJ_ERRORS   ))
-        (( sessions_ok++ ))
-    done
+		((total_restored += _RBJ_RESTORED))
+		((total_errors += _RBJ_ERRORS))
+		((sessions_ok++))
+	done
 
-    # 4. Write combined summary to report and log
-    {
-        printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
-        printf '=== Full Rollback Summary ===\n'
-        printf 'Sessions found:     %d\n' "$total_sessions"
-        printf 'Sessions processed: %d\n' "$sessions_ok"
-        printf 'Sessions skipped:   %d\n' "$sessions_skipped"
-        printf 'Changes reverted:   %d\n' "$total_restored"
-        printf 'Errors/warnings:    %d\n' "$total_errors"
-        printf 'Completed:          %s\n' "$(date '+%F %T')"
-        printf 'Log file:           %s\n' "$rb_log"
-        (( IS_OSTREE )) && printf '\nNOTE: rpm-ostree uninstalls require a reboot to take effect.\n'
-        printf '\nA reboot is strongly recommended to finalize all rollback changes.\n'
-    } >> "$rb_report" 2>/dev/null || true
-    chmod 644 "$rb_report" 2>/dev/null || true
-    chmod 644 "$rb_log"    2>/dev/null || true
+	# 4. Write combined summary to report and log
+	{
+		printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+		printf '=== Full Rollback Summary ===\n'
+		printf 'Sessions found:     %d\n' "$total_sessions"
+		printf 'Sessions processed: %d\n' "$sessions_ok"
+		printf 'Sessions skipped:   %d\n' "$sessions_skipped"
+		printf 'Changes reverted:   %d\n' "$total_restored"
+		printf 'Errors/warnings:    %d\n' "$total_errors"
+		printf 'Completed:          %s\n' "$(date '+%F %T')"
+		printf 'Log file:           %s\n' "$rb_log"
+		((IS_OSTREE)) && printf '\nNOTE: rpm-ostree uninstalls require a reboot to take effect.\n'
+		printf '\nA reboot is strongly recommended to finalize all rollback changes.\n'
+	} >>"$rb_report" 2>/dev/null || true
+	chmod 644 "$rb_report" 2>/dev/null || true
+	chmod 644 "$rb_log" 2>/dev/null || true
 
-    _frblog "Full rollback complete. Processed=$sessions_ok Skipped=$sessions_skipped Restored=$total_restored Errors=$total_errors"
+	_frblog "Full rollback complete. Processed=$sessions_ok Skipped=$sessions_skipped Restored=$total_restored Errors=$total_errors"
 
-    printf '\n'
-    ok "Full rollback report: $rb_report"
-    ok "Full rollback log:    $rb_log"
-    if (( total_errors > 0 )); then
-        warn "Full rollback completed with $total_errors warning(s) — manual review may be needed."
-    else
-        ok "Full rollback complete: $total_restored change(s) reversed across $sessions_ok session(s)."
-    fi
-    (( IS_OSTREE )) && warn "A reboot is required for rpm-ostree changes to take effect."
-    info "A system reboot is strongly recommended to finalize all rollback changes."
-    return 0
+	printf '\n'
+	ok "Full rollback report: $rb_report"
+	ok "Full rollback log:    $rb_log"
+	if ((total_errors > 0)); then
+		warn "Full rollback completed with $total_errors warning(s) — manual review may be needed."
+	else
+		ok "Full rollback complete: $total_restored change(s) reversed across $sessions_ok session(s)."
+	fi
+	((IS_OSTREE)) && warn "A reboot is required for rpm-ostree changes to take effect."
+	info "A system reboot is strongly recommended to finalize all rollback changes."
+	return 0
 }
 get_user_downloads_dir() {
-    local user="${TARGET_USER:-${SUDO_USER:-}}"
-    [[ -z "$user" || "$user" == "root" ]] && return 1
-    local home; home="$(user_home "$user")"
-    [[ -z "$home" ]] && return 1
-    local dl
-    dl="$(sudo -u "$user" xdg-user-dir DOWNLOAD 2>/dev/null || true)"
-    [[ -z "$dl" ]] && dl="${home}/Downloads"
-    printf '%s' "$dl"
+	local user="${TARGET_USER:-${SUDO_USER:-}}"
+	[[ -z "$user" || "$user" == "root" ]] && return 1
+	local home
+	home="$(user_home "$user")"
+	[[ -z "$home" ]] && return 1
+	local dl
+	dl="$(sudo -u "$user" xdg-user-dir DOWNLOAD 2>/dev/null || true)"
+	[[ -z "$dl" ]] && dl="${home}/Downloads"
+	printf '%s' "$dl"
 }
 
 # init_user_report_dirs() - Create Downloads/<project>/results and logs with correct ownership.
 init_user_report_dirs() {
-    local user="${TARGET_USER:-${SUDO_USER:-}}"
-    USER_DOWNLOADS_DIR="$(get_user_downloads_dir 2>/dev/null || true)"
-    if [[ -z "$USER_DOWNLOADS_DIR" ]]; then
-        warn "No target user set — section reports will only appear in $LOG_FILE."
-        return 0
-    fi
-    USER_PROJECT_DIR="${USER_DOWNLOADS_DIR}/${PROJECT_NAME}"
-    USER_RESULTS_DIR="${USER_PROJECT_DIR}/results"
-    USER_LOGS_DIR="${USER_PROJECT_DIR}/logs"
-    if (( DRY_RUN )); then
-        info "Would create: $USER_PROJECT_DIR"
-        info "Would create: $USER_RESULTS_DIR"
-        info "Would create: $USER_LOGS_DIR"
-        return 0
-    fi
-    install -d -m 750 -o "$user" -g "$user" "$USER_PROJECT_DIR" 2>/dev/null \
-        || { warn "Could not create $USER_PROJECT_DIR — reports will only be in $LOG_FILE."; return 0; }
-    install -d -m 750 -o "$user" -g "$user" "$USER_RESULTS_DIR" 2>/dev/null \
-        || { warn "Could not create $USER_RESULTS_DIR — reports will only be in $LOG_FILE."; return 0; }
-    install -d -m 750 -o "$user" -g "$user" "$USER_LOGS_DIR" 2>/dev/null || true
-    ok "Project export dir ready: $USER_PROJECT_DIR"
-    ok "Report dir ready: $USER_RESULTS_DIR"
-    ok "Log dir ready: $USER_LOGS_DIR"
+	local user="${TARGET_USER:-${SUDO_USER:-}}"
+	USER_DOWNLOADS_DIR="$(get_user_downloads_dir 2>/dev/null || true)"
+	if [[ -z "$USER_DOWNLOADS_DIR" ]]; then
+		warn "No target user set — section reports will only appear in $LOG_FILE."
+		return 0
+	fi
+	USER_PROJECT_DIR="${USER_DOWNLOADS_DIR}/${PROJECT_NAME}"
+	USER_RESULTS_DIR="${USER_PROJECT_DIR}/results"
+	USER_LOGS_DIR="${USER_PROJECT_DIR}/logs"
+	if ((DRY_RUN)); then
+		info "Would create: $USER_PROJECT_DIR"
+		info "Would create: $USER_RESULTS_DIR"
+		info "Would create: $USER_LOGS_DIR"
+		return 0
+	fi
+	install -d -m 750 -o "$user" -g "$user" "$USER_PROJECT_DIR" 2>/dev/null ||
+		{
+			warn "Could not create $USER_PROJECT_DIR — reports will only be in $LOG_FILE."
+			return 0
+		}
+	install -d -m 750 -o "$user" -g "$user" "$USER_RESULTS_DIR" 2>/dev/null ||
+		{
+			warn "Could not create $USER_RESULTS_DIR — reports will only be in $LOG_FILE."
+			return 0
+		}
+	install -d -m 750 -o "$user" -g "$user" "$USER_LOGS_DIR" 2>/dev/null || true
+	ok "Project export dir ready: $USER_PROJECT_DIR"
+	ok "Report dir ready: $USER_RESULTS_DIR"
+	ok "Log dir ready: $USER_LOGS_DIR"
 }
 
 # write_user_report() - Read stdin and write to a file in the user results directory.
 # Usage: { echo content; } | write_user_report <filename>
 write_user_report() {
-    local filename="$1"
-    if [[ -z "$USER_RESULTS_DIR" ]]; then cat >/dev/null; return 0; fi
-    if (( DRY_RUN )); then
-        info "Would write report: $USER_RESULTS_DIR/$filename"
-        cat >/dev/null
-        return 0
-    fi
-    local user="${TARGET_USER:-${SUDO_USER:-}}"
-    local path="${USER_RESULTS_DIR}/${filename}"
-    if ! cat > "$path" 2>/dev/null; then
-        err "Failed to write report to $path (filesystem may be read-only or full)"
-        return 1
-    fi
-    chown "${user}:${user}" "$path" 2>/dev/null || true
-    chmod 640 "$path" 2>/dev/null || true
-    ok "Report saved: $path"
+	local filename="$1"
+	if [[ -z "$USER_RESULTS_DIR" ]]; then
+		cat >/dev/null
+		return 0
+	fi
+	if ((DRY_RUN)); then
+		info "Would write report: $USER_RESULTS_DIR/$filename"
+		cat >/dev/null
+		return 0
+	fi
+	local user="${TARGET_USER:-${SUDO_USER:-}}"
+	local path="${USER_RESULTS_DIR}/${filename}"
+	if ! cat >"$path" 2>/dev/null; then
+		err "Failed to write report to $path (filesystem may be read-only or full)"
+		return 1
+	fi
+	chown "${user}:${user}" "$path" 2>/dev/null || true
+	chmod 640 "$path" 2>/dev/null || true
+	ok "Report saved: $path"
 }
 
 # copy_to_user_results() - Copy a system-owned file into the user results directory.
 # Usage: copy_to_user_results <source_path> [dest_filename]
 copy_to_user_results() {
-    local src="$1" dest_name="${2:-$(basename "$1")}"
-    [[ -z "$USER_RESULTS_DIR" || ! -f "$src" ]] && return 0
-    (( DRY_RUN )) && { info "Would copy $src -> $USER_RESULTS_DIR/$dest_name"; return 0; }
-    local user="${TARGET_USER:-${SUDO_USER:-}}"
-    cp -a "$src" "${USER_RESULTS_DIR}/${dest_name}" 2>/dev/null || true
-    chown "${user}:${user}" "${USER_RESULTS_DIR}/${dest_name}" 2>/dev/null || true
-    chmod 640 "${USER_RESULTS_DIR}/${dest_name}" 2>/dev/null || true
-    ok "Copied $src -> $USER_RESULTS_DIR/$dest_name"
+	local src="$1" dest_name="${2:-$(basename "$1")}"
+	[[ -z "$USER_RESULTS_DIR" || ! -f "$src" ]] && return 0
+	((DRY_RUN)) && {
+		info "Would copy $src -> $USER_RESULTS_DIR/$dest_name"
+		return 0
+	}
+	local user="${TARGET_USER:-${SUDO_USER:-}}"
+	cp -a "$src" "${USER_RESULTS_DIR}/${dest_name}" 2>/dev/null || true
+	chown "${user}:${user}" "${USER_RESULTS_DIR}/${dest_name}" 2>/dev/null || true
+	chmod 640 "${USER_RESULTS_DIR}/${dest_name}" 2>/dev/null || true
+	ok "Copied $src -> $USER_RESULTS_DIR/$dest_name"
 }
 
 # copy_log_to_user() - Copy main and structured error logs to the user logs directory.
 copy_log_to_user() {
-    [[ -z "$USER_LOGS_DIR" || ! -f "$LOG_FILE" ]] && return 0
-    (( DRY_RUN )) && { info "Would copy log -> $USER_LOGS_DIR/"; return 0; }
-    local user="${TARGET_USER:-${SUDO_USER:-}}"
-    local dest
-    dest="${USER_LOGS_DIR}/$(basename "$LOG_FILE")"
-    cp -a "$LOG_FILE" "$dest" 2>/dev/null || true
-    chown "${user}:${user}" "$dest" 2>/dev/null || true
-    chmod 640 "$dest" 2>/dev/null || true
-    ok "Log copied: $dest"
-    if [[ -n "$ERROR_LOG" && -f "$ERROR_LOG" ]]; then
-        local err_dest
-        err_dest="${USER_LOGS_DIR}/$(basename "$ERROR_LOG")"
-        cp -a "$ERROR_LOG" "$err_dest" 2>/dev/null || true
-        chown "${user}:${user}" "$err_dest" 2>/dev/null || true
-        chmod 640 "$err_dest" 2>/dev/null || true
-        ok "Error log copied: $err_dest"
-    fi
+	[[ -z "$USER_LOGS_DIR" || ! -f "$LOG_FILE" ]] && return 0
+	((DRY_RUN)) && {
+		info "Would copy log -> $USER_LOGS_DIR/"
+		return 0
+	}
+	local user="${TARGET_USER:-${SUDO_USER:-}}"
+	local dest
+	dest="${USER_LOGS_DIR}/$(basename "$LOG_FILE")"
+	cp -a "$LOG_FILE" "$dest" 2>/dev/null || true
+	chown "${user}:${user}" "$dest" 2>/dev/null || true
+	chmod 640 "$dest" 2>/dev/null || true
+	ok "Log copied: $dest"
+	if [[ -n "$ERROR_LOG" && -f "$ERROR_LOG" ]]; then
+		local err_dest
+		err_dest="${USER_LOGS_DIR}/$(basename "$ERROR_LOG")"
+		cp -a "$ERROR_LOG" "$err_dest" 2>/dev/null || true
+		chown "${user}:${user}" "$err_dest" 2>/dev/null || true
+		chmod 640 "$err_dest" 2>/dev/null || true
+		ok "Error log copied: $err_dest"
+	fi
 }
 
 # generate_audit_pdf() - Export a PDF audit report and importable TXT bundle.
 # Usage: generate_audit_pdf [summary_txt_path]
 generate_audit_pdf() {
-    local summary_path="${1:-}"
-    [[ -z "$USER_DOWNLOADS_DIR" ]] && { warn "No Downloads directory available for PDF audit export."; return 1; }
+	local summary_path="${1:-}"
+	[[ -z "$USER_DOWNLOADS_DIR" ]] && {
+		warn "No Downloads directory available for PDF audit export."
+		return 1
+	}
 
-    local user="${TARGET_USER:-${SUDO_USER:-}}"
-    local pdf_path="${USER_DOWNLOADS_DIR}/fedora-hardening-audit-${REPORT_DATE}.pdf"
-    local bundle_path="${USER_DOWNLOADS_DIR}/fedora-hardening-audit-${REPORT_DATE}.txt"
-    local txt_path="/tmp/fedora-hardening-audit-${REPORT_DATE}-$$.txt"
-    local ps_path="/tmp/fedora-hardening-audit-${REPORT_DATE}-$$.ps"
-    register_tmp "$txt_path"
-    register_tmp "$ps_path"
+	local user="${TARGET_USER:-${SUDO_USER:-}}"
+	local pdf_path="${USER_DOWNLOADS_DIR}/fedora-hardening-audit-${REPORT_DATE}.pdf"
+	local bundle_path="${USER_DOWNLOADS_DIR}/fedora-hardening-audit-${REPORT_DATE}.txt"
+	local txt_path="/tmp/fedora-hardening-audit-${REPORT_DATE}-$$.txt"
+	local ps_path="/tmp/fedora-hardening-audit-${REPORT_DATE}-$$.ps"
+	register_tmp "$txt_path"
+	register_tmp "$ps_path"
 
-    if (( DRY_RUN )); then
-        info "Would generate audit PDF: $pdf_path"
-        info "Would write audit import bundle: $bundle_path"
-        return 0
-    fi
+	if ((DRY_RUN)); then
+		info "Would generate audit PDF: $pdf_path"
+		info "Would write audit import bundle: $bundle_path"
+		return 0
+	fi
 
-    if [[ -n "$summary_path" && -f "$summary_path" ]]; then
-        cp -f "$summary_path" "$txt_path" 2>/dev/null || true
-    else
-        {
-            printf 'Fedora Hardening Audit Report\n'
-            printf 'Generated: %s\n' "$RUN_STAMP_HUMAN"
-            printf 'Host: %s\n' "$HOST_LABEL"
-            printf 'Log file: %s\n\n' "$LOG_FILE"
-            printf 'Actionable items: %d\n' "${#ACTIONABLE_ITEMS[@]}"
-            for item in "${ACTIONABLE_ITEMS[@]}"; do
-                local section priority tag desc
-                IFS='|' read -r section priority tag desc <<<"$item"
-                printf '  [%s][%s] %s\n' "$priority" "$section" "$desc"
-            done
-            printf '\nManual follow-up remains required. See reports/logs for full details.\n'
-        } > "$txt_path"
-    fi
+	if [[ -n "$summary_path" && -f "$summary_path" ]]; then
+		cp -f "$summary_path" "$txt_path" 2>/dev/null || true
+	else
+		{
+			printf 'Fedora Hardening Audit Report\n'
+			printf 'Generated: %s\n' "$RUN_STAMP_HUMAN"
+			printf 'Host: %s\n' "$HOST_LABEL"
+			printf 'Log file: %s\n\n' "$LOG_FILE"
+			printf 'Actionable items: %d\n' "${#ACTIONABLE_ITEMS[@]}"
+			for item in "${ACTIONABLE_ITEMS[@]}"; do
+				local section priority tag desc
+				IFS='|' read -r section priority tag desc <<<"$item"
+				printf '  [%s][%s] %s\n' "$priority" "$section" "$desc"
+			done
+			printf '\nManual follow-up remains required. See reports/logs for full details.\n'
+		} >"$txt_path"
+	fi
 
-    {
-        printf '\n=== Importable Action Items ===\n'
-        printf 'Re-import later with: sudo %s --import-audit %s\n\n' "$SCRIPT_NAME" "$pdf_path"
-        for item in "${ACTIONABLE_ITEMS[@]}"; do
-            printf 'ACTION_ITEM|%s\n' "$item"
-        done
-    } >> "$txt_path"
+	{
+		printf '\n=== Importable Action Items ===\n'
+		printf 'Re-import later with: sudo %s --import-audit %s\n\n' "$SCRIPT_NAME" "$pdf_path"
+		for item in "${ACTIONABLE_ITEMS[@]}"; do
+			printf 'ACTION_ITEM|%s\n' "$item"
+		done
+	} >>"$txt_path"
 
-    {
-        [[ -f "$txt_path" ]] && cat "$txt_path"
-    } > "$bundle_path"
-    chown "${user}:${user}" "$bundle_path" 2>/dev/null || true
-    chmod 640 "$bundle_path" 2>/dev/null || true
+	{
+		[[ -f "$txt_path" ]] && cat "$txt_path"
+	} >"$bundle_path"
+	chown "${user}:${user}" "$bundle_path" 2>/dev/null || true
+	chmod 640 "$bundle_path" 2>/dev/null || true
 
-    ensure_command_dep enscript "audit PDF generation" enscript
-    ensure_command_dep ps2pdf "audit PDF generation" ghostscript
-    if ! cmd_exists enscript || ! cmd_exists ps2pdf; then
-        warn "PDF generation dependencies are unavailable; could not create $pdf_path"
-        return 1
-    fi
+	ensure_command_dep enscript "audit PDF generation" enscript
+	ensure_command_dep ps2pdf "audit PDF generation" ghostscript
+	if ! cmd_exists enscript || ! cmd_exists ps2pdf; then
+		warn "PDF generation dependencies are unavailable; could not create $pdf_path"
+		return 1
+	fi
 
-    if ! enscript -B -q -f Courier8 "$txt_path" -o "$ps_path" >/dev/null 2>&1; then
-        warn "enscript failed while building the audit PDF source."
-        return 1
-    fi
-    if ! ps2pdf "$ps_path" "$pdf_path" >/dev/null 2>&1; then
-        warn "ps2pdf failed while writing the audit PDF."
-        return 1
-    fi
+	if ! enscript -B -q -f Courier8 "$txt_path" -o "$ps_path" >/dev/null 2>&1; then
+		warn "enscript failed while building the audit PDF source."
+		return 1
+	fi
+	if ! ps2pdf "$ps_path" "$pdf_path" >/dev/null 2>&1; then
+		warn "ps2pdf failed while writing the audit PDF."
+		return 1
+	fi
 
-    chown "${user}:${user}" "$pdf_path" 2>/dev/null || true
-    chmod 640 "$pdf_path" 2>/dev/null || true
-    ok "Audit PDF saved: $pdf_path"
-    ok "Audit import bundle saved: $bundle_path"
-    return 0
+	chown "${user}:${user}" "$pdf_path" 2>/dev/null || true
+	chmod 640 "$pdf_path" 2>/dev/null || true
+	ok "Audit PDF saved: $pdf_path"
+	ok "Audit import bundle saved: $bundle_path"
+	return 0
 }
 
 # import_audit_items() - Load actionable items from a generated audit PDF or TXT bundle.
 # Accepts either the PDF path or the companion TXT bundle path.
 import_audit_items() {
-    local input_path="$1"
-    local source_path="$input_path"
-    local extract_path="/tmp/fedora-hardening-audit-import-${REPORT_DATE}-$$.txt"
-    register_tmp "$extract_path"
+	local input_path="$1"
+	local source_path="$input_path"
+	local extract_path="/tmp/fedora-hardening-audit-import-${REPORT_DATE}-$$.txt"
+	register_tmp "$extract_path"
 
-    if [[ ! -f "$input_path" ]]; then
-        err "Audit import file not found: $input_path"
-        return 1
-    fi
+	if [[ ! -f "$input_path" ]]; then
+		err "Audit import file not found: $input_path"
+		return 1
+	fi
 
-    case "$input_path" in
-        *.pdf)
-            source_path="${input_path%.pdf}.txt"
-            if [[ ! -f "$source_path" ]]; then
-                ensure_command_dep pdftotext "audit import from PDF" poppler-utils
-                if ! cmd_exists pdftotext; then
-                    err "Cannot import audit PDF without companion TXT bundle or pdftotext."
-                    return 1
-                fi
-                pdftotext "$input_path" "$extract_path" >/dev/null 2>&1 || {
-                    err "Failed to extract text from audit PDF: $input_path"
-                    return 1
-                }
-                source_path="$extract_path"
-            fi
-            ;;
-    esac
+	case "$input_path" in
+	*.pdf)
+		source_path="${input_path%.pdf}.txt"
+		if [[ ! -f "$source_path" ]]; then
+			ensure_command_dep pdftotext "audit import from PDF" poppler-utils
+			if ! cmd_exists pdftotext; then
+				err "Cannot import audit PDF without companion TXT bundle or pdftotext."
+				return 1
+			fi
+			pdftotext "$input_path" "$extract_path" >/dev/null 2>&1 || {
+				err "Failed to extract text from audit PDF: $input_path"
+				return 1
+			}
+			source_path="$extract_path"
+		fi
+		;;
+	esac
 
-    ACTIONABLE_ITEMS=()
-    while IFS= read -r line; do
-        [[ "$line" == ACTION_ITEM\|* ]] || continue
-        ACTIONABLE_ITEMS+=("${line#ACTION_ITEM|}")
-    done < "$source_path"
+	ACTIONABLE_ITEMS=()
+	while IFS= read -r line; do
+		[[ "$line" == ACTION_ITEM\|* ]] || continue
+		ACTIONABLE_ITEMS+=("${line#ACTION_ITEM|}")
+	done <"$source_path"
 
-    if (( ${#ACTIONABLE_ITEMS[@]} == 0 )); then
-        warn "No importable actionable items found in: $input_path"
-        return 1
-    fi
-    ok "Imported ${#ACTIONABLE_ITEMS[@]} actionable item(s) from audit report."
-    return 0
+	if ((${#ACTIONABLE_ITEMS[@]} == 0)); then
+		warn "No importable actionable items found in: $input_path"
+		return 1
+	fi
+	ok "Imported ${#ACTIONABLE_ITEMS[@]} actionable item(s) from audit report."
+	return 0
 }
 
 # select_actionable_items() - Split actionable items into selected and deferred groups.
 # Accepts 'all', item numbers, item tags, or a comma-separated mix of numbers and tags.
 select_actionable_items() {
-    local selection="${1:-all}"
-    
-    # Validate selection input to prevent shell injection
-    if [[ ! "$selection" =~ ^[a-zA-Z0-9,[:space:]]*$ ]]; then
-        err "Invalid selection format: contains non-alphanumeric characters (only 0-9, a-z, A-Z, commas allowed)"
-        return 1
-    fi
-    
-    local token idx=1
-    declare -A picks=()
-    SELECTED_ACTIONABLE_ITEMS=()
-    DEFERRED_ACTIONABLE_ITEMS=()
+	local selection="${1:-all}"
 
-    selection="${selection// /}"
-    if [[ -z "$selection" || "${selection,,}" == "all" ]]; then
-        SELECTED_ACTIONABLE_ITEMS=("${ACTIONABLE_ITEMS[@]}")
-        return 0
-    fi
+	# Validate selection input to prevent shell injection
+	if [[ ! "$selection" =~ ^[a-zA-Z0-9,[:space:]]*$ ]]; then
+		err "Invalid selection format: contains non-alphanumeric characters (only 0-9, a-z, A-Z, commas allowed)"
+		return 1
+	fi
 
-    IFS=',' read -r -a tokens <<< "$selection"
-    for token in "${tokens[@]}"; do
-        [[ -z "$token" ]] && continue
-        if [[ "$token" =~ ^[0-9]+$ ]]; then
-            picks["index:$token"]=1
-        else
-            picks["tag:${token^^}"]=1
-        fi
-    done
+	local token idx=1
+	declare -A picks=()
+	SELECTED_ACTIONABLE_ITEMS=()
+	DEFERRED_ACTIONABLE_ITEMS=()
 
-    for item in "${ACTIONABLE_ITEMS[@]}"; do
-        local section priority tag desc
-        IFS='|' read -r section priority tag desc <<<"$item"
-        if [[ -n "${picks[index:$idx]:-}" || -n "${picks[tag:$tag]:-}" ]]; then
-            SELECTED_ACTIONABLE_ITEMS+=("$item")
-        else
-            DEFERRED_ACTIONABLE_ITEMS+=("$item")
-        fi
-        ((idx++))
-    done
+	selection="${selection// /}"
+	if [[ -z "$selection" || "${selection,,}" == "all" ]]; then
+		SELECTED_ACTIONABLE_ITEMS=("${ACTIONABLE_ITEMS[@]}")
+		return 0
+	fi
 
-    (( ${#SELECTED_ACTIONABLE_ITEMS[@]} > 0 ))
+	IFS=',' read -r -a tokens <<<"$selection"
+	for token in "${tokens[@]}"; do
+		[[ -z "$token" ]] && continue
+		if [[ "$token" =~ ^[0-9]+$ ]]; then
+			picks["index:$token"]=1
+		else
+			picks["tag:${token^^}"]=1
+		fi
+	done
+
+	for item in "${ACTIONABLE_ITEMS[@]}"; do
+		local section priority tag desc
+		IFS='|' read -r section priority tag desc <<<"$item"
+		if [[ -v "picks[index:${idx}]" || -v "picks[tag:${tag}]" ]]; then
+			SELECTED_ACTIONABLE_ITEMS+=("$item")
+		else
+			DEFERRED_ACTIONABLE_ITEMS+=("$item")
+		fi
+		((idx++))
+	done
+
+	((${#SELECTED_ACTIONABLE_ITEMS[@]} > 0))
 }
 
 # handle_actionable_follow_up() - Gate implementation on approval and optional item selection.
 # If declined, export a PDF audit report plus TXT import bundle; if approved,
 # allow all or selected changes by item number and/or actionable tag.
 handle_actionable_follow_up() {
-    local summary_path="${1:-}"
-    local selection="all"
+	local summary_path="${1:-}"
+	local selection="all"
 
-    show_actionable_items
-    (( ${#ACTIONABLE_ITEMS[@]} > 0 )) || return 0
+	show_actionable_items
+	((${#ACTIONABLE_ITEMS[@]} > 0)) || return 0
 
-    if ! confirm "Implement the recommended next steps from the final summary now?"; then
-        info "User declined implementation of recommended changes."
-        generate_audit_pdf "$summary_path" || true
-        info "Actionable items remain recorded in: ${USER_RESULTS_DIR:-$LOG_FILE}"
-        return 0
-    fi
+	if ! confirm "Implement the recommended next steps from the final summary now?"; then
+		info "User declined implementation of recommended changes."
+		generate_audit_pdf "$summary_path" || true
+		info "Actionable items remain recorded in: ${USER_RESULTS_DIR:-$LOG_FILE}"
+		return 0
+	fi
 
-    if (( ${#ACTIONABLE_ITEMS[@]} > 1 )); then
-        info "You can implement all items, or choose specific item numbers/tags from the actionable list."
-        selection="$(prompt_input "Enter 'all' or comma-separated item numbers/tags to implement" "all")"
-        if ! select_actionable_items "$selection"; then
-            warn "Invalid actionable-item selection '$selection' — defaulting to all items."
-            SELECTED_ACTIONABLE_ITEMS=("${ACTIONABLE_ITEMS[@]}")
-            DEFERRED_ACTIONABLE_ITEMS=()
-        fi
-    else
-        SELECTED_ACTIONABLE_ITEMS=("${ACTIONABLE_ITEMS[@]}")
-        DEFERRED_ACTIONABLE_ITEMS=()
-    fi
+	if ((${#ACTIONABLE_ITEMS[@]} > 1)); then
+		info "You can implement all items, or choose specific item numbers/tags from the actionable list."
+		selection="$(prompt_input "Enter 'all' or comma-separated item numbers/tags to implement" "all")"
+		if ! select_actionable_items "$selection"; then
+			warn "Invalid actionable-item selection '$selection' — defaulting to all items."
+			SELECTED_ACTIONABLE_ITEMS=("${ACTIONABLE_ITEMS[@]}")
+			DEFERRED_ACTIONABLE_ITEMS=()
+		fi
+	else
+		SELECTED_ACTIONABLE_ITEMS=("${ACTIONABLE_ITEMS[@]}")
+		DEFERRED_ACTIONABLE_ITEMS=()
+	fi
 
-    ACTIONABLE_ITEMS=("${SELECTED_ACTIONABLE_ITEMS[@]}")
-    remediation_loop
-    if (( ${#DEFERRED_ACTIONABLE_ITEMS[@]} > 0 )); then
-        info "${#DEFERRED_ACTIONABLE_ITEMS[@]} actionable item(s) were deferred by user choice."
-        ACTIONABLE_ITEMS+=("${DEFERRED_ACTIONABLE_ITEMS[@]}")
-    fi
-    return 0
+	ACTIONABLE_ITEMS=("${SELECTED_ACTIONABLE_ITEMS[@]}")
+	remediation_loop
+	if ((${#DEFERRED_ACTIONABLE_ITEMS[@]} > 0)); then
+		info "${#DEFERRED_ACTIONABLE_ITEMS[@]} actionable item(s) were deferred by user choice."
+		ACTIONABLE_ITEMS+=("${DEFERRED_ACTIONABLE_ITEMS[@]}")
+	fi
+	return 0
 }
 
 # ---------- Pre-flight Checks -----------------------------------------------
@@ -2336,7 +2394,7 @@ handle_actionable_follow_up() {
 # Used by --help flag to show syntax, options, and section descriptions.
 # Usage: usage (called by --help or when argument parsing fails)
 usage() {
-    awk '
+	awk '
         NR == 1 { next }
         /^# =============================================================================$/ { sep++; next }
         sep == 1 { sub(/^# ?/, ""); print }
@@ -2350,7 +2408,7 @@ usage() {
 # Used by --list flag to help users understand available options.
 # Usage: list_sections (called by --list flag)
 list_sections() {
-    cat <<'EOF'
+	cat <<'EOF'
   2  System updates
   3  Automatic updates
   4  SELinux tools
@@ -2384,49 +2442,88 @@ EOF
 # Validates option syntax and applies settings globally for use throughout script.
 # Usage: parse_args "$@" (called in main before preflight)
 parse_args() {
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            -u|--user)
-                if [[ -z "${2:-}" ]]; then
-                    err "Option --user requires a username argument"
-                    usage; exit 2
-                fi
-                TARGET_USER="$2"; shift 2 ;;
-            -y|--yes)       ASSUME_YES=1; shift ;;
-            -n|--dry-run)   DRY_RUN=1; shift ;;
-            --gui)          FORCE_GUI=1; shift ;;
-            --gui-full)     FORCE_GUI_FULL=1; shift ;;
-            --import-audit)
-                if [[ -z "${2:-}" ]]; then
-                    err "Option --import-audit requires a file path argument"
-                    usage; exit 2
-                fi
-                IMPORT_AUDIT_PATH="$2"; shift 2 ;;
-            --skip)
-                if [[ -z "${2:-}" ]]; then
-                    err "Option --skip requires a section list argument"
-                    usage; exit 2
-                fi
-                SKIP_LIST="$2"; shift 2 ;;
-            --only)
-                if [[ -z "${2:-}" ]]; then
-                    err "Option --only requires a section list argument"
-                    usage; exit 2
-                fi
-                ONLY_LIST="$2"; shift 2 ;;
-            --list)         list_sections; exit 0 ;;
-            --list-sessions) LIST_SESSIONS_MODE=1; shift ;;
-            --rollback)
-                if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
-                    ROLLBACK_SESSION_ID="$2"; shift 2
-                else
-                    ROLLBACK_SESSION_ID="last"; shift
-                fi
-                ;;
-            -h|--help)      usage; exit 0 ;;
-            *) err "Unknown argument: $1"; usage; exit 2 ;;
-        esac
-    done
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-u | --user)
+			if [[ -z "${2:-}" ]]; then
+				err "Option --user requires a username argument"
+				usage
+				exit 2
+			fi
+			TARGET_USER="$2"
+			shift 2
+			;;
+		-y | --yes)
+			ASSUME_YES=1
+			shift
+			;;
+		-n | --dry-run)
+			DRY_RUN=1
+			shift
+			;;
+		--gui)
+			FORCE_GUI=1
+			shift
+			;;
+		--gui-full)
+			FORCE_GUI_FULL=1
+			shift
+			;;
+		--import-audit)
+			if [[ -z "${2:-}" ]]; then
+				err "Option --import-audit requires a file path argument"
+				usage
+				exit 2
+			fi
+			IMPORT_AUDIT_PATH="$2"
+			shift 2
+			;;
+		--skip)
+			if [[ -z "${2:-}" ]]; then
+				err "Option --skip requires a section list argument"
+				usage
+				exit 2
+			fi
+			SKIP_LIST="$2"
+			shift 2
+			;;
+		--only)
+			if [[ -z "${2:-}" ]]; then
+				err "Option --only requires a section list argument"
+				usage
+				exit 2
+			fi
+			ONLY_LIST="$2"
+			shift 2
+			;;
+		--list)
+			list_sections
+			exit 0
+			;;
+		--list-sessions)
+			LIST_SESSIONS_MODE=1
+			shift
+			;;
+		--rollback)
+			if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
+				ROLLBACK_SESSION_ID="$2"
+				shift 2
+			else
+				ROLLBACK_SESSION_ID="last"
+				shift
+			fi
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		*)
+			err "Unknown argument: $1"
+			usage
+			exit 2
+			;;
+		esac
+	done
 }
 
 # preflight() - Initialize script environment, detect system configuration, and validate prerequisites.
@@ -2435,208 +2532,229 @@ parse_args() {
 # Sets FEDORA_MAJOR version for compatibility validation (expects 44+).
 # Usage: preflight (called in main after parse_args)
 preflight() {
-    local privilege_source="direct root login/session"
-    (( FORCE_GUI_FULL )) || draw_banner
-    setup_ui_mode
-    if (( EUID != 0 )); then
-        err "This script must be run as root (use sudo)."
-        PRECHECK_FAILED=1
-        return 0
-    fi
-    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-        privilege_source="sudo (invoked by ${SUDO_USER})"
-    fi
-    ok "Privilege check passed: running with administrator/root privileges via ${privilege_source}."
+	local privilege_source="direct root login/session"
+	((FORCE_GUI_FULL)) || draw_banner
+	setup_ui_mode
+	if ((EUID != 0)); then
+		err "This script must be run as root (use sudo)."
+		PRECHECK_FAILED=1
+		return 0
+	fi
+	if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+		privilege_source="sudo (invoked by ${SUDO_USER})"
+	fi
+	ok "Privilege check passed: running with administrator/root privileges via ${privilege_source}."
 
-    mkdir -p "$LOG_DIR"
-    touch "$LOG_FILE"
-    chmod 600 "$LOG_FILE" 2>/dev/null || true
-    LOG_READY=1
+	mkdir -p "$LOG_DIR"
+	touch "$LOG_FILE"
+	chmod 600 "$LOG_FILE" 2>/dev/null || true
+	LOG_READY=1
 
-    # Distro check: Verify this is a Fedora system and detect variant
-    # Sources /etc/os-release to extract distribution metadata
-    if [[ ! -r /etc/os-release ]]; then
-        err "Cannot read /etc/os-release — is this Fedora?"; exit 1
-    fi
-    # shellcheck source=/dev/null
-    . /etc/os-release
-    if [[ "${ID:-}" == "fedora" ]]; then
-        IS_FEDORA=1
-    else
-        warn "Distro ID is '${ID:-unknown}', not 'fedora'. Proceeding anyway."
-    fi
-    if [[ -e /run/ostree-booted ]]; then
-        IS_OSTREE=1
-    fi
-    FEDORA_VARIANT="${VARIANT_ID:-${VARIANT:-unknown}}"
-    detect_fedora_release_type
-    detect_desktop_envs
-    (( IS_KINOITE )) && HAS_KDE=1
-    if [[ "${VERSION_ID:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        FEDORA_MAJOR="${VERSION_ID%%.*}"
-    fi
-    if (( FEDORA_MAJOR > 0 && FEDORA_MAJOR < 44 )); then
-        warn "Fedora version is '${VERSION_ID:-unknown}' — guide targets Fedora 44+."
-        confirm "Proceed on this older version?" || exit 0
-    fi
-    info "Host: $HOST_LABEL   Distro: ${PRETTY_NAME:-?}   Kernel: $KERNEL_LABEL"
-    info "Variant: ${FEDORA_VARIANT}"
-    info "Release flags: workstation=$IS_WORKSTATION server=$IS_SERVER iot=$IS_IOT cloud=$IS_CLOUD coreos=$IS_COREOS ostree=$IS_OSTREE atomic_desktop=$IS_ATOMIC_DESKTOP"
-    if (( IS_OSTREE )); then
-        info "Detected rpm-ostree (immutable) host. Using rpm-ostree for package/update actions."
-    fi
-    if (( IS_KINOITE )); then
-        info "Detected Fedora Kinoite variant."
-    fi
-    if (( IS_SILVERBLUE )); then
-        info "Detected Fedora Silverblue variant. KDE-only tweaks will be skipped where incompatible."
-    fi
-    if (( IS_WORKSTATION )); then
-        info "Detected Fedora Workstation variant. Desktop-focused sections are enabled."
-    fi
-    if (( IS_SERVER )); then
-        info "Detected Fedora Server release profile."
-    fi
-    if (( IS_IOT )); then
-        info "Detected Fedora IoT release profile."
-    fi
-    if (( IS_CLOUD )); then
-        info "Detected Fedora Cloud release profile."
-    fi
-    if (( IS_COREOS )); then
-        info "Detected Fedora CoreOS release profile."
-    fi
-    info "Fedora major version detected: ${FEDORA_MAJOR}"
-    if (( HAS_DESKTOP )); then
-        info "Detected desktop environments: ${DESKTOP_ENVS:-unknown}"
-    else
-        warn "No desktop environment detected; desktop-focused sections may be skipped."
-    fi
-    if (( ! HAS_KDE )); then
-        warn "KDE/Plasma tooling not detected; KDE-specific section will be skipped."
-    fi
-    info "Log file:    $LOG_FILE"
-    info "Backup dir:  $BACKUP_DIR (created on first change)"
-    init_rollback_journal
-    init_session_dir
-    (( DRY_RUN ))    && warn "DRY RUN mode — no changes will be applied."
-    (( ASSUME_YES )) && warn "Auto-yes mode — no interactive confirmations."
+	# Distro check: Verify this is a Fedora system and detect variant
+	# Sources /etc/os-release to extract distribution metadata
+	if [[ ! -r /etc/os-release ]]; then
+		err "Cannot read /etc/os-release — is this Fedora?"
+		exit 1
+	fi
+	# shellcheck source=/dev/null
+	. /etc/os-release
+	if [[ "${ID:-}" == "fedora" ]]; then
+		IS_FEDORA=1
+	else
+		warn "Distro ID is '${ID:-unknown}', not 'fedora'. Proceeding anyway."
+	fi
+	if [[ -e /run/ostree-booted ]]; then
+		IS_OSTREE=1
+	fi
+	FEDORA_VARIANT="${VARIANT_ID:-${VARIANT:-unknown}}"
+	detect_fedora_release_type
+	detect_desktop_envs
+	((IS_KINOITE)) && HAS_KDE=1
+	if [[ "${VERSION_ID:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+		FEDORA_MAJOR="${VERSION_ID%%.*}"
+	fi
+	if ((FEDORA_MAJOR > 0 && FEDORA_MAJOR < 44)); then
+		warn "Fedora version is '${VERSION_ID:-unknown}' — guide targets Fedora 44+."
+		confirm "Proceed on this older version?" || exit 0
+	fi
+	info "Host: $HOST_LABEL   Distro: ${PRETTY_NAME:-?}   Kernel: $KERNEL_LABEL"
+	info "Variant: ${FEDORA_VARIANT}"
+	info "Release flags: workstation=$IS_WORKSTATION server=$IS_SERVER iot=$IS_IOT cloud=$IS_CLOUD coreos=$IS_COREOS ostree=$IS_OSTREE atomic_desktop=$IS_ATOMIC_DESKTOP"
+	if ((IS_OSTREE)); then
+		info "Detected rpm-ostree (immutable) host. Using rpm-ostree for package/update actions."
+	fi
+	if ((IS_KINOITE)); then
+		info "Detected Fedora Kinoite variant."
+	fi
+	if ((IS_SILVERBLUE)); then
+		info "Detected Fedora Silverblue variant. KDE-only tweaks will be skipped where incompatible."
+	fi
+	if ((IS_WORKSTATION)); then
+		info "Detected Fedora Workstation variant. Desktop-focused sections are enabled."
+	fi
+	if ((IS_SERVER)); then
+		info "Detected Fedora Server release profile."
+	fi
+	if ((IS_IOT)); then
+		info "Detected Fedora IoT release profile."
+	fi
+	if ((IS_CLOUD)); then
+		info "Detected Fedora Cloud release profile."
+	fi
+	if ((IS_COREOS)); then
+		info "Detected Fedora CoreOS release profile."
+	fi
+	info "Fedora major version detected: ${FEDORA_MAJOR}"
+	if ((HAS_DESKTOP)); then
+		info "Detected desktop environments: ${DESKTOP_ENVS:-unknown}"
+	else
+		warn "No desktop environment detected; desktop-focused sections may be skipped."
+	fi
+	if ((!HAS_KDE)); then
+		warn "KDE/Plasma tooling not detected; KDE-specific section will be skipped."
+	fi
+	info "Log file:    $LOG_FILE"
+	info "Backup dir:  $BACKUP_DIR (created on first change)"
+	init_rollback_journal
+	init_session_dir
+	((DRY_RUN)) && warn "DRY RUN mode — no changes will be applied."
+	((ASSUME_YES)) && warn "Auto-yes mode — no interactive confirmations."
 
-    # Resolve target user if not given
-    if [[ -z "$TARGET_USER" && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-        TARGET_USER="$SUDO_USER"
-        info "Target user inferred from sudo: $TARGET_USER"
-    fi
-    if [[ -z "$TARGET_USER" ]]; then
-        if (( ASSUME_YES )); then
-            warn "No target user set — sections that need one (7, 9c, 20) will skip user-specific tweaks."
-        else
-            TARGET_USER="$(prompt_input 'Enter the primary username to harden (blank to skip user-specific tweaks):')"
-        fi
-    fi
-    if [[ -n "$TARGET_USER" ]] && ! id -u "$TARGET_USER" >/dev/null 2>&1; then
-        warn "User '$TARGET_USER' does not exist — user-specific tweaks will skip."
-        TARGET_USER=""
-    fi
+	# Resolve target user if not given
+	if [[ -z "$TARGET_USER" && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+		TARGET_USER="$SUDO_USER"
+		info "Target user inferred from sudo: $TARGET_USER"
+	fi
+	if [[ -z "$TARGET_USER" ]]; then
+		if ((ASSUME_YES)); then
+			warn "No target user set — sections that need one (7, 9c, 20) will skip user-specific tweaks."
+		else
+			TARGET_USER="$(prompt_input 'Enter the primary username to harden (blank to skip user-specific tweaks):')"
+		fi
+	fi
+	if [[ -n "$TARGET_USER" ]] && ! id -u "$TARGET_USER" >/dev/null 2>&1; then
+		warn "User '$TARGET_USER' does not exist — user-specific tweaks will skip."
+		TARGET_USER=""
+	fi
 }
 
 # ============================================================================
 #  SECTION 2 — System updates
 # ============================================================================
+# sec_02_updates() - Perform full system package updates (dnf upgrade)
+# Ensures all system packages are current. For rpm-ostree systems, stages updates
+# for next boot. Recommends reboot after completion.
 sec_02_updates() {
-    should_run 2 || return 0
-    section 2 "System updates"
-    pkg_upgrade
-    ok "System packages updated. A reboot is recommended when the script finishes."
+	should_run 2 || return 0
+	section 2 "System updates"
+	pkg_upgrade
+	ok "System packages updated. A reboot is recommended when the script finishes."
 }
 
 # ============================================================================
 #  SECTION 3 — dnf5-automatic (Fedora 41+)
 # ============================================================================
+# sec_03_dnf_automatic() - Configure automatic security updates
+# Sets up dnf5-automatic for mutable systems or rpm-ostreed policy for immutable
+# systems to apply security patches automatically. On rpm-ostree, stages updates.
 sec_03_dnf_automatic() {
-    should_run 3 || return 0
-    section 3 "Automatic security updates"
+	should_run 3 || return 0
+	section 3 "Automatic security updates"
 
-    # Handle rpm-ostree (immutable) systems first
-    if (( IS_OSTREE )); then
-        local ro_conf="/etc/rpm-ostreed.conf"
-        [[ ! -f "$ro_conf" ]] && { warn "$ro_conf not found; skipping config write."; return 0; }
-        
-        backup_file "$ro_conf"
-        if (( ! DRY_RUN )); then
-            # Update existing policy or add new [Daemon] section (batch single sed pass)
-            if grep -qE '^\s*AutomaticUpdatePolicy\s*=' "$ro_conf"; then
-                sed -i -E 's|^\s*AutomaticUpdatePolicy\s*=.*|AutomaticUpdatePolicy=stage|' "$ro_conf" 2>/dev/null || true
-            elif grep -qE '^\[Daemon\]' "$ro_conf"; then
-                sed -i '/^\[Daemon\]/a AutomaticUpdatePolicy=stage' "$ro_conf" 2>/dev/null || true
-            else
-                printf '\n[Daemon]\nAutomaticUpdatePolicy=stage\n' >> "$ro_conf" 2>/dev/null || true
-            fi
-            ok "Configured rpm-ostreed automatic update staging in $ro_conf"
-        else
-            info "Would set AutomaticUpdatePolicy=stage in $ro_conf"
-        fi
-        
-        # Enable timer if available
-        if systemctl list-unit-files rpm-ostreed-automatic.timer >/dev/null 2>&1; then
-            run "systemctl enable --now rpm-ostreed-automatic.timer"
-        else
-            warn "rpm-ostreed-automatic.timer not found; configure automatic updates manually."
-        fi
-        return 0
-    fi
+	# Handle rpm-ostree (immutable) systems first
+	if ((IS_OSTREE)); then
+		local ro_conf="/etc/rpm-ostreed.conf"
+		[[ ! -f "$ro_conf" ]] && {
+			warn "$ro_conf not found; skipping config write."
+			return 0
+		}
 
-    # Handle mutable systems: detect dnf version, configure, enable
-    local pkg timer conf
-    pkg="dnf5-automatic"; timer="dnf5-automatic.timer"; conf="/etc/dnf/automatic5.conf"
-    if ! cmd_exists dnf || ! dnf info dnf5-automatic &>/dev/null; then
-        pkg="dnf-automatic"; timer="dnf-automatic.timer"; conf="/etc/dnf/automatic.conf"
-        warn "dnf5-automatic not found in repos — falling back to dnf-automatic."
-    fi
+		backup_file "$ro_conf"
+		if ((!DRY_RUN)); then
+			# Update existing policy or add new [Daemon] section (batch single sed pass)
+			if grep -qE '^\s*AutomaticUpdatePolicy\s*=' "$ro_conf"; then
+				sed -i -E 's|^\s*AutomaticUpdatePolicy\s*=.*|AutomaticUpdatePolicy=stage|' "$ro_conf" 2>/dev/null || true
+			elif grep -qE '^\[Daemon\]' "$ro_conf"; then
+				sed -i '/^\[Daemon\]/a AutomaticUpdatePolicy=stage' "$ro_conf" 2>/dev/null || true
+			else
+				printf '\n[Daemon]\nAutomaticUpdatePolicy=stage\n' >>"$ro_conf" 2>/dev/null || true
+			fi
+			ok "Configured rpm-ostreed automatic update staging in $ro_conf"
+		else
+			info "Would set AutomaticUpdatePolicy=stage in $ro_conf"
+		fi
 
-    pkg_install "$pkg"
-    [[ -f "$conf" ]] || { warn "$conf not found after install; skipping config."; return 0; }
-    
-    backup_file "$conf"
-    if (( ! DRY_RUN )); then
-        # Batch sed patterns for single-pass efficiency
-        batch_sed "$conf" \
-            's|^\s*upgrade_type\s*=.*|upgrade_type = security|' \
-            's|^\s*apply_updates\s*=.*|apply_updates = yes|' \
-            's|^\s*reboot\s*=.*|reboot = when-needed|' \
-            's|^\s*reboot_command\s*=.*|reboot_command = "shutdown -r +5 '\''Rebooting for security updates'\''"|'
-        ok "Patched $conf (upgrade_type=security, apply_updates=yes, reboot=when-needed)"
-    else
-        info "Would patch $conf: upgrade_type=security, apply_updates=yes, reboot=when-needed"
-    fi
+		# Enable timer if available
+		if systemctl list-unit-files rpm-ostreed-automatic.timer >/dev/null 2>&1; then
+			run "systemctl enable --now rpm-ostreed-automatic.timer"
+		else
+			warn "rpm-ostreed-automatic.timer not found; configure automatic updates manually."
+		fi
+		return 0
+	fi
 
-    run "systemctl enable --now $timer"
+	# Handle mutable systems: detect dnf version, configure, enable
+	local pkg timer conf
+	pkg="dnf5-automatic"
+	timer="dnf5-automatic.timer"
+	conf="/etc/dnf/automatic5.conf"
+	if ! cmd_exists dnf || ! dnf info dnf5-automatic &>/dev/null; then
+		pkg="dnf-automatic"
+		timer="dnf-automatic.timer"
+		conf="/etc/dnf/automatic.conf"
+		warn "dnf5-automatic not found in repos — falling back to dnf-automatic."
+	fi
+
+	pkg_install "$pkg"
+	[[ -f "$conf" ]] || {
+		warn "$conf not found after install; skipping config."
+		return 0
+	}
+
+	backup_file "$conf"
+	if ((!DRY_RUN)); then
+		# Batch sed patterns for single-pass efficiency
+		batch_sed "$conf" \
+			's|^\s*upgrade_type\s*=.*|upgrade_type = security|' \
+			's|^\s*apply_updates\s*=.*|apply_updates = yes|' \
+			's|^\s*reboot\s*=.*|reboot = when-needed|' \
+			's|^\s*reboot_command\s*=.*|reboot_command = "shutdown -r +5 '\''Rebooting for security updates'\''"|'
+		ok "Patched $conf (upgrade_type=security, apply_updates=yes, reboot=when-needed)"
+	else
+		info "Would patch $conf: upgrade_type=security, apply_updates=yes, reboot=when-needed"
+	fi
+
+	run "systemctl enable --now $timer"
 }
 
 # ============================================================================
 #  SECTION 4 — SELinux
 # ============================================================================
+# sec_04_selinux() - Verify SELinux is enforcing and install tools
+# Confirms SELinux is in enforcing mode; installs debugging and management tools
+# (policycoreutils, selinux-policy-devel). Logs policy violations.
 sec_04_selinux() {
-    should_run 4 || return 0
-    section 4 "SELinux (verify enforcing + install tools)"
-    local mode; mode="$(getenforce 2>/dev/null || echo unknown)"
-    info "Current SELinux mode: $mode"
-    if [[ "$mode" != "Enforcing" ]]; then
-        warn "SELinux is not enforcing — setting enforcing now and updating /etc/selinux/config"
-        run "setenforce 1 || true"
-        if [[ -f /etc/selinux/config ]]; then
-            backup_file /etc/selinux/config
-            if ! sed -i 's|^SELINUX=.*|SELINUX=enforcing|' /etc/selinux/config 2>/dev/null; then
-                err "Failed to set SELINUX=enforcing in /etc/selinux/config"
-                add_action_item 4 HIGH "SELINUX_CONFIG_UPDATE" "Manually set SELINUX=enforcing in /etc/selinux/config"
-                return 1
-            fi
-        fi
-    else
-        ok "SELinux is enforcing."
-    fi
-    pkg_install setools-console setroubleshoot-server
-    info "Use 'sudo ausearch -m avc -ts recent | audit2why' to diagnose denials."
+	should_run 4 || return 0
+	section 4 "SELinux (verify enforcing + install tools)"
+	local mode
+	mode="$(getenforce 2>/dev/null || echo unknown)"
+	info "Current SELinux mode: $mode"
+	if [[ "$mode" != "Enforcing" ]]; then
+		warn "SELinux is not enforcing — setting enforcing now and updating /etc/selinux/config"
+		run "setenforce 1 || true"
+		if [[ -f /etc/selinux/config ]]; then
+			backup_file /etc/selinux/config
+			if ! sed -i 's|^SELINUX=.*|SELINUX=enforcing|' /etc/selinux/config 2>/dev/null; then
+				err "Failed to set SELINUX=enforcing in /etc/selinux/config"
+				add_action_item 4 HIGH "SELINUX_CONFIG_UPDATE" "Manually set SELINUX=enforcing in /etc/selinux/config"
+				return 1
+			fi
+		fi
+	else
+		ok "SELinux is enforcing."
+	fi
+	pkg_install setools-console setroubleshoot-server
+	info "Use 'sudo ausearch -m avc -ts recent | audit2why' to diagnose denials."
 }
 
 # firewalld_ensure_service() - Register a custom firewalld service XML if not already known.
@@ -2644,36 +2762,39 @@ sec_04_selinux() {
 # similar require a custom XML file before --add-service can reference them.
 # Usage: firewalld_ensure_service <name> <short-desc> <port/proto> [<port/proto>...]
 firewalld_ensure_service() {
-    local svc_name="${1}"; shift
-    local svc_short="${1}"; shift
-    local svc_dir="/etc/firewalld/services"
-    local svc_file="${svc_dir}/${svc_name}.xml"
+	local svc_name="${1}"
+	shift
+	local svc_short="${1}"
+	shift
+	local svc_dir="/etc/firewalld/services"
+	local svc_file="${svc_dir}/${svc_name}.xml"
 
-    # Already known to firewalld — nothing to do.
-    if firewall-cmd --get-services 2>/dev/null | grep -qw "${svc_name}"; then
-        return 0
-    fi
+	# Already known to firewalld — nothing to do.
+	if firewall-cmd --get-services 2>/dev/null | grep -qw "${svc_name}"; then
+		return 0
+	fi
 
-    if (( DRY_RUN )); then
-        info "Would create firewalld service definition: ${svc_name}"
-        return 0
-    fi
+	if ((DRY_RUN)); then
+		info "Would create firewalld service definition: ${svc_name}"
+		return 0
+	fi
 
-    install -d -m 750 "${svc_dir}" 2>/dev/null || true
-    {
-        printf '<?xml version="1.0" encoding="utf-8"?>\n'
-        printf '<service>\n'
-        printf '  <short>%s</short>\n' "${svc_short}"
-        local portproto port proto
-        for portproto in "$@"; do
-            port="${portproto%%/*}"; proto="${portproto##*/}"
-            printf '  <port port="%s" protocol="%s"/>\n' "${port}" "${proto}"
-        done
-        printf '</service>\n'
-    } > "${svc_file}"
-    chmod 640 "${svc_file}" 2>/dev/null || true
-    firewall-cmd --reload &>/dev/null || true
-    info "Created firewalld service definition: ${svc_name}"
+	install -d -m 750 "${svc_dir}" 2>/dev/null || true
+	{
+		printf '<?xml version="1.0" encoding="utf-8"?>\n'
+		printf '<service>\n'
+		printf '  <short>%s</short>\n' "${svc_short}"
+		local portproto port proto
+		for portproto in "$@"; do
+			port="${portproto%%/*}"
+			proto="${portproto##*/}"
+			printf '  <port port="%s" protocol="%s"/>\n' "${port}" "${proto}"
+		done
+		printf '</service>\n'
+	} >"${svc_file}"
+	chmod 640 "${svc_file}" 2>/dev/null || true
+	firewall-cmd --reload &>/dev/null || true
+	info "Created firewalld service definition: ${svc_name}"
 }
 
 # firewalld_add_service() - Add a service to a firewalld zone (permanent), soft-failing on
@@ -2681,114 +2802,123 @@ firewalld_ensure_service() {
 # Queues an action item for manual follow-up when the service is not recognised.
 # Usage: firewalld_add_service <zone> <service>
 firewalld_add_service() {
-    local zone="${1}" svc="${2}"
-    if (( DRY_RUN )); then
-        info "Would run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent"
-        return 0
-    fi
-    log "[RUN]   firewall-cmd --zone=${zone} --add-service=${svc} --permanent"
-    local out ec
-    # Capture output and exit code without triggering set -e abort on failure
-    out=$(firewall-cmd --zone="${zone}" --add-service="${svc}" --permanent 2>&1) || ec=$?
-    ec=${ec:-0}
-    if (( ec == 0 )); then
-        ok "firewalld: added service '${svc}' to zone '${zone}'."
-        return 0
-    fi
-    if (( ec == 101 )) || [[ "${out}" == *"INVALID_SERVICE"* ]]; then
-        warn "firewalld: service '${svc}' not recognised — skipping. (${out})"
-        add_action_item "5" "MEDIUM" "FW_INVALID_SVC_${svc^^}" \
-            "firewalld service '${svc}' is not registered. Create /etc/firewalld/services/${svc}.xml then run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent && firewall-cmd --reload"
-        return 1
-    fi
-    err "firewall-cmd --add-service=${svc} failed (exit ${ec}): ${out}"
-    return "${ec}"
+	local zone="${1}" svc="${2}"
+	if ((DRY_RUN)); then
+		info "Would run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent"
+		return 0
+	fi
+	log "[RUN]   firewall-cmd --zone=${zone} --add-service=${svc} --permanent"
+	local out ec
+	# Capture output and exit code without triggering set -e abort on failure
+	out=$(firewall-cmd --zone="${zone}" --add-service="${svc}" --permanent 2>&1) || ec=$?
+	ec=${ec:-0}
+	if ((ec == 0)); then
+		ok "firewalld: added service '${svc}' to zone '${zone}'."
+		return 0
+	fi
+	if ((ec == 101)) || [[ "${out}" == *"INVALID_SERVICE"* ]]; then
+		warn "firewalld: service '${svc}' not recognised — skipping. (${out})"
+		add_action_item "5" "MEDIUM" "FW_INVALID_SVC_${svc^^}" \
+			"firewalld service '${svc}' is not registered. Create /etc/firewalld/services/${svc}.xml then run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent && firewall-cmd --reload"
+		return 1
+	fi
+	err "firewall-cmd --add-service=${svc} failed (exit ${ec}): ${out}"
+	return "${ec}"
 }
 
 # ============================================================================
 #  SECTION 5 — firewalld
 # ============================================================================
+# sec_05_firewalld() - Harden firewalld with drop-default policy
+# Sets default policy to DROP, allows minimal services, enables logging
 sec_05_firewalld() {
-    should_run 5 || return 0
-    section 5 "firewalld — drop-by-default with explicit allow-list"
-    pkg_install firewalld
-    run "systemctl enable --now firewalld"
+	should_run 5 || return 0
+	section 5 "firewalld — drop-by-default with explicit allow-list"
+	pkg_install firewalld
+	run "systemctl enable --now firewalld"
 
-    # Smart wait for firewalld readiness (max 10 seconds with exponential backoff)
-    info "Waiting for firewalld to be ready..."
-    local attempt=0 max_attempts=10
-    while (( attempt < max_attempts )); do
-        if firewall-cmd --state &>/dev/null; then
-            ok "firewalld is ready"
-            break
-        fi
-        (( attempt++ ))
-        sleep $((attempt / 3 + 1))  # Exponential backoff: 1s, 1s, 2s, 2s...
-    done
-    (( attempt >= max_attempts )) && warn "firewalld failed to become ready; proceeding anyway"
+	# Smart wait for firewalld readiness (max 10 seconds with exponential backoff)
+	info "Waiting for firewalld to be ready..."
+	local attempt=0 max_attempts=10
+	while ((attempt < max_attempts)); do
+		if firewall-cmd --state &>/dev/null; then
+			ok "firewalld is ready"
+			break
+		fi
+		((attempt++))
+		sleep $((attempt / 3 + 1)) # Exponential backoff: 1s, 1s, 2s, 2s...
+	done
+	((attempt >= max_attempts)) && warn "firewalld failed to become ready; proceeding anyway"
 
-    # Set default zone and configure services (batch permanent operations)
-    info "Setting default zone to 'drop'..."
-    run "firewall-cmd --set-default-zone=drop"
+	# Cache firewall services list to avoid repeated calls
+	local FIREWALL_SERVICES
+	FIREWALL_SERVICES="$(firewall-cmd --get-services 2>/dev/null || true)"
 
-    local svc services_to_allow=()
-    if confirm "Allow 'mdns' through the firewall?"; then
-        services_to_allow+=("mdns")
-    fi
-    # kde-connect is KDE-specific and requires a custom service XML (not built-in to firewalld).
-    if (( HAS_KDE )); then
-        if confirm "Allow 'kde-connect' through the firewall?"; then
-            firewalld_ensure_service "kde-connect" "KDE Connect" \
-                "1714-1764/tcp" "1714-1764/udp"
-            services_to_allow+=("kde-connect")
-        fi
-    fi
+	# Set default zone and configure services (batch permanent operations)
+	info "Setting default zone to 'drop'..."
+	run "firewall-cmd --set-default-zone=drop"
 
-    if systemctl is-enabled --quiet sshd 2>/dev/null; then
-        info "sshd is enabled — allowing SSH in firewall."
-        services_to_allow+=("ssh")
-    elif confirm "Allow SSH through the firewall (you'll harden sshd in section 7)?"; then
-        services_to_allow+=("ssh")
-    fi
+	local svc services_to_allow=()
+	if confirm "Allow 'mdns' through the firewall?"; then
+		services_to_allow+=("mdns")
+	fi
+	# kde-connect is KDE-specific and requires a custom service XML (not built-in to firewalld).
+	if ((HAS_KDE)); then
+		if confirm "Allow 'kde-connect' through the firewall?"; then
+			firewalld_ensure_service "kde-connect" "KDE Connect" \
+				"1714-1764/tcp" "1714-1764/udp" "$FIREWALL_SERVICES"
+			services_to_allow+=("kde-connect")
+		fi
+	fi
 
-    # Add each service with soft-fail guard (INVALID_SERVICE → warn + action item, not abort).
-    for svc in "${services_to_allow[@]}"; do
-        firewalld_add_service drop "$svc"
-    done
+	if systemctl is-enabled --quiet sshd 2>/dev/null; then
+		info "sshd is enabled — allowing SSH in firewall."
+		services_to_allow+=("ssh")
+	elif confirm "Allow SSH through the firewall (you'll harden sshd in section 7)?"; then
+		services_to_allow+=("ssh")
+	fi
 
-    run "firewall-cmd --set-log-denied=all" || warn "firewall-cmd --set-log-denied failed"
-    if ! run "firewall-cmd --reload"; then
-        err "firewall-cmd --reload failed; firewall rules may not be active"
-        add_action_item 5 HIGH "FIREWALL_RELOAD_FAILED" "Manually reload firewall: sudo firewall-cmd --reload"
-    fi
-    run "firewall-cmd --list-all"
-    ok "firewalld configured."
+	# Add each service with soft-fail guard (INVALID_SERVICE → warn + action item, not abort).
+	for svc in "${services_to_allow[@]}"; do
+		firewalld_add_service drop "$svc"
+	done
+
+	run "firewall-cmd --set-log-denied=all" || warn "firewall-cmd --set-log-denied failed"
+	if ! run "firewall-cmd --reload"; then
+		err "firewall-cmd --reload failed; firewall rules may not be active"
+		add_action_item 5 HIGH "FIREWALL_RELOAD_FAILED" "Manually reload firewall: sudo firewall-cmd --reload"
+	fi
+	run "firewall-cmd --list-all"
+	ok "firewalld configured."
 }
 
 # ============================================================================
 #  SECTION 6 — Secure Boot verification
 # ============================================================================
+# sec_06_secureboot() - Verify Secure Boot is enabled
+# Confirms UEFI Secure Boot is active. GRUB password is manual task.
 sec_06_secureboot() {
-    should_run 6 || return 0
-    section 6 "Secure Boot verification"
-    if ! cmd_exists mokutil; then
-        ensure_command_dep mokutil "Secure Boot verification" mokutil
-    fi
-    if cmd_exists mokutil; then
-        local sb; sb="$(mokutil --sb-state 2>/dev/null || true)"
-        info "$sb"
-        if grep -qi "enabled" <<<"$sb"; then
-            ok "Secure Boot is enabled."
-        else
-            warn "Secure Boot is NOT enabled. Enable it in UEFI firmware settings."
-        fi
-    else
-        warn "mokutil is unavailable after dependency checks — cannot verify Secure Boot state."
-    fi
-    if (( GUI_FULL_MODE )); then
-        gui_alert info "GRUB password setup (guide section 6b) is manual.\n\nRun: sudo grub2-mkpasswd-pbkdf2\nThen add password_pbkdf2 lines in /etc/grub.d/40_custom and regenerate grub.cfg."
-    else
-    cat <<'EOF'
+	should_run 6 || return 0
+	section 6 "Secure Boot verification"
+	if ! cmd_exists mokutil; then
+		ensure_command_dep mokutil "Secure Boot verification" mokutil
+	fi
+	if cmd_exists mokutil; then
+		local sb
+		sb="$(mokutil --sb-state 2>/dev/null || true)"
+		info "$sb"
+		if grep -qi "enabled" <<<"$sb"; then
+			ok "Secure Boot is enabled."
+		else
+			warn "Secure Boot is NOT enabled. Enable it in UEFI firmware settings."
+		fi
+	else
+		warn "mokutil is unavailable after dependency checks — cannot verify Secure Boot state."
+	fi
+	if ((GUI_FULL_MODE)); then
+		gui_alert info "GRUB password setup (guide section 6b) is manual.\n\nRun: sudo grub2-mkpasswd-pbkdf2\nThen add password_pbkdf2 lines in /etc/grub.d/40_custom and regenerate grub.cfg."
+	else
+		cat <<'EOF'
 NOTE on GRUB password (guide §6b):
   Setting a GRUB password requires interactive use of 'grub2-mkpasswd-pbkdf2'.
   This script does NOT automate it. To do it manually:
@@ -2799,55 +2929,60 @@ NOTE on GRUB password (guide §6b):
       sudo grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg   # UEFI
       sudo grub2-mkconfig -o /boot/grub2/grub.cfg            # legacy BIOS
 EOF
-    fi
+	fi
 }
 
 # ============================================================================
 #  SECTION 7 — SSH hardening
 # ============================================================================
+# sec_07_ssh() - Configure SSH for key-based auth with hardened ciphers
+# Disables password auth, enables key-based auth, applies strong cipher suite.
 sec_07_ssh() {
-    should_run 7 || return 0
-    section 7 "SSH hardening"
-    if ! pkg_cached openssh-server; then
-        warn "openssh-server is missing; attempting dependency install for section 7."
-        pkg_install openssh-server || true
-        pkg_cached openssh-server || { warn "openssh-server is still unavailable; skipping SSH hardening."; return 0; }
-    fi
+	should_run 7 || return 0
+	section 7 "SSH hardening"
+	if ! pkg_cached openssh-server; then
+		warn "openssh-server is missing; attempting dependency install for section 7."
+		pkg_install openssh-server || true
+		pkg_cached openssh-server || {
+			warn "openssh-server is still unavailable; skipping SSH hardening."
+			return 0
+		}
+	fi
 
-    if ! confirm "You are about to harden sshd (disables passwords, root login, limits users). Continue?"; then
+	if ! confirm "You are about to harden sshd (disables passwords, root login, limits users). Continue?"; then
 
-        info "Skipped SSH hardening."
-        return 0
-    fi
+		info "Skipped SSH hardening."
+		return 0
+	fi
 
-    # Verify public key auth is working before disabling password auth
-    if ! grep -q "^ssh-" ~/.ssh/authorized_keys 2>/dev/null; then
-        warn "WARNING: No public SSH keys found in ~/.ssh/authorized_keys"
-        warn "If you proceed with hardening, you will LOSE SSH access unless you have alternative access method."
-        if ! confirm "Continue without verified public key? (Not recommended)"; then
-            info "Skipped SSH hardening."
-            return 0
-        fi
-        add_action_item 7 HIGH "SSH_NO_PUBLIC_KEY" "Install public SSH key to ~/.ssh/authorized_keys before testing remote login."
-    fi
-    local cfg="/etc/ssh/sshd_config"
-    local drop="/etc/ssh/sshd_config.d/99-hardening.conf"
-    backup_file "$cfg"
+	# Verify public key auth is working before disabling password auth
+	if ! grep -q "^ssh-" ~/.ssh/authorized_keys 2>/dev/null; then
+		warn "WARNING: No public SSH keys found in ~/.ssh/authorized_keys"
+		warn "If you proceed with hardening, you will LOSE SSH access unless you have alternative access method."
+		if ! confirm "Continue without verified public key? (Not recommended)"; then
+			info "Skipped SSH hardening."
+			return 0
+		fi
+		add_action_item 7 HIGH "SSH_NO_PUBLIC_KEY" "Install public SSH key to ~/.ssh/authorized_keys before testing remote login."
+	fi
+	local cfg="/etc/ssh/sshd_config"
+	local drop="/etc/ssh/sshd_config.d/99-hardening.conf"
+	backup_file "$cfg"
 
-    # Validate TARGET_USER to prevent shell injection
-    if [[ -n "$TARGET_USER" && ! "$TARGET_USER" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-        err "Invalid username: $TARGET_USER (must be alphanumeric, dots, dashes, underscores)"
-        return 1
-    fi
+	# Validate TARGET_USER to prevent shell injection
+	if [[ -n "$TARGET_USER" && ! "$TARGET_USER" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+		err "Invalid username: $TARGET_USER (must be alphanumeric, dots, dashes, underscores)"
+		return 1
+	fi
 
-    local allow_users_line=""
-    [[ -n "$TARGET_USER" ]] && allow_users_line="AllowUsers $TARGET_USER"
+	local allow_users_line=""
+	[[ -n "$TARGET_USER" ]] && allow_users_line="AllowUsers $TARGET_USER"
 
-    if (( DRY_RUN )); then
-        info "Would write hardened drop-in to $drop"
-    else
-        install -d -m 755 /etc/ssh/sshd_config.d 2>/dev/null || true
-        if ! cat >"$drop" <<EOF
+	if ((DRY_RUN)); then
+		info "Would write hardened drop-in to $drop"
+	else
+		install -d -m 755 /etc/ssh/sshd_config.d 2>/dev/null || true
+		if ! cat >"$drop" <<EOF; then
 # Written by $SCRIPT_NAME on $RUN_STAMP_ISO
 PermitRootLogin no
 PasswordAuthentication no
@@ -2864,27 +2999,31 @@ X11Forwarding no
 AllowAgentForwarding no
 ${allow_users_line}
 EOF
-    then warn "Failed to write $drop (filesystem may be read-only or full)"; return 1; fi
-        chmod 644 "$drop" 2>/dev/null || true
-        ok "Wrote $drop"
-    fi
+			warn "Failed to write $drop (filesystem may be read-only or full)"
+			return 1
+		fi
+		chmod 644 "$drop" 2>/dev/null || true
+		ok "Wrote $drop"
+	fi
 
-    run "/usr/sbin/sshd -t || true"
-    run "systemctl restart sshd"
-    warn "IMPORTANT: Before closing this session, open a SECOND terminal and confirm"
-    warn "you can still SSH in with your key. If not, you still have this session to fix it."
+	run "/usr/sbin/sshd -t || true"
+	run "systemctl restart sshd"
+	warn "IMPORTANT: Before closing this session, open a SECOND terminal and confirm"
+	warn "you can still SSH in with your key. If not, you still have this session to fix it."
 }
 
 # ============================================================================
 #  SECTION 8 — USBGuard
 # ============================================================================
+# sec_08_usbguard() - Install and configure USBGuard
+# Configures device control policy; note: can lock out input devices if misconfigured.
 sec_08_usbguard() {
-    should_run 8 || return 0
-    section 8 "USBGuard — ⚠ BE CAREFUL ⚠"
-    if (( GUI_FULL_MODE )); then
-        gui_alert warning "USBGuard can block unapproved USB devices, including keyboard/mouse.\n\nBefore continuing, connect all required USB devices and ensure you have an alternate recovery path."
-    else
-    cat <<'EOF'
+	should_run 8 || return 0
+	section 8 "USBGuard — ⚠ BE CAREFUL ⚠"
+	if ((GUI_FULL_MODE)); then
+		gui_alert warning "USBGuard can block unapproved USB devices, including keyboard/mouse.\n\nBefore continuing, connect all required USB devices and ensure you have an alternate recovery path."
+	else
+		cat <<'EOF'
 USBGuard will block every USB device that isn't in its policy file,
 including your keyboard and mouse if they are USB. The policy is generated
 from currently connected devices, so BEFORE continuing:
@@ -2897,103 +3036,111 @@ You can later manage devices with:
   sudo usbguard list-devices
   sudo usbguard allow-device <ID> [--permanent]
 EOF
-        fi
-    if ! confirm "Install and enable USBGuard with the current devices whitelisted?"; then
-        info "Skipped USBGuard."
-        return 0
-    fi
+	fi
+	if ! confirm "Install and enable USBGuard with the current devices whitelisted?"; then
+		info "Skipped USBGuard."
+		return 0
+	fi
 
-    pkg_install usbguard usbguard-tools
-    if (( DRY_RUN )); then
-        info "Would generate policy: usbguard generate-policy > /etc/usbguard/rules.conf"
-    else
-        umask 077
-        local tmp_usbguard="/tmp/usbguard-rules-$$-$RANDOM-$SECONDS.conf"
-        register_tmp "$tmp_usbguard"
-        if ! usbguard generate-policy > "$tmp_usbguard" 2>/dev/null; then
-            warn "usbguard generate-policy failed"; rm -f "$tmp_usbguard" 2>/dev/null || true; return 1
-        fi
-        if ! install -m 0600 -o root -g root "$tmp_usbguard" /etc/usbguard/rules.conf 2>/dev/null; then
-            warn "Failed to install USBGuard rules (filesystem may be read-only)"; rm -f "$tmp_usbguard" 2>/dev/null || true; return 1
-        fi
-        rm -f "$tmp_usbguard" 2>/dev/null || true
-        ok "Wrote /etc/usbguard/rules.conf (0600 root:root)"
-    fi
-    run "systemctl enable --now usbguard"
+	pkg_install usbguard usbguard-tools
+	if ((DRY_RUN)); then
+		info "Would generate policy: usbguard generate-policy > /etc/usbguard/rules.conf"
+	else
+		umask 077
+		local tmp_usbguard="/tmp/usbguard-rules-$$-$RANDOM-$SECONDS.conf"
+		register_tmp "$tmp_usbguard"
+		if ! usbguard generate-policy >"$tmp_usbguard" 2>/dev/null; then
+			warn "usbguard generate-policy failed"
+			rm -f "$tmp_usbguard" 2>/dev/null || true
+			return 1
+		fi
+		if ! install -m 0600 -o root -g root "$tmp_usbguard" /etc/usbguard/rules.conf 2>/dev/null; then
+			warn "Failed to install USBGuard rules (filesystem may be read-only)"
+			rm -f "$tmp_usbguard" 2>/dev/null || true
+			return 1
+		fi
+		rm -f "$tmp_usbguard" 2>/dev/null || true
+		ok "Wrote /etc/usbguard/rules.conf (0600 root:root)"
+	fi
+	run "systemctl enable --now usbguard"
 
-    if pkg_cached plasma-workspace; then
-        if confirm "Install graphical USBGuard notifier (usbguard-notifier)?"; then
-            pkg_install usbguard-notifier || true
-        fi
-    fi
+	if pkg_cached plasma-workspace; then
+		if confirm "Install graphical USBGuard notifier (usbguard-notifier)?"; then
+			pkg_install usbguard-notifier || true
+		fi
+	fi
 }
 
 # ============================================================================
 #  SECTION 9 — Password & PAM policy
 # ============================================================================
+# sec_09_pam() - Configure PAM policy
+# Sets password quality, account lockout, aging rules via pwquality and faillock.
 sec_09_pam() {
-    should_run 9 || return 0
-    section 9 "Password quality + account lockout + aging"
+	should_run 9 || return 0
+	section 9 "Password quality + account lockout + aging"
 
-    # 9a pwquality — batched sed for efficiency
-    local pq="/etc/security/pwquality.conf"
-    backup_file "$pq"
-    if (( ! DRY_RUN )); then
-        batch_sed "$pq" \
-          's|^\s*#?\s*minlen\s*=.*|minlen = 14|' \
-          's|^\s*#?\s*ucredit\s*=.*|ucredit = -1|' \
-          's|^\s*#?\s*lcredit\s*=.*|lcredit = -1|' \
-          's|^\s*#?\s*dcredit\s*=.*|dcredit = -1|' \
-          's|^\s*#?\s*ocredit\s*=.*|ocredit = -1|' \
-          's|^\s*#?\s*minclass\s*=.*|minclass = 3|' \
-          's|^\s*#?\s*dictcheck\s*=.*|dictcheck = 1|' \
-          's|^\s*#?\s*usercheck\s*=.*|usercheck = 1|' \
-          's|^\s*#?\s*retry\s*=.*|retry = 3|'
-        ok "Applied pwquality policy in $pq"
-    else
-        info "Would set minlen=14, ucredit=-1, lcredit=-1, dcredit=-1, ocredit=-1, minclass=3, dictcheck=1, usercheck=1, retry=3"
-    fi
+	# 9a pwquality — batched sed for efficiency
+	local pq="/etc/security/pwquality.conf"
+	backup_file "$pq"
+	if ((!DRY_RUN)); then
+		batch_sed "$pq" \
+			's|^\s*#?\s*minlen\s*=.*|minlen = 14|' \
+			's|^\s*#?\s*ucredit\s*=.*|ucredit = -1|' \
+			's|^\s*#?\s*lcredit\s*=.*|lcredit = -1|' \
+			's|^\s*#?\s*dcredit\s*=.*|dcredit = -1|' \
+			's|^\s*#?\s*ocredit\s*=.*|ocredit = -1|' \
+			's|^\s*#?\s*minclass\s*=.*|minclass = 3|' \
+			's|^\s*#?\s*dictcheck\s*=.*|dictcheck = 1|' \
+			's|^\s*#?\s*usercheck\s*=.*|usercheck = 1|' \
+			's|^\s*#?\s*retry\s*=.*|retry = 3|'
+		ok "Applied pwquality policy in $pq"
+	else
+		info "Would set minlen=14, ucredit=-1, lcredit=-1, dcredit=-1, ocredit=-1, minclass=3, dictcheck=1, usercheck=1, retry=3"
+	fi
 
-    # 9b faillock
-    local fl="/etc/security/faillock.conf"
-    backup_file "$fl"
-    if (( ! DRY_RUN )) && [[ -f "$fl" ]]; then
-        batch_sed "$fl" \
-          's|^\s*#?\s*deny\s*=.*|deny = 5|' \
-          's|^\s*#?\s*unlock_time\s*=.*|unlock_time = 900|'
-        grep -qE '^\s*even_deny_root' "$fl" || echo 'even_deny_root' >> "$fl"
-        ok "Applied faillock policy in $fl"
-    fi
+	# 9b faillock
+	local fl="/etc/security/faillock.conf"
+	backup_file "$fl"
+	if ((!DRY_RUN)) && [[ -f "$fl" ]]; then
+		batch_sed "$fl" \
+			's|^\s*#?\s*deny\s*=.*|deny = 5|' \
+			's|^\s*#?\s*unlock_time\s*=.*|unlock_time = 900|'
+		grep -qE '^\s*even_deny_root' "$fl" || echo 'even_deny_root' >>"$fl"
+		ok "Applied faillock policy in $fl"
+	fi
 
-    # 9c login.defs — batched sed
-    local ld="/etc/login.defs"
-    backup_file "$ld"
-    if (( ! DRY_RUN )) && [[ -f "$ld" ]]; then
-        batch_sed "$ld" \
-          's|^\s*PASS_MAX_DAYS\s+.*|PASS_MAX_DAYS   90|' \
-          's|^\s*PASS_MIN_DAYS\s+.*|PASS_MIN_DAYS   1|' \
-          's|^\s*PASS_WARN_AGE\s+.*|PASS_WARN_AGE   14|'
-        ok "Set PASS_MAX_DAYS=90, PASS_MIN_DAYS=1, PASS_WARN_AGE=14"
-    fi
-    if [[ -n "$TARGET_USER" ]]; then
-        run "chage -M 90 -m 1 -W 14 '$TARGET_USER'"
-        run "chage -l '$TARGET_USER'"
-    else
-        warn "No target user — skipping 'chage' password-aging apply."
-    fi
+	# 9c login.defs — batched sed
+	local ld="/etc/login.defs"
+	backup_file "$ld"
+	if ((!DRY_RUN)) && [[ -f "$ld" ]]; then
+		batch_sed "$ld" \
+			's|^\s*PASS_MAX_DAYS\s+.*|PASS_MAX_DAYS   90|' \
+			's|^\s*PASS_MIN_DAYS\s+.*|PASS_MIN_DAYS   1|' \
+			's|^\s*PASS_WARN_AGE\s+.*|PASS_WARN_AGE   14|'
+		ok "Set PASS_MAX_DAYS=90, PASS_MIN_DAYS=1, PASS_WARN_AGE=14"
+	fi
+	if [[ -n "$TARGET_USER" ]]; then
+		run "chage -M 90 -m 1 -W 14 '$TARGET_USER'"
+		run "chage -l '$TARGET_USER'"
+	else
+		warn "No target user — skipping 'chage' password-aging apply."
+	fi
 }
 
 # ============================================================================
 #  SECTION 10 — Kernel sysctl
 # ============================================================================
+# sec_10_sysctl() - Apply kernel sysctl hardening
+# Hardens network, VM, filesystem, memory protections via kernel parameters.
 sec_10_sysctl() {
-    should_run 10 || return 0
-    section 10 "Kernel & network sysctl hardening"
-    local f="/etc/sysctl.d/99-hardening.conf"
-    if (( DRY_RUN )); then
-        info "Would write $f with guide's full sysctl set"
-    else
-        if ! cat > "$f" <<'EOF'
+	should_run 10 || return 0
+	section 10 "Kernel & network sysctl hardening"
+	local f="/etc/sysctl.d/99-hardening.conf"
+	if ((DRY_RUN)); then
+		info "Would write $f with guide's full sysctl set"
+	else
+		if ! cat >"$f" <<'EOF'; then
 # /etc/sysctl.d/99-hardening.conf
 # Installed by fedora-harden.sh
 
@@ -3049,28 +3196,32 @@ fs.protected_regular = 2
 fs.protected_symlinks = 1
 fs.protected_hardlinks = 1
 EOF
-        then err "Failed to write sysctl configuration"; return 1; fi
-        chmod 644 "$f" 2>/dev/null || true
-        ok "Wrote $f"
-    fi
-    run "sysctl --system"
-    run "sysctl kernel.kptr_restrict"
+			err "Failed to write sysctl configuration"
+			return 1
+		fi
+		chmod 644 "$f" 2>/dev/null || true
+		ok "Wrote $f"
+	fi
+	run "sysctl --system"
+	run "sysctl kernel.kptr_restrict"
 }
 
 # ============================================================================
 #  SECTION 11 — auditd
 # ============================================================================
+# sec_11_auditd() - Configure auditd audit rules
+# Tracks identity, privilege escalation, kernel module loading for compliance.
 sec_11_auditd() {
-    should_run 11 || return 0
-    section 11 "auditd rules"
-    pkg_install audit audit-libs
-    run "systemctl enable --now auditd"
+	should_run 11 || return 0
+	section 11 "auditd rules"
+	pkg_install audit audit-libs
+	run "systemctl enable --now auditd"
 
-    local rules="/etc/audit/rules.d/hardening.rules"
-    if (( DRY_RUN )); then
-        info "Would write $rules"
-    else
-        if ! cat > "$rules" <<'EOF'
+	local rules="/etc/audit/rules.d/hardening.rules"
+	if ((DRY_RUN)); then
+		info "Would write $rules"
+	else
+		if ! cat >"$rules" <<'EOF'; then
 -D
 -b 8192
 -f 1
@@ -3112,251 +3263,272 @@ sec_11_auditd() {
 # Uncomment to lock the ruleset at boot (requires reboot to change):
 # -e 2
 EOF
-    then warn "Failed to write $rules (filesystem may be read-only)"; return 1; fi
-        chmod 640 "$rules" 2>/dev/null || true
-        ok "Wrote $rules"
-    fi
-    run "augenrules --load"
-    run "systemctl restart auditd || service auditd restart"
+			warn "Failed to write $rules (filesystem may be read-only)"
+			return 1
+		fi
+		chmod 640 "$rules" 2>/dev/null || true
+		ok "Wrote $rules"
+	fi
+	run "augenrules --load"
+	run "systemctl restart auditd || service auditd restart"
 }
 
 # ============================================================================
 #  SECTION 12 — rkhunter + AIDE
 # ============================================================================
+# sec_12_ids() - Install intrusion and file integrity detection
+# Installs rkhunter for rootkit detection and AIDE for file integrity monitoring.
 sec_12_ids() {
-    should_run 12 || return 0
-    section 12 "rkhunter + AIDE"
+	should_run 12 || return 0
+	section 12 "rkhunter + AIDE"
 
-    pkg_install rkhunter aide
+	pkg_install rkhunter aide
 
-    # rkhunter: update signatures then run scan with output capture
-    run "rkhunter --update || true"
-    run "rkhunter --propupd"
-    info "Running initial rkhunter scan (this takes a minute)..."
-    local rk_tmp="/tmp/rkhunter-out-$$.tmp" rk_warn_count=0
-    register_tmp "$rk_tmp"
-    if (( ! DRY_RUN )); then
-        log "[RUN]   rkhunter --check --sk --rwo"
-        if (( GUI_FULL_MODE )); then
-            rkhunter --check --sk --rwo >"$rk_tmp" 2>&1 || true
-        else
-            rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" || true
-        fi
-        rk_warn_count="$(awk '/^\[ Warning \]/{count++} END{print count+0}' "$rk_tmp" 2>/dev/null || echo 0)"
-    else
-        run "rkhunter --check --sk --rwo || true"
-    fi
+	# rkhunter: update signatures then run scan with output capture
+	run "rkhunter --update || true"
+	run "rkhunter --propupd"
+	info "Running initial rkhunter scan (this takes a minute)..."
+	local rk_tmp="/tmp/rkhunter-out-$$.tmp" rk_warn_count=0
+	register_tmp "$rk_tmp"
+	if ((!DRY_RUN)); then
+		log "[RUN]   rkhunter --check --sk --rwo"
+		if ((GUI_FULL_MODE)); then
+			rkhunter --check --sk --rwo >"$rk_tmp" 2>&1 || true
+		else
+			rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" || true
+		fi
+		rk_warn_count="$(awk '/^\[ Warning \]/{count++} END{print count+0}' "$rk_tmp" 2>/dev/null || echo 0)"
+	else
+		run "rkhunter --check --sk --rwo || true"
+	fi
 
-    # Daily cron
-    local cron_rk="/etc/cron.daily/rkhunter-scan"
-    if (( ! DRY_RUN )); then
-        if ! cat > "$cron_rk" <<'CRONEOF'
+	# Daily cron
+	local cron_rk="/etc/cron.daily/rkhunter-scan"
+	if ((!DRY_RUN)); then
+		if ! cat >"$cron_rk" <<'CRONEOF'; then
 #!/bin/bash
 /usr/bin/rkhunter --cronjob --update --quiet
 CRONEOF
-        then warn "Failed to write $cron_rk"; return 1; fi
-        chmod 755 "$cron_rk" 2>/dev/null || true
-        ok "Wrote $cron_rk"
-    fi
+			warn "Failed to write $cron_rk"
+			return 1
+		fi
+		chmod 755 "$cron_rk" 2>/dev/null || true
+		ok "Wrote $cron_rk"
+	fi
 
-    # AIDE: initialize database
-    info "Initializing AIDE database (this can take several minutes)..."
-    run "aide --init"
-    if (( ! DRY_RUN )) && [[ -f /var/lib/aide/aide.db.new.gz ]]; then
-        run "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
-    fi
+	# AIDE: initialize database
+	info "Initializing AIDE database (this can take several minutes)..."
+	run "aide --init"
+	if ((!DRY_RUN)) && [[ -f /var/lib/aide/aide.db.new.gz ]]; then
+		run "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+	fi
 
-    local cron_aide="/etc/cron.weekly/aide-check"
-    if (( ! DRY_RUN )); then
-        if ! cat > "$cron_aide" <<'CRONEOF'
+	local cron_aide="/etc/cron.weekly/aide-check"
+	if ((!DRY_RUN)); then
+		if ! cat >"$cron_aide" <<'CRONEOF'; then
 #!/bin/bash
 /usr/sbin/aide --check 2>&1 | logger -t aide
 CRONEOF
-        then warn "Failed to write $cron_aide"; return 1; fi
-        chmod 755 "$cron_aide" 2>/dev/null || true
-        ok "Wrote $cron_aide (results sent to journal via logger)"
-    fi
-    warn "Re-initialize AIDE after legitimate package updates: 'sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
+			warn "Failed to write $cron_aide"
+			return 1
+		fi
+		chmod 755 "$cron_aide" 2>/dev/null || true
+		ok "Wrote $cron_aide (results sent to journal via logger)"
+	fi
+	warn "Re-initialize AIDE after legitimate package updates: 'sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
 
-    # Write section report to user Downloads/<project>/results/
-    if (( ! DRY_RUN )); then
-        {
-            printf '=== Section 12: rkhunter + AIDE Report ===\n'
-            printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-            printf '--- rkhunter scan output (%d warning(s)) ---\n' "$rk_warn_count"
-            [[ -f "$rk_tmp" ]] && cat "$rk_tmp" || printf '(capture unavailable)\n'
-            printf '\n--- AIDE database status ---\n'
-            if [[ -f /var/lib/aide/aide.db.gz ]]; then
-                printf 'AIDE database: /var/lib/aide/aide.db.gz  [INITIALIZED]\n'
-            else
-                printf 'AIDE database: NOT FOUND — initialization may have failed\n'
-            fi
-            printf '\n--- Cron jobs installed ---\n'
-            printf 'Daily rkhunter:  %s\n' "$cron_rk"
-            printf 'Weekly AIDE:     %s\n' "$cron_aide"
-        } | write_user_report "section-12-rkhunter-aide-${REPORT_DATE}.txt" || true
-    fi
+	# Write section report to user Downloads/<project>/results/
+	if ((!DRY_RUN)); then
+		{
+			printf '=== Section 12: rkhunter + AIDE Report ===\n'
+			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
+			printf '--- rkhunter scan output (%d warning(s)) ---\n' "$rk_warn_count"
+			[[ -f "$rk_tmp" ]] && cat "$rk_tmp" || printf '(capture unavailable)\n'
+			printf '\n--- AIDE database status ---\n'
+			if [[ -f /var/lib/aide/aide.db.gz ]]; then
+				printf 'AIDE database: /var/lib/aide/aide.db.gz  [INITIALIZED]\n'
+			else
+				printf 'AIDE database: NOT FOUND — initialization may have failed\n'
+			fi
+			printf '\n--- Cron jobs installed ---\n'
+			printf 'Daily rkhunter:  %s\n' "$cron_rk"
+			printf 'Weekly AIDE:     %s\n' "$cron_aide"
+		} | write_user_report "section-12-rkhunter-aide-${REPORT_DATE}.txt" || true
+	fi
 
-    # Populate actionable items based on findings
-    if (( rk_warn_count > 0 )); then
-        warn "rkhunter found $rk_warn_count warning(s) — review the section 12 report."
-        add_action_item 12 HIGH "RK_WARNINGS" \
-            "rkhunter found $rk_warn_count warning(s): investigate flagged files, then run: sudo rkhunter --propupd"
-    else
-        ok "rkhunter scan: no warnings detected."
-    fi
-    if (( ! DRY_RUN )) && [[ ! -f /var/lib/aide/aide.db.gz ]]; then
-        add_action_item 12 HIGH "AIDE_DB_MISSING" \
-            "AIDE database not initialized — run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
-    fi
-    add_action_item 12 LOW "AIDE_RECHECK" \
-        "Re-initialize AIDE after any future package updates (command in section-12 report)."
+	# Populate actionable items based on findings
+	if ((rk_warn_count > 0)); then
+		warn "rkhunter found $rk_warn_count warning(s) — review the section 12 report."
+		add_action_item 12 HIGH "RK_WARNINGS" \
+			"rkhunter found $rk_warn_count warning(s): investigate flagged files, then run: sudo rkhunter --propupd"
+	else
+		ok "rkhunter scan: no warnings detected."
+	fi
+	if ((!DRY_RUN)) && [[ ! -f /var/lib/aide/aide.db.gz ]]; then
+		add_action_item 12 HIGH "AIDE_DB_MISSING" \
+			"AIDE database not initialized — run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+	fi
+	add_action_item 12 LOW "AIDE_RECHECK" \
+		"Re-initialize AIDE after any future package updates (command in section-12 report)."
 }
 
 # ============================================================================
 #  SECTION 13 — Flatpak / Flathub
 # ============================================================================
+# sec_13_flatpak() - Configure Flatpak for app sandboxing
+# Installs Flatpak and sets Flathub for containerized application support.
 sec_13_flatpak() {
-    should_run 13 || return 0
-    section 13 "Flatpak + Flathub"
-    if ! cmd_exists flatpak; then
-        pkg_install flatpak
-    else
-        info "Flatpak already present."
-    fi
-    run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
-    run "flatpak update -y || true"
-    if confirm "Install Flatseal (graphical Flatpak permission manager)?"; then
-        flatpak_install_or_update flathub com.github.tchx84.Flatseal
-    fi
+	should_run 13 || return 0
+	section 13 "Flatpak + Flathub"
+	if ! cmd_exists flatpak; then
+		pkg_install flatpak
+	else
+		info "Flatpak already present."
+	fi
+	run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+	run "flatpak update -y || true"
+	if confirm "Install Flatseal (graphical Flatpak permission manager)?"; then
+		flatpak_install_or_update flathub com.github.tchx84.Flatseal
+	fi
 }
 
 # ============================================================================
 #  SECTION 14 — DNS over TLS
 # ============================================================================
+# sec_14_dot() - Configure DNS over TLS (DoT)
+# Sets systemd-resolved to use Quad9 and Cloudflare DNS with TLS encryption.
 sec_14_dot() {
-    should_run 14 || return 0
-    section 14 "DNS over TLS via systemd-resolved"
-    local cfg="/etc/systemd/resolved.conf"
-    backup_file "$cfg"
-    if (( ! DRY_RUN )); then
-        # Write a drop-in instead of clobbering the main file.
-        install -d -m 755 /etc/systemd/resolved.conf.d 2>/dev/null || true
-        if ! cat >/etc/systemd/resolved.conf.d/99-hardening.conf <<'EOF'
+	should_run 14 || return 0
+	section 14 "DNS over TLS via systemd-resolved"
+	local cfg="/etc/systemd/resolved.conf"
+	backup_file "$cfg"
+	if ((!DRY_RUN)); then
+		# Write a drop-in instead of clobbering the main file.
+		install -d -m 755 /etc/systemd/resolved.conf.d 2>/dev/null || true
+		if ! cat >/etc/systemd/resolved.conf.d/99-hardening.conf <<'EOF'; then
 [Resolve]
 DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 1.1.1.1#cloudflare-dns.com
 FallbackDNS=8.8.8.8#dns.google
 DNSOverTLS=yes
 DNSSEC=yes
 EOF
-        then err "Failed to write DNS-over-TLS configuration"; return 1; fi
-        ok "Wrote /etc/systemd/resolved.conf.d/99-hardening.conf"
-    fi
-    run "systemctl restart systemd-resolved"
-    run "resolvectl status | head -25 || true"
+			err "Failed to write DNS-over-TLS configuration"
+			return 1
+		fi
+		ok "Wrote /etc/systemd/resolved.conf.d/99-hardening.conf"
+	fi
+	run "systemctl restart systemd-resolved"
+	run "resolvectl status | head -25 || true"
 }
 
 # ============================================================================
 #  SECTION 15 — KDE CLI settings
 # ============================================================================
+# sec_15_kde() - Apply KDE-specific security settings
+# Configures screen lock timeout, disables Bluetooth, clears recent documents.
 sec_15_kde() {
-    should_run 15 || return 0
-    section 15 "KDE-specific CLI settings"
-    if (( ! HAS_KDE )); then
-        warn "Host variant does not appear KDE-based; skipping KDE-specific section."
-        return 0
-    fi
+	should_run 15 || return 0
+	section 15 "KDE-specific CLI settings"
+	if ((!HAS_KDE)); then
+		warn "Host variant does not appear KDE-based; skipping KDE-specific section."
+		return 0
+	fi
 
-    # Detect which kwriteconfig is available (Plasma 6 uses kwriteconfig6)
-    local KW=""
-    for c in kwriteconfig6 kwriteconfig5; do
-        if cmd_exists "$c"; then KW="$c"; break; fi
-    done
-    if [[ -z "$KW" ]]; then
-        warn "Neither kwriteconfig6 nor kwriteconfig5 found — Plasma may not be installed. Skipping KDE tweaks."
-        return 0
-    fi
-    info "Using $KW"
+	# Detect which kwriteconfig is available (Plasma 6 uses kwriteconfig6)
+	local KW=""
+	for c in kwriteconfig6 kwriteconfig5; do
+		if cmd_exists "$c"; then
+			KW="$c"
+			break
+		fi
+	done
+	if [[ -z "$KW" ]]; then
+		warn "Neither kwriteconfig6 nor kwriteconfig5 found — Plasma may not be installed. Skipping KDE tweaks."
+		return 0
+	fi
+	info "Using $KW"
 
-    if [[ -z "$TARGET_USER" ]]; then
-        warn "No target user — cannot apply per-user KDE settings."
-        return 0
-    fi
+	if [[ -z "$TARGET_USER" ]]; then
+		warn "No target user — cannot apply per-user KDE settings."
+		return 0
+	fi
 
-    # Run as the user so the file is written into their ~/.config
-    run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key Timeout 5"
-    run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key Lock true"
-    run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key LockGrace 0"
-    run "sudo -u '$TARGET_USER' '$KW' --file kdeglobals --group RecentDocuments --key UseRecent false"
+	# Run as the user so the file is written into their ~/.config
+	run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key Timeout 5"
+	run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key Lock true"
+	run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key LockGrace 0"
+	run "sudo -u '$TARGET_USER' '$KW' --file kdeglobals --group RecentDocuments --key UseRecent false"
 
-    # Per guide 15c — disable Bluetooth if user has no BT peripherals
-    if confirm "Disable Bluetooth entirely (do this only if you use no BT peripherals)?"; then
-        run "systemctl disable --now bluetooth || true"
-        if [[ -f /etc/bluetooth/main.conf ]]; then
-            backup_file /etc/bluetooth/main.conf
-            run "sed -i 's|^#\?AutoEnable=.*|AutoEnable=false|' /etc/bluetooth/main.conf"
-        fi
-    fi
-    info "GUI-only tweaks (KWallet master password, Privacy, Activity tracking) must be done in System Settings."
+	# Per guide 15c — disable Bluetooth if user has no BT peripherals
+	if confirm "Disable Bluetooth entirely (do this only if you use no BT peripherals)?"; then
+		run "systemctl disable --now bluetooth || true"
+		if [[ -f /etc/bluetooth/main.conf ]]; then
+			backup_file /etc/bluetooth/main.conf
+			run "sed -i 's|^#\?AutoEnable=.*|AutoEnable=false|' /etc/bluetooth/main.conf"
+		fi
+	fi
+	info "GUI-only tweaks (KWallet master password, Privacy, Activity tracking) must be done in System Settings."
 }
 
 # ============================================================================
 #  SECTION 16 — Firefox Flatpak + arkenfox + extensions
 # ============================================================================
+# sec_16_firefox() - Harden Firefox Flatpak with arkenfox + extensions
+# Installs Firefox Flatpak with arkenfox profiles and security extensions (uBlock, Privacy Badger, etc).
 sec_16_firefox() {
-    should_run 16 || return 0
-    section 16 "Firefox hardening (Flatpak preferred + arkenfox + privacy extensions)"
+	should_run 16 || return 0
+	section 16 "Firefox hardening (Flatpak preferred + arkenfox + privacy extensions)"
 
-    # Flatpak is preferred for Firefox due to stronger app sandboxing.
-    if ! cmd_exists flatpak; then
-        warn "flatpak is not available yet; attempting to install it now."
-        pkg_install flatpak
-        if (( IS_OSTREE )); then
-            warn "On rpm-ostree, reboot is required before the newly layered flatpak command is usable."
-            warn "Rerun section 16 after reboot."
-            return 0
-        fi
-    fi
+	# Flatpak is preferred for Firefox due to stronger app sandboxing.
+	if ! cmd_exists flatpak; then
+		warn "flatpak is not available yet; attempting to install it now."
+		pkg_install flatpak
+		if ((IS_OSTREE)); then
+			warn "On rpm-ostree, reboot is required before the newly layered flatpak command is usable."
+			warn "Rerun section 16 after reboot."
+			return 0
+		fi
+	fi
 
-    # Keep native RPM Firefox if present, but prefer Flatpak as the managed baseline.
-    if pkg_cached firefox; then
-        info "Detected native RPM Firefox. Keeping it installed, but Flatpak Firefox remains the hardened preferred browser."
-    fi
+	# Keep native RPM Firefox if present, but prefer Flatpak as the managed baseline.
+	if pkg_cached firefox; then
+		info "Detected native RPM Firefox. Keeping it installed, but Flatpak Firefox remains the hardened preferred browser."
+	fi
 
-    run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
-    flatpak_install_or_update flathub org.mozilla.firefox
+	run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+	flatpak_install_or_update flathub org.mozilla.firefox
 
-    local ff_user="${TARGET_USER:-${SUDO_USER:-}}"
-    if [[ -z "$ff_user" || "$ff_user" == "root" ]]; then
-        warn "No non-root user available for profile hardening; installed Firefox Flatpak only."
-        return 0
-    fi
-    if ! id -u "$ff_user" >/dev/null 2>&1; then
-        warn "User '$ff_user' does not exist; skipping Firefox profile hardening."
-        return 0
-    fi
+	local ff_user="${TARGET_USER:-${SUDO_USER:-}}"
+	if [[ -z "$ff_user" || "$ff_user" == "root" ]]; then
+		warn "No non-root user available for profile hardening; installed Firefox Flatpak only."
+		return 0
+	fi
+	if ! id -u "$ff_user" >/dev/null 2>&1; then
+		warn "User '$ff_user' does not exist; skipping Firefox profile hardening."
+		return 0
+	fi
 
-    local home ff_root profiles_ini profile_marker profile_path profile_dir
-    home="$(user_home "$ff_user")"
-    if [[ -z "$home" ]]; then
-        warn "Could not resolve home directory for $ff_user; skipping Firefox profile hardening."
-        return 0
-    fi
-    ff_root="$home/.var/app/org.mozilla.firefox/.mozilla/firefox"
-    profiles_ini="$ff_root/profiles.ini"
+	local home ff_root profiles_ini profile_marker profile_path profile_dir
+	home="$(user_home "$ff_user")"
+	if [[ -z "$home" ]]; then
+		warn "Could not resolve home directory for $ff_user; skipping Firefox profile hardening."
+		return 0
+	fi
+	ff_root="$home/.var/app/org.mozilla.firefox/.mozilla/firefox"
+	profiles_ini="$ff_root/profiles.ini"
 
-    # Ensure profile scaffolding exists; if not, ask Firefox to create one.
-    if [[ ! -f "$profiles_ini" ]]; then
-        run "sudo -u '$ff_user' flatpak run --command=firefox org.mozilla.firefox -CreateProfile hardening-default || true"
-    fi
+	# Ensure profile scaffolding exists; if not, ask Firefox to create one.
+	if [[ ! -f "$profiles_ini" ]]; then
+		run "sudo -u '$ff_user' flatpak run --command=firefox org.mozilla.firefox -CreateProfile hardening-default || true"
+	fi
 
-    if [[ ! -f "$profiles_ini" ]]; then
-        warn "Firefox profile metadata not found at $profiles_ini"
-        warn "Launch Firefox once as '$ff_user' and rerun section 16 to apply arkenfox and extension policy."
-        return 0
-    fi
+	if [[ ! -f "$profiles_ini" ]]; then
+		warn "Firefox profile metadata not found at $profiles_ini"
+		warn "Launch Firefox once as '$ff_user' and rerun section 16 to apply arkenfox and extension policy."
+		return 0
+	fi
 
-    profile_marker="$(awk -F= '
+	profile_marker="$(awk -F= '
         /^\[Profile[0-9]+\]$/ {in_profile=1; path=""; def=0; rel=1; next}
         /^\[/ && $0 !~ /^\[Profile[0-9]+\]$/ {if (in_profile && def==1 && path!="") {print rel ":" path; exit} in_profile=0}
         in_profile && $1=="Path" {path=$2}
@@ -3365,52 +3537,52 @@ sec_16_firefox() {
         END {if (in_profile && def==1 && path!="") print rel ":" path}
     ' "$profiles_ini")"
 
-    if [[ -z "$profile_marker" ]]; then
-        warn "Could not identify Firefox default profile from $profiles_ini; skipping arkenfox deployment."
-    else
-        if [[ "${profile_marker%%:*}" == "1" ]]; then
-            profile_path="${profile_marker#*:}"
-            profile_dir="$ff_root/$profile_path"
-        else
-            profile_dir="${profile_marker#*:}"
-        fi
+	if [[ -z "$profile_marker" ]]; then
+		warn "Could not identify Firefox default profile from $profiles_ini; skipping arkenfox deployment."
+	else
+		if [[ "${profile_marker%%:*}" == "1" ]]; then
+			profile_path="${profile_marker#*:}"
+			profile_dir="$ff_root/$profile_path"
+		else
+			profile_dir="${profile_marker#*:}"
+		fi
 
-        if [[ -d "$profile_dir" ]]; then
-            if (( DRY_RUN )); then
-                info "Would install arkenfox user.js into $profile_dir/user.js"
-            else
-                local tmp_arken="/tmp/arkenfox-user-$$-$RANDOM-$SECONDS.js"
-                register_tmp "$tmp_arken"
-                if download_file "https://raw.githubusercontent.com/arkenfox/user.js/master/user.js" "$tmp_arken"; then
-                    if ! install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_arken" "$profile_dir/user.js" 2>/dev/null; then
-                        warn "Failed to install arkenfox user.js (filesystem may be read-only)"
-                        rm -f "$tmp_arken" 2>/dev/null || true
-                    else
-                        rm -f "$tmp_arken" 2>/dev/null || true
-                        ok "Installed arkenfox user.js into $profile_dir/user.js"
-                    fi
-                else
-                    warn "arkenfox user.js download failed; Firefox profile will use defaults (no arkenfox hardening)"
-                    rm -f "$tmp_arken"
-                fi
-            fi
-        else
-            warn "Resolved Firefox profile directory '$profile_dir' does not exist; skipping arkenfox deployment."
-        fi
-    fi
+		if [[ -d "$profile_dir" ]]; then
+			if ((DRY_RUN)); then
+				info "Would install arkenfox user.js into $profile_dir/user.js"
+			else
+				local tmp_arken="/tmp/arkenfox-user-$$-$RANDOM-$SECONDS.js"
+				register_tmp "$tmp_arken"
+				if download_file "https://raw.githubusercontent.com/arkenfox/user.js/master/user.js" "$tmp_arken"; then
+					if ! install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_arken" "$profile_dir/user.js" 2>/dev/null; then
+						warn "Failed to install arkenfox user.js (filesystem may be read-only)"
+						rm -f "$tmp_arken" 2>/dev/null || true
+					else
+						rm -f "$tmp_arken" 2>/dev/null || true
+						ok "Installed arkenfox user.js into $profile_dir/user.js"
+					fi
+				else
+					warn "arkenfox user.js download failed; Firefox profile will use defaults (no arkenfox hardening)"
+					rm -f "$tmp_arken"
+				fi
+			fi
+		else
+			warn "Resolved Firefox profile directory '$profile_dir' does not exist; skipping arkenfox deployment."
+		fi
+	fi
 
-    # Install requested extensions via Firefox enterprise policy.
-    local policy_dir policy_file
-    policy_dir="$ff_root/distribution"
-    policy_file="$policy_dir/policies.json"
+	# Install requested extensions via Firefox enterprise policy.
+	local policy_dir policy_file
+	policy_dir="$ff_root/distribution"
+	policy_file="$policy_dir/policies.json"
 
-    if (( DRY_RUN )); then
-        info "Would write Firefox extension policy to $policy_file"
-    else
-        install -d -m 0700 -o "$ff_user" -g "$ff_user" "$policy_dir" 2>/dev/null || true
-        local tmp_policy="/tmp/firefox-policies-$$-$RANDOM-$SECONDS.json"
-        register_tmp "$tmp_policy"
-        if ! cat > "$tmp_policy" <<'EOF'
+	if ((DRY_RUN)); then
+		info "Would write Firefox extension policy to $policy_file"
+	else
+		install -d -m 0700 -o "$ff_user" -g "$ff_user" "$policy_dir" 2>/dev/null || true
+		local tmp_policy="/tmp/firefox-policies-$$-$RANDOM-$SECONDS.json"
+		register_tmp "$tmp_policy"
+		if ! cat >"$tmp_policy" <<'EOF'; then
 {
   "policies": {
     "Extensions": {
@@ -3429,57 +3601,66 @@ sec_16_firefox() {
   }
 }
 EOF
-        then warn "Failed to write Firefox policy JSON"; rm -f "$tmp_policy" 2>/dev/null || true; return 1; fi
-        if ! install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_policy" "$policy_file" 2>/dev/null; then
-            warn "Failed to install Firefox policy (filesystem may be read-only)"; rm -f "$tmp_policy" 2>/dev/null || true; return 1
-        fi
-        rm -f "$tmp_policy" 2>/dev/null || true
-        ok "Installed Firefox extension policy at $policy_file"
-    fi
+			warn "Failed to write Firefox policy JSON"
+			rm -f "$tmp_policy" 2>/dev/null || true
+			return 1
+		fi
+		if ! install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_policy" "$policy_file" 2>/dev/null; then
+			warn "Failed to install Firefox policy (filesystem may be read-only)"
+			rm -f "$tmp_policy" 2>/dev/null || true
+			return 1
+		fi
+		rm -f "$tmp_policy" 2>/dev/null || true
+		ok "Installed Firefox extension policy at $policy_file"
+	fi
 
-    run "sudo -u '$ff_user' xdg-settings set default-web-browser org.mozilla.firefox.desktop || true"
-    info "Firefox hardening complete for user '$ff_user' (Flatpak + arkenfox + uBlock Origin/Privacy Badger/Skip Redirect/Multi-Account Containers policy)."
-    info "Restart Firefox to apply enterprise policy installs and arkenfox preferences."
+	run "sudo -u '$ff_user' xdg-settings set default-web-browser org.mozilla.firefox.desktop || true"
+	info "Firefox hardening complete for user '$ff_user' (Flatpak + arkenfox + uBlock Origin/Privacy Badger/Skip Redirect/Multi-Account Containers policy)."
+	info "Restart Firefox to apply enterprise policy installs and arkenfox preferences."
 }
 
 # ============================================================================
 #  SECTION 17 — WireGuard tools
 # ============================================================================
+# sec_17_wireguard() - Install WireGuard VPN tools
+# Installs WireGuard CLI; tunnel configuration is manual task.
 sec_17_wireguard() {
-    should_run 17 || return 0
-    section 17 "WireGuard (tools only — tunnel config is manual)"
-    pkg_install wireguard-tools
-    info "Generate keys with:   wg genkey | tee privatekey | wg pubkey > publickey"
-    info "Then craft /etc/wireguard/wg0.conf (chmod 600) with your peer details."
+	should_run 17 || return 0
+	section 17 "WireGuard (tools only — tunnel config is manual)"
+	pkg_install wireguard-tools
+	info "Generate keys with:   wg genkey | tee privatekey | wg pubkey > publickey"
+	info "Then craft /etc/wireguard/wg0.conf (chmod 600) with your peer details."
 }
 
 # ============================================================================
 #  SECTION 18 — Fail2Ban
 # ============================================================================
+# sec_18_fail2ban() - Install and configure Fail2Ban IDS
+# Installs Fail2Ban for intrusion detection and auto-banning of brute-force attempts.
 sec_18_fail2ban() {
-    should_run 18 || return 0
-    section 18 "Fail2Ban"
-    pkg_install fail2ban
-    local fb_dir="/etc/fail2ban"
-    local jl="${fb_dir}/jail.local"
+	should_run 18 || return 0
+	section 18 "Fail2Ban"
+	pkg_install fail2ban
+	local fb_dir="/etc/fail2ban"
+	local jl="${fb_dir}/jail.local"
 
-    if (( DRY_RUN )); then
-        if [[ -f "$jl" ]]; then
-            info "$jl already exists — would leave unchanged."
-        else
-            info "Would write $jl (not present yet)"
-        fi
-    else
-        # Ensure configuration directory exists before writing jail.local.
-        if ! run "install -d -m 0755 '$fb_dir'"; then
-            warn "Could not create $fb_dir; skipping Fail2Ban configuration for now."
-            add_action_item 18 HIGH "FAIL2BAN_DIR_CREATE_FAILED" \
-                "Failed to create $fb_dir. Fix filesystem permissions and re-run section 18."
-            return 0
-        fi
+	if ((DRY_RUN)); then
+		if [[ -f "$jl" ]]; then
+			info "$jl already exists — would leave unchanged."
+		else
+			info "Would write $jl (not present yet)"
+		fi
+	else
+		# Ensure configuration directory exists before writing jail.local.
+		if ! run "install -d -m 0755 '$fb_dir'"; then
+			warn "Could not create $fb_dir; skipping Fail2Ban configuration for now."
+			add_action_item 18 HIGH "FAIL2BAN_DIR_CREATE_FAILED" \
+				"Failed to create $fb_dir. Fix filesystem permissions and re-run section 18."
+			return 0
+		fi
 
-        if [[ ! -f "$jl" ]]; then
-            if ! cat > "$jl" <<'EOF'
+		if [[ ! -f "$jl" ]]; then
+			if ! cat >"$jl" <<'EOF'; then
 [DEFAULT]
 bantime  = 3600
 findtime = 600
@@ -3492,445 +3673,464 @@ port    = ssh
 logpath = %(sshd_log)s
 backend = systemd
 EOF
-            then
-                warn "Could not write $jl; skipping Fail2Ban activation for now."
-                add_action_item 18 HIGH "FAIL2BAN_JAIL_WRITE_FAILED" \
-                    "Failed to write $jl. Fix filesystem/permissions and re-run section 18."
-                return 0
-            fi
-            ok "Wrote $jl"
-        else
-            info "$jl already exists — leaving unchanged."
-        fi
+				warn "Could not write $jl; skipping Fail2Ban activation for now."
+				add_action_item 18 HIGH "FAIL2BAN_JAIL_WRITE_FAILED" \
+					"Failed to write $jl. Fix filesystem/permissions and re-run section 18."
+				return 0
+			fi
+			ok "Wrote $jl"
+		else
+			info "$jl already exists — leaving unchanged."
+		fi
 
-        # rpm-ostree hosts may have fail2ban staged but not active until reboot.
-        if (( IS_OSTREE )) && ! systemctl list-unit-files 2>/dev/null | grep -q '^fail2ban\.service'; then
-            warn "fail2ban is staged but not active yet on rpm-ostree. Reboot required before enabling service."
-            add_action_item 18 HIGH "FAIL2BAN_PENDING_REBOOT" \
-                "Reboot to activate staged fail2ban packages, then re-run section 18."
-            return 0
-        fi
+		# rpm-ostree hosts may have fail2ban staged but not active until reboot.
+		if ((IS_OSTREE)) && ! systemctl list-unit-files 2>/dev/null | grep -q '^fail2ban\.service'; then
+			warn "fail2ban is staged but not active yet on rpm-ostree. Reboot required before enabling service."
+			add_action_item 18 HIGH "FAIL2BAN_PENDING_REBOOT" \
+				"Reboot to activate staged fail2ban packages, then re-run section 18."
+			return 0
+		fi
 
-        if ! run "systemctl enable --now fail2ban"; then
-            warn "Unable to enable/start fail2ban right now."
-            add_action_item 18 MEDIUM "FAIL2BAN_ENABLE_FAILED" \
-                "Run: sudo systemctl enable --now fail2ban (after reboot on rpm-ostree hosts)."
-            return 0
-        fi
-    fi
+		if ! run "systemctl enable --now fail2ban"; then
+			warn "Unable to enable/start fail2ban right now."
+			add_action_item 18 MEDIUM "FAIL2BAN_ENABLE_FAILED" \
+				"Run: sudo systemctl enable --now fail2ban (after reboot on rpm-ostree hosts)."
+			return 0
+		fi
+	fi
 
-    # Post-enable status check and report
-    if (( ! DRY_RUN )); then
-        local f2b_active=0 f2b_status=""
-        systemctl is-active --quiet fail2ban 2>/dev/null && f2b_active=1 || true
-        if (( f2b_active )); then
-            f2b_status="$(fail2ban-client status 2>&1 || true)"
-            ok "fail2ban is active."
-        else
-            warn "fail2ban is not active after enable — see report."
-            add_action_item 18 HIGH "FAIL2BAN_NOT_RUNNING" \
-                "fail2ban service is not running — run: sudo systemctl restart fail2ban"
-        fi
-        {
-            printf '=== Section 18: Fail2Ban Report ===\n'
-            printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-            printf '--- Service status ---\n'
-            systemctl status fail2ban --no-pager 2>&1 || true
-            printf '\n--- Jail summary ---\n%s\n' "$f2b_status"
-            printf '\n--- jail.local contents ---\n'
-            [[ -f "$jl" ]] && cat "$jl" || printf '(not found)\n'
-        } | write_user_report "section-18-fail2ban-${REPORT_DATE}.txt" || true
-        if (( f2b_active )); then
-            add_action_item 18 LOW "FAIL2BAN_REVIEW" \
-                "Review fail2ban jail status and ban history: sudo fail2ban-client status sshd"
-        fi
-    fi
+	# Post-enable status check and report
+	if ((!DRY_RUN)); then
+		local f2b_active=0 f2b_status=""
+		systemctl is-active --quiet fail2ban 2>/dev/null && f2b_active=1 || true
+		if ((f2b_active)); then
+			f2b_status="$(fail2ban-client status 2>&1 || true)"
+			ok "fail2ban is active."
+		else
+			warn "fail2ban is not active after enable — see report."
+			add_action_item 18 HIGH "FAIL2BAN_NOT_RUNNING" \
+				"fail2ban service is not running — run: sudo systemctl restart fail2ban"
+		fi
+		{
+			printf '=== Section 18: Fail2Ban Report ===\n'
+			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
+			printf '--- Service status ---\n'
+			systemctl status fail2ban --no-pager 2>&1 || true
+			printf '\n--- Jail summary ---\n%s\n' "$f2b_status"
+			printf '\n--- jail.local contents ---\n'
+			[[ -f "$jl" ]] && cat "$jl" || printf '(not found)\n'
+		} | write_user_report "section-18-fail2ban-${REPORT_DATE}.txt" || true
+		if ((f2b_active)); then
+			add_action_item 18 LOW "FAIL2BAN_REVIEW" \
+				"Review fail2ban jail status and ban history: sudo fail2ban-client status sshd"
+		fi
+	fi
 }
 
 # ============================================================================
 #  SECTION 19 — Disable unnecessary services (interactive)
 # ============================================================================
+# sec_19_services() - Disable unnecessary services
+# Disables avahi, cups, bluetooth, modemmanager and similar auto-start services.
 sec_19_services() {
-    should_run 19 || return 0
-    section 19 "Disable unnecessary services (interactive)"
-    local svc
-    # Each entry: "service:description"
-    local candidates=(
-        "avahi-daemon:mDNS/Bonjour (local network discovery)"
-        "cups:Local/network printing daemon"
-        "cups-browsed:Auto-discovery of network printers"
-        "bluetooth:Bluetooth stack"
-        "ModemManager:Mobile broadband / 4G modem manager"
-        "iscsi:iSCSI initiator (network block storage)"
-        "iscsid:iSCSI daemon"
-    )
-    for entry in "${candidates[@]}"; do
-        svc="${entry%%:*}"
-        local desc="${entry#*:}"
-        if systemctl is-enabled --quiet "$svc" 2>/dev/null || systemctl is-active --quiet "$svc" 2>/dev/null; then
-            if confirm "Disable $svc ($desc)?"; then
-                run "systemctl disable --now $svc || true"
-            fi
-        fi
-    done
-    info "Service security overview (higher = less sandboxed):"
-    run "systemd-analyze security --no-pager | head -25 || true"
+	should_run 19 || return 0
+	section 19 "Disable unnecessary services (interactive)"
+	local svc
+	# Each entry: "service:description"
+	local candidates=(
+		"avahi-daemon:mDNS/Bonjour (local network discovery)"
+		"cups:Local/network printing daemon"
+		"cups-browsed:Auto-discovery of network printers"
+		"bluetooth:Bluetooth stack"
+		"ModemManager:Mobile broadband / 4G modem manager"
+		"iscsi:iSCSI initiator (network block storage)"
+		"iscsid:iSCSI daemon"
+	)
+	for entry in "${candidates[@]}"; do
+		svc="${entry%%:*}"
+		local desc="${entry#*:}"
+		if systemctl is-enabled --quiet "$svc" 2>/dev/null || systemctl is-active --quiet "$svc" 2>/dev/null; then
+			if confirm "Disable $svc ($desc)?"; then
+				run "systemctl disable --now $svc || true"
+			fi
+		fi
+	done
+	info "Service security overview (higher = less sandboxed):"
+	run "systemd-analyze security --no-pager | head -25 || true"
 }
 
 # ============================================================================
 #  SECTION 20 — File permission hardening
 # ============================================================================
+# sec_20_perms() - Harden file permissions
+# Tightens permissions on shadow files, /tmp, and disables compiler access.
 sec_20_perms() {
-    should_run 20 || return 0
-    section 20 "File permission hardening"
-    # Fedora defaults are already strict, but re-affirm.
-    run "chmod 000 /etc/shadow"
-    run "chmod 000 /etc/gshadow"
-    run "chmod 644 /etc/passwd"
-    run "chmod 644 /etc/group"
-    run "chmod 1777 /tmp"
+	should_run 20 || return 0
+	section 20 "File permission hardening"
+	# Fedora defaults are already strict, but re-affirm.
+	run "chmod 000 /etc/shadow"
+	run "chmod 000 /etc/gshadow"
+	run "chmod 644 /etc/passwd"
+	run "chmod 644 /etc/group"
+	run "chmod 1777 /tmp"
 
-    if [[ -n "$TARGET_USER" ]]; then
-        local home; home="$(user_home "$TARGET_USER")"
-        if [[ -n "$home" && -d "$home" ]]; then
-            run "chmod 700 '$home'"
-        fi
-    fi
+	if [[ -n "$TARGET_USER" ]]; then
+		local home
+		home="$(user_home "$TARGET_USER")"
+		if [[ -n "$home" && -d "$home" ]]; then
+			run "chmod 700 '$home'"
+		fi
+	fi
 
-    if (( IS_OSTREE )); then
-        warn "Skipping /usr/bin compiler permission changes on immutable rpm-ostree systems."
-    else
-        if confirm "Restrict compiler toolchain (/usr/bin/gcc, g++, make) to mode 0750?"; then
-            for bin in /usr/bin/gcc /usr/bin/g++ /usr/bin/make; do
-                [[ -e "$bin" ]] && run "chmod 750 '$bin'"
-            done
-        fi
-    fi
+	if ((IS_OSTREE)); then
+		warn "Skipping /usr/bin compiler permission changes on immutable rpm-ostree systems."
+	else
+		if confirm "Restrict compiler toolchain (/usr/bin/gcc, g++, make) to mode 0750?"; then
+			for bin in /usr/bin/gcc /usr/bin/g++ /usr/bin/make; do
+				[[ -e "$bin" ]] && run "chmod 750 '$bin'"
+			done
+		fi
+	fi
 
-    info "Baseline of SUID files (saved for diffing later):"
-    run "find / -xdev -perm /4000 -type f 2>/dev/null | sort > /root/suid-baseline-${RUN_DATE_YMD}.txt || true"
-    info "Saved SUID baseline to /root/suid-baseline-*.txt"
+	info "Baseline of SUID files (saved for diffing later):"
+	run "find / -xdev -perm /4000 -type f 2>/dev/null | sort > /root/suid-baseline-${RUN_DATE_YMD}.txt || true"
+	info "Saved SUID baseline to /root/suid-baseline-*.txt"
 }
 
 # ============================================================================
 #  SECTION 21 — ClamAV
 # ============================================================================
+# sec_21_clamav() - Install ClamAV antivirus
+# Installs ClamAV engine and freshclam for signature updates and scanning.
 sec_21_clamav() {
-    should_run 21 || return 0
-    section 21 "ClamAV antivirus"
-    pkg_install clamav clamd clamav-update clamav-scanner-systemd
-    info "Updating ClamAV signatures (freshclam)..."
-    # freshclam can fail if the daemon already holds the lock; suppress for idempotency
-    run "freshclam || true"
-    run "systemctl enable --now clamav-freshclam || true"
-    # The clamd@scan unit varies; try both
-    run "systemctl enable --now clamd@scan || systemctl enable --now clamd@scan.service || true"
+	should_run 21 || return 0
+	section 21 "ClamAV antivirus"
+	pkg_install clamav clamd clamav-update clamav-scanner-systemd
+	info "Updating ClamAV signatures (freshclam)..."
+	# freshclam can fail if the daemon already holds the lock; suppress for idempotency
+	run "freshclam || true"
+	run "systemctl enable --now clamav-freshclam || true"
+	# The clamd@scan unit varies; try both
+	run "systemctl enable --now clamd@scan || systemctl enable --now clamd@scan.service || true"
 
-    # Post-enable status check and report
-    if (( ! DRY_RUN )); then
-        local freshclam_active=0 clamd_active=0
-        if systemctl is-active --quiet clamav-freshclam 2>/dev/null; then
-            freshclam_active=1
-        fi
-        if systemctl is-active --quiet clamd@scan 2>/dev/null || systemctl is-active --quiet clamd@scan.service 2>/dev/null; then
-            clamd_active=1
-        fi
-        # Collect status output safely
-        {
-            echo "=== Section 21: ClamAV Report ==="
-            echo "Generated: $RUN_STAMP_HUMAN"
-            echo ""
-            echo "--- clamav-freshclam status ---"
-            systemctl status clamav-freshclam --no-pager 2>&1 || true
-            echo ""
-            echo "--- clamd@scan status ---"
-            systemctl status clamd@scan --no-pager 2>&1 || systemctl status clamd@scan.service --no-pager 2>&1 || true
-            echo ""
-            echo "--- ClamAV version / DB ---"
-            clamscan --version 2>&1 || true
-            freshclam --version 2>&1 || true
-        } | write_user_report "section-21-clamav-${REPORT_DATE}.txt" || true
-        (( freshclam_active )) || add_action_item 21 MEDIUM "CLAMAV_FRESHCLAM_NOT_RUNNING" \
-            "clamav-freshclam is not running — run: sudo systemctl start clamav-freshclam"
-        (( clamd_active )) || add_action_item 21 MEDIUM "CLAMAV_CLAMD_NOT_RUNNING" \
-            "clamd@scan is not running — run: sudo systemctl start clamd@scan"
-        add_action_item 21 MEDIUM "CLAMAV_INITIAL_SCAN" \
-            "Run initial ClamAV home-directory scan (handled automatically in remediation step)."
-        add_action_item 21 LOW "CLAMAV_REVIEW" \
-            "Review ClamAV status: $USER_RESULTS_DIR/section-21-clamav-${REPORT_DATE}.txt"
-    fi
+	# Post-enable status check and report
+	if ((!DRY_RUN)); then
+		local freshclam_active=0 clamd_active=0
+		if systemctl is-active --quiet clamav-freshclam 2>/dev/null; then
+			freshclam_active=1
+		fi
+		if systemctl is-active --quiet clamd@scan 2>/dev/null || systemctl is-active --quiet clamd@scan.service 2>/dev/null; then
+			clamd_active=1
+		fi
+		# Collect status output safely
+		{
+			echo "=== Section 21: ClamAV Report ==="
+			echo "Generated: $RUN_STAMP_HUMAN"
+			echo ""
+			echo "--- clamav-freshclam status ---"
+			systemctl status clamav-freshclam --no-pager 2>&1 || true
+			echo ""
+			echo "--- clamd@scan status ---"
+			systemctl status clamd@scan --no-pager 2>&1 || systemctl status clamd@scan.service --no-pager 2>&1 || true
+			echo ""
+			echo "--- ClamAV version / DB ---"
+			clamscan --version 2>&1 || true
+			freshclam --version 2>&1 || true
+		} | write_user_report "section-21-clamav-${REPORT_DATE}.txt" || true
+		((freshclam_active)) || add_action_item 21 MEDIUM "CLAMAV_FRESHCLAM_NOT_RUNNING" \
+			"clamav-freshclam is not running — run: sudo systemctl start clamav-freshclam"
+		((clamd_active)) || add_action_item 21 MEDIUM "CLAMAV_CLAMD_NOT_RUNNING" \
+			"clamd@scan is not running — run: sudo systemctl start clamd@scan"
+		add_action_item 21 MEDIUM "CLAMAV_INITIAL_SCAN" \
+			"Run initial ClamAV home-directory scan (handled automatically in remediation step)."
+		add_action_item 21 LOW "CLAMAV_REVIEW" \
+			"Review ClamAV status: $USER_RESULTS_DIR/section-21-clamav-${REPORT_DATE}.txt"
+	fi
 }
 
 # ============================================================================
 #  SECTION 22 — OpenSCAP
 # ============================================================================
+# sec_22_openscap() - Install and run OpenSCAP compliance scanner
+# Installs OpenSCAP framework and runs initial compliance scan against security baseline.
 sec_22_openscap() {
-    should_run 22 || return 0
-    section 22 "OpenSCAP compliance scanner"
-    pkg_install openscap-scanner scap-security-guide
-    ensure_command_dep oscap "OpenSCAP compliance scan" openscap-scanner
-    if ! cmd_exists oscap; then
-        warn "oscap command is unavailable after dependency checks — skipping section 22."
-        return 0
-    fi
-    local content="/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml"
-    if [[ ! -f "$content" ]]; then
-        warn "SSG content missing at expected path; retrying dependency install and alternate path lookup."
-        pkg_install scap-security-guide
-        if [[ ! -f "$content" ]]; then
-            local alt_content=""
-            local candidate
-            for candidate in /usr/share/xml/scap/ssg/content/ssg-fedora*-ds.xml; do
-                [[ -f "$candidate" ]] || continue
-                alt_content="$candidate"
-                break
-            done
-            if [[ -n "$alt_content" ]]; then
-                content="$alt_content"
-                info "Using alternate SSG content path: $content"
-            else
-                warn "No Fedora SSG datastream found; skipping OpenSCAP scan."
-                return 0
-            fi
-        fi
-    fi
-    info "Available profiles:"
-    run "oscap info '$content' | grep -E '^(Profile|Title)' | head -20 || true"
-    if confirm "Run a baseline scan now (results in /root/scap-report.html)?"; then
-        run "oscap xccdf eval \
+	should_run 22 || return 0
+	section 22 "OpenSCAP compliance scanner"
+	pkg_install openscap-scanner scap-security-guide
+	ensure_command_dep oscap "OpenSCAP compliance scan" openscap-scanner
+	if ! cmd_exists oscap; then
+		warn "oscap command is unavailable after dependency checks — skipping section 22."
+		return 0
+	fi
+	local content="/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml"
+	if [[ ! -f "$content" ]]; then
+		warn "SSG content missing at expected path; retrying dependency install and alternate path lookup."
+		pkg_install scap-security-guide
+		if [[ ! -f "$content" ]]; then
+			local alt_content=""
+			local candidate
+			for candidate in /usr/share/xml/scap/ssg/content/ssg-fedora*-ds.xml; do
+				[[ -f "$candidate" ]] || continue
+				alt_content="$candidate"
+				break
+			done
+			if [[ -n "$alt_content" ]]; then
+				content="$alt_content"
+				info "Using alternate SSG content path: $content"
+			else
+				warn "No Fedora SSG datastream found; skipping OpenSCAP scan."
+				return 0
+			fi
+		fi
+	fi
+	info "Available profiles:"
+	run "oscap info '$content' | grep -E '^(Profile|Title)' | head -20 || true"
+	if confirm "Run a baseline scan now (results in /root/scap-report.html)?"; then
+		run "oscap xccdf eval \
             --profile xccdf_org.ssgproject.content_profile_standard \
             --results /root/scap-results.xml \
             --report  /root/scap-report.html \
             '$content' || true"
-        ok "Report: /root/scap-report.html"
-    fi
+		ok "Report: /root/scap-report.html"
+	fi
 
-    # Copy results to user Downloads/<project>/results/ and generate text summary
-    if (( ! DRY_RUN )); then
-        copy_to_user_results /root/scap-report.html  "section-22-openscap-${REPORT_DATE}.html"
-        copy_to_user_results /root/scap-results.xml  "section-22-openscap-results-${REPORT_DATE}.xml"
-        local pass_count="?" fail_count="?" notchecked_count="?"
-        if [[ -f /root/scap-results.xml ]]; then
-            read -r pass_count fail_count notchecked_count < <(
-                awk '
+	# Copy results to user Downloads/<project>/results/ and generate text summary
+	if ((!DRY_RUN)); then
+		copy_to_user_results /root/scap-report.html "section-22-openscap-${REPORT_DATE}.html"
+		copy_to_user_results /root/scap-results.xml "section-22-openscap-results-${REPORT_DATE}.xml"
+		local pass_count="?" fail_count="?" notchecked_count="?"
+		if [[ -f /root/scap-results.xml ]]; then
+			read -r pass_count fail_count notchecked_count < <(
+				awk '
                     /result="pass"/ {pass++}
                     /result="fail"/ {fail++}
                     /result="notchecked"/ {notchecked++}
                     END {print pass+0, fail+0, notchecked+0}
                 ' /root/scap-results.xml 2>/dev/null || printf '? ? ?\n'
-            )
-            info "OpenSCAP results — pass: $pass_count  fail: $fail_count  not-checked: $notchecked_count"
-            {
-                printf '=== Section 22: OpenSCAP Compliance Summary ===\n'
-                printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-                printf 'Results XML:  /root/scap-results.xml\n'
-                printf 'HTML report:  /root/scap-report.html\n\n'
-                printf 'Pass:         %s\n' "$pass_count"
-                printf 'Fail:         %s\n' "$fail_count"
-                printf 'Not checked:  %s\n\n' "$notchecked_count"
-                printf '--- Top 25 failing rules ---\n'
-                awk -F'"' '/result="fail"/{for(i=1;i<NF;i++) if($i=="idref") print $(i+1)}' \
-                  /root/scap-results.xml 2>/dev/null \
-                  | head -25 \
-                  || printf '(no failures found or XML parse error)\n'
-            } | write_user_report "section-22-openscap-summary-${REPORT_DATE}.txt" || true
-            local fail_n
-            fail_n="${fail_count//[^0-9]/}"
-            if [[ -n "$fail_n" ]] && (( fail_n > 0 )) 2>/dev/null; then
-                add_action_item 22 HIGH "SCAP_FAILED_RULES" \
-                    "OpenSCAP: $fail_count rule(s) failed — review $USER_RESULTS_DIR/section-22-openscap-${REPORT_DATE}.html"
-            else
-                ok "OpenSCAP scan: $pass_count passing, $fail_count failing."
-            fi
-        else
-            add_action_item 22 MEDIUM "SCAP_NO_SCAN" \
-                "OpenSCAP scan was skipped or results not found — rerun section 22 to generate compliance report."
-        fi
-    fi
+			)
+			info "OpenSCAP results — pass: $pass_count  fail: $fail_count  not-checked: $notchecked_count"
+			{
+				printf '=== Section 22: OpenSCAP Compliance Summary ===\n'
+				printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
+				printf 'Results XML:  /root/scap-results.xml\n'
+				printf 'HTML report:  /root/scap-report.html\n\n'
+				printf 'Pass:         %s\n' "$pass_count"
+				printf 'Fail:         %s\n' "$fail_count"
+				printf 'Not checked:  %s\n\n' "$notchecked_count"
+				printf '--- Top 25 failing rules ---\n'
+				awk -F'"' '/result="fail"/{for(i=1;i<NF;i++) if($i=="idref") print $(i+1)}' \
+					/root/scap-results.xml 2>/dev/null |
+					head -25 ||
+					printf '(no failures found or XML parse error)\n'
+			} | write_user_report "section-22-openscap-summary-${REPORT_DATE}.txt" || true
+			local fail_n
+			fail_n="${fail_count//[^0-9]/}"
+			if [[ -n "$fail_n" ]] && ((fail_n > 0)) 2>/dev/null; then
+				add_action_item 22 HIGH "SCAP_FAILED_RULES" \
+					"OpenSCAP: $fail_count rule(s) failed — review $USER_RESULTS_DIR/section-22-openscap-${REPORT_DATE}.html"
+			else
+				ok "OpenSCAP scan: $pass_count passing, $fail_count failing."
+			fi
+		else
+			add_action_item 22 MEDIUM "SCAP_NO_SCAN" \
+				"OpenSCAP scan was skipped or results not found — rerun section 22 to generate compliance report."
+		fi
+	fi
 }
 
 # ---------- Actionable-items display + remediation --------------------------
 # show_actionable_items() - Print the full prioritized actionable items list.
 show_actionable_items() {
-    if (( ${#ACTIONABLE_ITEMS[@]} == 0 )); then
-        ok "No actionable items — sections 12/18/21/22 appear clean."
-        return 0
-    fi
-    if (( ! GUI_FULL_MODE )); then
-        printf '\n%s════════ Actionable Items (%d found) ════════%s\n' "$C_YEL" "${#ACTIONABLE_ITEMS[@]}" "$C_RST"
-        local idx=1
-        for item in "${ACTIONABLE_ITEMS[@]}"; do
-            local section priority tag desc
-            IFS='|' read -r section priority tag desc <<<"$item"
-            case "$priority" in
-                HIGH)   printf '%s  [%2d] [%s][%s] %s%s\n' "$C_RED" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
-                MEDIUM) printf '%s  [%2d] [%s][%s] %s%s\n' "$C_YEL" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
-                *)      printf '%s  [%2d] [%s][%s] %s%s\n' "$C_BLU" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
-            esac
-            ((idx++))
-        done
-        printf '%s════════════════════════════════════════════%s\n\n' "$C_YEL" "$C_RST"
-    else
-        local msg="Actionable Items (${#ACTIONABLE_ITEMS[@]}):"$'\n'
-        for item in "${ACTIONABLE_ITEMS[@]}"; do
-            local section priority tag desc
-            IFS='|' read -r section priority tag desc <<<"$item"
-            msg+="[${priority}][${section}] ${desc}"$'\n'
-        done
-        gui_alert warning "$msg"
-    fi
+	if ((${#ACTIONABLE_ITEMS[@]} == 0)); then
+		ok "No actionable items — sections 12/18/21/22 appear clean."
+		return 0
+	fi
+	if ((!GUI_FULL_MODE)); then
+		printf '\n%s════════ Actionable Items (%d found) ════════%s\n' "$C_YEL" "${#ACTIONABLE_ITEMS[@]}" "$C_RST"
+		local idx=1
+		for item in "${ACTIONABLE_ITEMS[@]}"; do
+			local section priority tag desc
+			IFS='|' read -r section priority tag desc <<<"$item"
+			case "$priority" in
+			HIGH) printf '%s  [%2d] [%s][%s] %s%s\n' "$C_RED" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
+			MEDIUM) printf '%s  [%2d] [%s][%s] %s%s\n' "$C_YEL" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
+			*) printf '%s  [%2d] [%s][%s] %s%s\n' "$C_BLU" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
+			esac
+			((idx++))
+		done
+		printf '%s════════════════════════════════════════════%s\n\n' "$C_YEL" "$C_RST"
+	else
+		local msg="Actionable Items (${#ACTIONABLE_ITEMS[@]}):"$'\n'
+		for item in "${ACTIONABLE_ITEMS[@]}"; do
+			local section priority tag desc
+			IFS='|' read -r section priority tag desc <<<"$item"
+			msg+="[${priority}][${section}] ${desc}"$'\n'
+		done
+		gui_alert warning "$msg"
+	fi
 }
 
 # remediate_item() - Attempt automated fix for one actionable item identified by tag.
 # Returns 0 if resolved, 1 if manual attention still required.
 remediate_item() {
-    local tag="$1"
-    case "$tag" in
-        FAIL2BAN_NOT_RUNNING)
-            info "Attempting to restart fail2ban..."
-            if systemctl restart fail2ban 2>/dev/null; then
-                ok "fail2ban restarted successfully."
-                return 0
-            fi
-            warn "fail2ban restart failed — check: journalctl -u fail2ban"
-            return 1
-            ;;
-        CLAMAV_FRESHCLAM_NOT_RUNNING)
-            info "Attempting to start clamav-freshclam..."
-            if systemctl start clamav-freshclam 2>/dev/null; then
-                ok "clamav-freshclam started."
-                return 0
-            fi
-            warn "clamav-freshclam failed to start — check: journalctl -u clamav-freshclam"
-            return 1
-            ;;
-        CLAMAV_CLAMD_NOT_RUNNING)
-            info "Attempting to start clamd@scan..."
-            if systemctl start clamd@scan 2>/dev/null || systemctl start clamd@scan.service 2>/dev/null; then
-                ok "clamd@scan started."
-                return 0
-            fi
-            warn "clamd@scan failed to start — check: journalctl -u clamd@scan"
-            return 1
-            ;;
-        CLAMAV_FRESHCLAM_OUTDATED)
-            info "Updating ClamAV virus definitions (freshclam)..."
-            (( DRY_RUN )) && { info "Would run: freshclam"; return 1; }
-            if freshclam 2>/dev/null; then
-                ok "ClamAV definitions updated."
-                return 0
-            fi
-            warn "freshclam failed — daemon may hold lock; retry after clamd starts."
-            return 1
-            ;;
-        CLAMAV_INITIAL_SCAN)
-            info "Running initial ClamAV scan of home directory (this may take several minutes)..."
-            local scan_user="${TARGET_USER:-${SUDO_USER:-}}"
-            local scan_home; scan_home="$(user_home "$scan_user" 2>/dev/null || echo "/root")"
-            if (( DRY_RUN )); then
-                info "Would run: clamscan -r --infected '$scan_home'"
-                return 1
-            fi
-            local scan_tmp="/tmp/clamscan-out-$$.tmp"
-            register_tmp "$scan_tmp"
-            log "[RUN]   clamscan -r --infected $scan_home"
-            if (( GUI_FULL_MODE )); then
-                clamscan -r --infected "$scan_home" >"$scan_tmp" 2>&1 || true
-            else
-                clamscan -r --infected "$scan_home" 2>&1 | tee "$scan_tmp" || true
-            fi
-            local infected; infected="$(awk '/ FOUND$/{count++} END{print count+0}' "$scan_tmp" 2>/dev/null || echo 0)"
-            {
-                printf '=== ClamAV Initial Home Scan ===\nDate: %s\nTarget: %s\n\n' "$RUN_STAMP_HUMAN" "$scan_home"
-                cat "$scan_tmp"
-            } | write_user_report "section-21-clamav-initial-scan-${REPORT_DATE}.txt" || true
-            if (( infected > 0 )); then
-                warn "ClamAV found $infected infected file(s) — review the scan report."
-                add_action_item 21 HIGH "CLAMAV_INFECTED" \
-                    "ClamAV found $infected infected file(s) — manual quarantine/deletion required."
-                return 1
-            fi
-            ok "ClamAV scan complete — no infected files found in $scan_home."
-            return 0
-            ;;
-        AIDE_DB_MISSING)
-            info "Attempting to initialize AIDE database..."
-            (( DRY_RUN )) && { info "Would run: aide --init"; return 1; }
-            if aide --init 2>/dev/null && \
-               mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz 2>/dev/null; then
-                ok "AIDE database initialized."
-                return 0
-            fi
-            warn "AIDE initialization failed — run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
-            return 1
-            ;;
-        SCAP_FAILED_RULES)
-            info "OpenSCAP failures require manual review."
-            info "  HTML report:  ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-22-openscap-${REPORT_DATE}.html}"
-            info "  Text summary: ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-22-openscap-summary-${REPORT_DATE}.txt}"
-            if [[ -f /root/scap-results.xml ]]; then
-                info "  Top 10 failed rules:"
-                awk -F'"' '/result="fail"/{for(i=1;i<NF;i++) if($i=="idref") print $(i+1)}' /root/scap-results.xml 2>/dev/null \
-                    | head -10 \
-                    | while IFS= read -r rule; do info "    • $rule"; done || true
-            fi
-            return 1
-            ;;
-        RK_WARNINGS)
-            info "rkhunter warnings require manual investigation:"
-            info "  Report: ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-12-rkhunter-aide-${REPORT_DATE}.txt}"
-            info "  After investigating, run: sudo rkhunter --propupd"
-            return 1
-            ;;
-        AIDE_RECHECK|FAIL2BAN_REVIEW|CLAMAV_REVIEW|SCAP_NO_SCAN|CLAMAV_INFECTED)
-            info "Item [${tag}] requires manual review — see reports in: ${USER_RESULTS_DIR:-$LOG_FILE}"
-            return 1
-            ;;
-        *)
-            info "No automated fix for tag '${tag}' — manual review required."
-            return 1
-            ;;
-    esac
+	local tag="$1"
+	case "$tag" in
+	FAIL2BAN_NOT_RUNNING)
+		info "Attempting to restart fail2ban..."
+		if systemctl restart fail2ban 2>/dev/null; then
+			ok "fail2ban restarted successfully."
+			return 0
+		fi
+		warn "fail2ban restart failed — check: journalctl -u fail2ban"
+		return 1
+		;;
+	CLAMAV_FRESHCLAM_NOT_RUNNING)
+		info "Attempting to start clamav-freshclam..."
+		if systemctl start clamav-freshclam 2>/dev/null; then
+			ok "clamav-freshclam started."
+			return 0
+		fi
+		warn "clamav-freshclam failed to start — check: journalctl -u clamav-freshclam"
+		return 1
+		;;
+	CLAMAV_CLAMD_NOT_RUNNING)
+		info "Attempting to start clamd@scan..."
+		if systemctl start clamd@scan 2>/dev/null || systemctl start clamd@scan.service 2>/dev/null; then
+			ok "clamd@scan started."
+			return 0
+		fi
+		warn "clamd@scan failed to start — check: journalctl -u clamd@scan"
+		return 1
+		;;
+	CLAMAV_FRESHCLAM_OUTDATED)
+		info "Updating ClamAV virus definitions (freshclam)..."
+		((DRY_RUN)) && {
+			info "Would run: freshclam"
+			return 1
+		}
+		if freshclam 2>/dev/null; then
+			ok "ClamAV definitions updated."
+			return 0
+		fi
+		warn "freshclam failed — daemon may hold lock; retry after clamd starts."
+		return 1
+		;;
+	CLAMAV_INITIAL_SCAN)
+		info "Running initial ClamAV scan of home directory (this may take several minutes)..."
+		local scan_user="${TARGET_USER:-${SUDO_USER:-}}"
+		local scan_home
+		scan_home="$(user_home "$scan_user" 2>/dev/null || echo "/root")"
+		if ((DRY_RUN)); then
+			info "Would run: clamscan -r --infected '$scan_home'"
+			return 1
+		fi
+		local scan_tmp="/tmp/clamscan-out-$$.tmp"
+		register_tmp "$scan_tmp"
+		log "[RUN]   clamscan -r --infected $scan_home"
+		if ((GUI_FULL_MODE)); then
+			clamscan -r --infected "$scan_home" >"$scan_tmp" 2>&1 || true
+		else
+			clamscan -r --infected "$scan_home" 2>&1 | tee "$scan_tmp" || true
+		fi
+		local infected
+		infected="$(awk '/ FOUND$/{count++} END{print count+0}' "$scan_tmp" 2>/dev/null || echo 0)"
+		{
+			printf '=== ClamAV Initial Home Scan ===\nDate: %s\nTarget: %s\n\n' "$RUN_STAMP_HUMAN" "$scan_home"
+			cat "$scan_tmp"
+		} | write_user_report "section-21-clamav-initial-scan-${REPORT_DATE}.txt" || true
+		if ((infected > 0)); then
+			warn "ClamAV found $infected infected file(s) — review the scan report."
+			add_action_item 21 HIGH "CLAMAV_INFECTED" \
+				"ClamAV found $infected infected file(s) — manual quarantine/deletion required."
+			return 1
+		fi
+		ok "ClamAV scan complete — no infected files found in $scan_home."
+		return 0
+		;;
+	AIDE_DB_MISSING)
+		info "Attempting to initialize AIDE database..."
+		((DRY_RUN)) && {
+			info "Would run: aide --init"
+			return 1
+		}
+		if aide --init 2>/dev/null &&
+			mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz 2>/dev/null; then
+			ok "AIDE database initialized."
+			return 0
+		fi
+		warn "AIDE initialization failed — run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+		return 1
+		;;
+	SCAP_FAILED_RULES)
+		info "OpenSCAP failures require manual review."
+		info "  HTML report:  ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-22-openscap-${REPORT_DATE}.html}"
+		info "  Text summary: ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-22-openscap-summary-${REPORT_DATE}.txt}"
+		if [[ -f /root/scap-results.xml ]]; then
+			info "  Top 10 failed rules:"
+			awk -F'"' '/result="fail"/{for(i=1;i<NF;i++) if($i=="idref") print $(i+1)}' /root/scap-results.xml 2>/dev/null |
+				head -10 |
+				while IFS= read -r rule; do info "    • $rule"; done || true
+		fi
+		return 1
+		;;
+	RK_WARNINGS)
+		info "rkhunter warnings require manual investigation:"
+		info "  Report: ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-12-rkhunter-aide-${REPORT_DATE}.txt}"
+		info "  After investigating, run: sudo rkhunter --propupd"
+		return 1
+		;;
+	AIDE_RECHECK | FAIL2BAN_REVIEW | CLAMAV_REVIEW | SCAP_NO_SCAN | CLAMAV_INFECTED)
+		info "Item [${tag}] requires manual review — see reports in: ${USER_RESULTS_DIR:-$LOG_FILE}"
+		return 1
+		;;
+	*)
+		info "No automated fix for tag '${tag}' — manual review required."
+		return 1
+		;;
+	esac
 }
 
 # remediation_loop() - Iteratively resolve all actionable items after summary approval.
 remediation_loop() {
-    (( ${#ACTIONABLE_ITEMS[@]} == 0 )) && return 0
-    local round=1 max_rounds=5 prev_count=-1
-    while (( ${#ACTIONABLE_ITEMS[@]} > 0 && round <= max_rounds )); do
-        local current_count="${#ACTIONABLE_ITEMS[@]}"
-        (( current_count == prev_count )) && break   # No progress — stop
-        prev_count="$current_count"
-        printf '\n'
-        info "=== Remediation round $round of $max_rounds (${#ACTIONABLE_ITEMS[@]} item(s) remaining) ==="
-        show_actionable_items
-        local remaining_items=()
-        for item in "${ACTIONABLE_ITEMS[@]}"; do
-            local section priority tag desc
-            IFS='|' read -r section priority tag desc <<<"$item"
-            if remediate_item "$tag"; then
-                REMEDIATED_ITEMS+=("$item")
-                log "[REMEDIATED] [${section}][${tag}] $desc"
-                ok "Resolved: [${section}] $desc"
-            else
-                remaining_items+=("$item")
-            fi
-        done
-        if (( ${#remaining_items[@]} > 0 )); then
-            ACTIONABLE_ITEMS=("${remaining_items[@]}")
-        else
-            ACTIONABLE_ITEMS=()
-        fi
-        (( ${#ACTIONABLE_ITEMS[@]} == 0 )) && { ok "All actionable items resolved in round $round."; break; }
-        ((round++))
-    done
-    if (( ${#ACTIONABLE_ITEMS[@]} > 0 )); then
-        warn "${#ACTIONABLE_ITEMS[@]} item(s) could not be auto-resolved and require manual action:"
-        show_actionable_items
-    fi
-    if (( ${#REMEDIATED_ITEMS[@]} > 0 )); then
-        ok "${#REMEDIATED_ITEMS[@]} item(s) were successfully remediated this session."
-    fi
+	((${#ACTIONABLE_ITEMS[@]} == 0)) && return 0
+	local round=1 max_rounds=5 prev_count=-1
+	while ((${#ACTIONABLE_ITEMS[@]} > 0 && round <= max_rounds)); do
+		local current_count="${#ACTIONABLE_ITEMS[@]}"
+		((current_count == prev_count)) && break # No progress — stop
+		prev_count="$current_count"
+		printf '\n'
+		info "=== Remediation round $round of $max_rounds (${#ACTIONABLE_ITEMS[@]} item(s) remaining) ==="
+		show_actionable_items
+		local remaining_items=()
+		for item in "${ACTIONABLE_ITEMS[@]}"; do
+			local section priority tag desc
+			IFS='|' read -r section priority tag desc <<<"$item"
+			if remediate_item "$tag"; then
+				REMEDIATED_ITEMS+=("$item")
+				log "[REMEDIATED] [${section}][${tag}] $desc"
+				ok "Resolved: [${section}] $desc"
+			else
+				remaining_items+=("$item")
+			fi
+		done
+		if ((${#remaining_items[@]} > 0)); then
+			ACTIONABLE_ITEMS=("${remaining_items[@]}")
+		else
+			ACTIONABLE_ITEMS=()
+		fi
+		((${#ACTIONABLE_ITEMS[@]} == 0)) && {
+			ok "All actionable items resolved in round $round."
+			break
+		}
+		((round++))
+	done
+	if ((${#ACTIONABLE_ITEMS[@]} > 0)); then
+		warn "${#ACTIONABLE_ITEMS[@]} item(s) could not be auto-resolved and require manual action:"
+		show_actionable_items
+	fi
+	if ((${#REMEDIATED_ITEMS[@]} > 0)); then
+		ok "${#REMEDIATED_ITEMS[@]} item(s) were successfully remediated this session."
+	fi
 }
 
 # ---------- Summary ---------------------------------------------------------
@@ -3940,69 +4140,70 @@ remediation_loop() {
 # report plus TXT import bundle into the user's Downloads directory instead of
 # running remediation. If approved, the user can implement all or selected items.
 final_summary() {
-    local summary_file="harden-summary-${REPORT_DATE}.txt"
-    local summary_path=""
-    # Precompute platform label once — avoids two subshell spawns in report + terminal output.
-    local _plat; (( IS_OSTREE )) && _plat="rpm-ostree (immutable)" || _plat="dnf (mutable)"
+	local summary_file="harden-summary-${REPORT_DATE}.txt"
+	local summary_path=""
+	# Precompute platform label once — avoids two subshell spawns in report + terminal output.
+	local _plat
+	((IS_OSTREE)) && _plat="rpm-ostree (immutable)" || _plat="dnf (mutable)"
 
-    # Write overall human-readable summary to Downloads/<project>/results/
-    if [[ -n "$USER_RESULTS_DIR" ]]; then
-        {
-            printf '=== Fedora Hardening Run Summary ===\n'
-            printf 'Generated:    %s\n' "$RUN_STAMP_HUMAN"
-            printf 'Host:         %s\n' "$HOST_LABEL"
-            printf 'Log file:     %s\n' "$LOG_FILE"
-            printf 'Backups:      %s\n' "$BACKUP_DIR"
-            printf 'Target user:  %s\n' "${TARGET_USER:-<none>}"
-            printf 'Platform:     %s\n\n' "${_plat}"
-            printf '=== Actionable Items (%d) ===\n' "${#ACTIONABLE_ITEMS[@]}"
-            if (( ${#ACTIONABLE_ITEMS[@]} > 0 )); then
-                local idx=1
-                for item in "${ACTIONABLE_ITEMS[@]}"; do
-                    local section priority tag desc
-                    IFS='|' read -r section priority tag desc <<<"$item"
-                    printf '  [%2d] [%s][%s] %s\n' "$idx" "$priority" "$section" "$desc"
-                    ((idx++))
-                done
-            else
-                printf '  None — sections 12/18/21/22 appear clean.\n'
-            fi
-            printf '\n=== Remediated Items (%d) ===\n' "${#REMEDIATED_ITEMS[@]}"
-            if (( ${#REMEDIATED_ITEMS[@]} > 0 )); then
-                for item in "${REMEDIATED_ITEMS[@]}"; do
-                    local section priority tag desc
-                    IFS='|' read -r section priority tag desc <<<"$item"
-                    printf '  [RESOLVED][%s][%s] %s\n' "$priority" "$section" "$desc"
-                done
-            fi
-            printf '\n=== Manual Follow-up Items ===\n'
-            printf '  • LUKS full-disk encryption  — set during Fedora installation only.\n'
-            printf '  • GRUB password (section 6b) — run: sudo grub2-mkpasswd-pbkdf2\n'
-            printf '  • SSH keys                   — generate on CLIENT, then: ssh-copy-id user@host\n'
-            printf '  • WireGuard tunnel           — configure /etc/wireguard/wg0.conf with peer keys.\n'
-            printf '  • arkenfox overrides         — add exceptions in user-overrides.js as needed.\n'
-            printf '  • KDE GUI-only settings      — KWallet master password, Privacy, Activity.\n'
-            printf '  • AIDE re-init               — after any future package updates.\n'
-            printf '  • REBOOT RECOMMENDED         — to apply kernel/sysctl/PAM/GRUB changes.\n'
-            (( IS_OSTREE )) && printf '  • rpm-ostree REBOOT         — required for staged/layered package changes.\n'
-            printf '\n=== Section Reports in Downloads/%s/results/ ===\n' "$PROJECT_NAME"
-            for f in "$USER_RESULTS_DIR"/section-*.txt "$USER_RESULTS_DIR"/section-*.html; do
-                [[ -f "$f" ]] && printf '  %s\n' "$(basename "$f")"
-            done || true
-        } | write_user_report "$summary_file" || true
-        summary_path="${USER_RESULTS_DIR}/${summary_file}"
-    fi
+	# Write overall human-readable summary to Downloads/<project>/results/
+	if [[ -n "$USER_RESULTS_DIR" ]]; then
+		{
+			printf '=== Fedora Hardening Run Summary ===\n'
+			printf 'Generated:    %s\n' "$RUN_STAMP_HUMAN"
+			printf 'Host:         %s\n' "$HOST_LABEL"
+			printf 'Log file:     %s\n' "$LOG_FILE"
+			printf 'Backups:      %s\n' "$BACKUP_DIR"
+			printf 'Target user:  %s\n' "${TARGET_USER:-<none>}"
+			printf 'Platform:     %s\n\n' "${_plat}"
+			printf '=== Actionable Items (%d) ===\n' "${#ACTIONABLE_ITEMS[@]}"
+			if ((${#ACTIONABLE_ITEMS[@]} > 0)); then
+				local idx=1
+				for item in "${ACTIONABLE_ITEMS[@]}"; do
+					local section priority tag desc
+					IFS='|' read -r section priority tag desc <<<"$item"
+					printf '  [%2d] [%s][%s] %s\n' "$idx" "$priority" "$section" "$desc"
+					((idx++))
+				done
+			else
+				printf '  None — sections 12/18/21/22 appear clean.\n'
+			fi
+			printf '\n=== Remediated Items (%d) ===\n' "${#REMEDIATED_ITEMS[@]}"
+			if ((${#REMEDIATED_ITEMS[@]} > 0)); then
+				for item in "${REMEDIATED_ITEMS[@]}"; do
+					local section priority tag desc
+					IFS='|' read -r section priority tag desc <<<"$item"
+					printf '  [RESOLVED][%s][%s] %s\n' "$priority" "$section" "$desc"
+				done
+			fi
+			printf '\n=== Manual Follow-up Items ===\n'
+			printf '  • LUKS full-disk encryption  — set during Fedora installation only.\n'
+			printf '  • GRUB password (section 6b) — run: sudo grub2-mkpasswd-pbkdf2\n'
+			printf '  • SSH keys                   — generate on CLIENT, then: ssh-copy-id user@host\n'
+			printf '  • WireGuard tunnel           — configure /etc/wireguard/wg0.conf with peer keys.\n'
+			printf '  • arkenfox overrides         — add exceptions in user-overrides.js as needed.\n'
+			printf '  • KDE GUI-only settings      — KWallet master password, Privacy, Activity.\n'
+			printf '  • AIDE re-init               — after any future package updates.\n'
+			printf '  • REBOOT RECOMMENDED         — to apply kernel/sysctl/PAM/GRUB changes.\n'
+			((IS_OSTREE)) && printf '  • rpm-ostree REBOOT         — required for staged/layered package changes.\n'
+			printf '\n=== Section Reports in Downloads/%s/results/ ===\n' "$PROJECT_NAME"
+			for f in "$USER_RESULTS_DIR"/section-*.txt "$USER_RESULTS_DIR"/section-*.html; do
+				[[ -f "$f" ]] && printf '  %s\n' "$(basename "$f")"
+			done || true
+		} | write_user_report "$summary_file" || true
+		summary_path="${USER_RESULTS_DIR}/${summary_file}"
+	fi
 
-    # Copy the main harden log to Downloads/<project>/logs/
-    copy_log_to_user
+	# Copy the main harden log to Downloads/<project>/logs/
+	copy_log_to_user
 
-    # Display terminal summary
-    if (( ! GUI_FULL_MODE )); then
-        printf '\n%s════════════════════════ Summary ════════════════════════%s\n' "$C_GRN" "$C_RST"
-        local reports_line="" ostree_line=""
-        [[ -n "$USER_RESULTS_DIR" ]] && reports_line=" Reports:      $USER_RESULTS_DIR"
-        (( IS_OSTREE )) && ostree_line=$'\n On rpm-ostree systems, reboot is also required to apply layered package changes and staged updates.'
-        cat <<EOF
+	# Display terminal summary
+	if ((!GUI_FULL_MODE)); then
+		printf '\n%s════════════════════════ Summary ════════════════════════%s\n' "$C_GRN" "$C_RST"
+		local reports_line="" ostree_line=""
+		[[ -n "$USER_RESULTS_DIR" ]] && reports_line=" Reports:      $USER_RESULTS_DIR"
+		((IS_OSTREE)) && ostree_line=$'\n On rpm-ostree systems, reboot is also required to apply layered package changes and staged updates.'
+		cat <<EOF
     Log file:     $LOG_FILE
     Backups:      $BACKUP_DIR  (empty if no changes needed)
     Target user:  ${TARGET_USER:-<none>}
@@ -4019,115 +4220,120 @@ final_summary() {
 
     A REBOOT is recommended to pick up kernel, GRUB, sysctl, and PAM changes.$ostree_line
 EOF
-        printf '%s═════════════════════════════════════════════════════════%s\n' "$C_GRN" "$C_RST"
-    else
-        log "Summary: log=$LOG_FILE backups=$BACKUP_DIR target_user=${TARGET_USER:-<none>}"
-        log "Summary: reboot recommended for kernel/GRUB/sysctl/PAM changes"
-        (( IS_OSTREE )) && log "Summary: reboot required on rpm-ostree for staged/layered changes"
-    fi
+		printf '%s═════════════════════════════════════════════════════════%s\n' "$C_GRN" "$C_RST"
+	else
+		log "Summary: log=$LOG_FILE backups=$BACKUP_DIR target_user=${TARGET_USER:-<none>}"
+		log "Summary: reboot recommended for kernel/GRUB/sysctl/PAM changes"
+		((IS_OSTREE)) && log "Summary: reboot required on rpm-ostree for staged/layered changes"
+	fi
 
-    gui_alert info "Fedora hardening finished.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
+	gui_alert info "Fedora hardening finished.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
 
-    # Display the actionable items from sections 12/18/21/22 and handle approval/selection.
-    handle_actionable_follow_up "$summary_path"
+	# Display the actionable items from sections 12/18/21/22 and handle approval/selection.
+	handle_actionable_follow_up "$summary_path"
 
-    # Re-write the summary with final state (after remediation updates ACTIONABLE/REMEDIATED lists)
-    if [[ -n "$USER_RESULTS_DIR" ]] && (( ${#REMEDIATED_ITEMS[@]} > 0 )); then
-        {
-            printf '=== Fedora Hardening — Post-Remediation Summary Update ===\n'
-            printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-            printf 'Remaining actionable items: %d\n' "${#ACTIONABLE_ITEMS[@]}"
-            printf 'Remediated this session:    %d\n\n' "${#REMEDIATED_ITEMS[@]}"
-            for item in "${REMEDIATED_ITEMS[@]}"; do
-                local section priority tag desc
-                IFS='|' read -r section priority tag desc <<<"$item"
-                printf '  [RESOLVED][%s][%s] %s\n' "$priority" "$section" "$desc"
-            done
-            if (( ${#ACTIONABLE_ITEMS[@]} > 0 )); then
-                printf '\nStill requires manual action:\n'
-                for item in "${ACTIONABLE_ITEMS[@]}"; do
-                    local section priority tag desc
-                    IFS='|' read -r section priority tag desc <<<"$item"
-                    printf '  [MANUAL][%s][%s] %s\n' "$priority" "$section" "$desc"
-                done
-            fi
-        } | write_user_report "harden-remediation-update-${REPORT_DATE}.txt" || true
-    fi
+	# Re-write the summary with final state (after remediation updates ACTIONABLE/REMEDIATED lists)
+	if [[ -n "$USER_RESULTS_DIR" ]] && ((${#REMEDIATED_ITEMS[@]} > 0)); then
+		{
+			printf '=== Fedora Hardening — Post-Remediation Summary Update ===\n'
+			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
+			printf 'Remaining actionable items: %d\n' "${#ACTIONABLE_ITEMS[@]}"
+			printf 'Remediated this session:    %d\n\n' "${#REMEDIATED_ITEMS[@]}"
+			for item in "${REMEDIATED_ITEMS[@]}"; do
+				local section priority tag desc
+				IFS='|' read -r section priority tag desc <<<"$item"
+				printf '  [RESOLVED][%s][%s] %s\n' "$priority" "$section" "$desc"
+			done
+			if ((${#ACTIONABLE_ITEMS[@]} > 0)); then
+				printf '\nStill requires manual action:\n'
+				for item in "${ACTIONABLE_ITEMS[@]}"; do
+					local section priority tag desc
+					IFS='|' read -r section priority tag desc <<<"$item"
+					printf '  [MANUAL][%s][%s] %s\n' "$priority" "$section" "$desc"
+				done
+			fi
+		} | write_user_report "harden-remediation-update-${REPORT_DATE}.txt" || true
+	fi
 }
 
 # ---------- Main ------------------------------------------------------------
+# main() - Master orchestrator for fedora-harden script execution
+# Manages command-line argument parsing, permission verification, session tracking,
+# and execution of all 21 hardening sections in dependency-optimized order.
+# Includes error analysis, auto-remediation, and structured session reporting.
+# Exit codes: 0 = success, 1 = preflight failed, catch-all for other errors
 main() {
-    parse_args "$@"
+	parse_args "$@"
 
-    # --list-sessions: show past sessions without running a full preflight
-    if (( LIST_SESSIONS_MODE )); then
-        (( FORCE_GUI_FULL )) || draw_banner
-        list_sessions_cmd
-        EXPECTED_ABORT=1
-        exit 0
-    fi
+	# --list-sessions: show past sessions without running a full preflight
+	if ((LIST_SESSIONS_MODE)); then
+		((FORCE_GUI_FULL)) || draw_banner
+		list_sessions_cmd
+		EXPECTED_ABORT=1
+		exit 0
+	fi
 
-    preflight
-    if (( PRECHECK_FAILED )); then
-        EXPECTED_ABORT=1
-        exit 1
-    fi
+	preflight
+	if ((PRECHECK_FAILED)); then
+		EXPECTED_ABORT=1
+		exit 1
+	fi
 
-    # --rollback: undo a previous session (requires root + IS_OSTREE detection from preflight)
-    if [[ -n "$ROLLBACK_SESSION_ID" ]]; then
-        SESSION_REPORT_FILE=""   # Rollback produces its own report; skip session stub
-        if [[ "$ROLLBACK_SESSION_ID" == "all" ]]; then
-            rollback_all_sessions
-        else
-            rollback_session "$ROLLBACK_SESSION_ID"
-        fi
-        EXPECTED_ABORT=1
-        exit 0
-    fi
+	# --rollback: undo a previous session (requires root + IS_OSTREE detection from preflight)
+	if [[ -n "$ROLLBACK_SESSION_ID" ]]; then
+		SESSION_REPORT_FILE="" # Rollback produces its own report; skip session stub
+		if [[ "$ROLLBACK_SESSION_ID" == "all" ]]; then
+			rollback_all_sessions
+		else
+			rollback_session "$ROLLBACK_SESSION_ID"
+		fi
+		EXPECTED_ABORT=1
+		exit 0
+	fi
 
-    init_user_report_dirs
-    if [[ -n "$IMPORT_AUDIT_PATH" ]]; then
-        import_audit_items "$IMPORT_AUDIT_PATH" || exit 1
-        handle_actionable_follow_up ""
-        exit 0
-    fi
-    calc_section_total
-    gui_progress_start
-    abort_if_cancelled
+	init_user_report_dirs
+	if [[ -n "$IMPORT_AUDIT_PATH" ]]; then
+		import_audit_items "$IMPORT_AUDIT_PATH" || exit 1
+		handle_actionable_follow_up ""
+		exit 0
+	fi
+	calc_section_total
+	gui_progress_start
+	abort_if_cancelled
 
-    # Execution order is optimized for dependency flow and operational safety.
-    sec_02_updates
-    sec_03_dnf_automatic
-    sec_06_secureboot
-    sec_13_flatpak
-    sec_04_selinux
-    sec_05_firewalld
-    sec_07_ssh
-    sec_09_pam
-    sec_10_sysctl
-    sec_11_auditd
-    sec_14_dot
-    sec_18_fail2ban
-    sec_15_kde
-    sec_16_firefox
-    sec_17_wireguard
-    sec_21_clamav
-    sec_22_openscap
-    sec_12_ids
-    sec_19_services
-    sec_20_perms
-    sec_08_usbguard
+	# Execution order is optimized for dependency flow and operational safety.
+	sec_02_updates
+	sec_03_dnf_automatic
+	sec_06_secureboot
+	sec_13_flatpak
+	sec_04_selinux
+	sec_05_firewalld
+	sec_07_ssh
+	sec_09_pam
+	sec_10_sysctl
+	sec_11_auditd
+	sec_14_dot
+	sec_18_fail2ban
+	sec_15_kde
+	sec_16_firefox
+	sec_17_wireguard
+	sec_21_clamav
+	sec_22_openscap
+	sec_12_ids
+	sec_19_services
+	sec_20_perms
+	sec_08_usbguard
 
-    gui_progress_close
-    final_summary
+	gui_progress_close
+	final_summary
 
-    # Execute error analysis and auto-remediation loop to resolve any issues detected
-    info "Running error analysis and auto-remediation cycle..."
-    validate_and_remediate_loop || warn "Some errors may require manual intervention — review logs"
+	# Execute error analysis and auto-remediation loop to resolve any issues detected
+	info "Running error analysis and auto-remediation cycle..."
+	validate_and_remediate_loop || warn "Some errors may require manual intervention — review logs"
 
-    SESSION_STATUS="completed"
-    ok "Script execution complete. See logs for full details."
-    [[ -n "$SESSION_REPORT_FILE" ]] && ok "Session report: $SESSION_REPORT_FILE"
+	SESSION_STATUS="completed"
+	ok "Script execution complete. See logs for full details."
+	[[ -n "$SESSION_REPORT_FILE" ]] && ok "Session report: $SESSION_REPORT_FILE"
 }
 
 main "$@"
