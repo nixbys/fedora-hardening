@@ -141,43 +141,50 @@ if [[ -r /proc/sys/kernel/osrelease ]]; then
 fi
 [[ -z "$KERNEL_LABEL" ]] && KERNEL_LABEL="$(uname -r 2>/dev/null || echo unknown)"
 
-TARGET_USER=""
-ASSUME_YES=0
-DRY_RUN=0
-SKIP_LIST=""
-ONLY_LIST=""
-IMPORT_AUDIT_PATH=""
-FORCE_GUI=0
-FORCE_GUI_FULL=0
-GUI_MODE=0
-GUI_FULL_MODE=0
-GUI_TOOL=""
-GUI_PROGRESS_REF=""
-GUI_PROGRESS_PIPE_FD=""
-GUI_PROGRESS_PID=""
-GUI_LAST_STATUS=""
-GUI_CANCEL_REQUESTED=0
-LOG_READY=0
-PRECHECK_FAILED=0
-EXPECTED_ABORT=0
-IS_OSTREE=0
-IS_KINOITE=0
-IS_SILVERBLUE=0
-IS_SERVER=0
-IS_WORKSTATION=0
-IS_IOT=0
-IS_CLOUD=0
-IS_COREOS=0
-IS_ATOMIC_DESKTOP=0
-IS_FEDORA=0
-HAS_KDE=0
-HAS_GNOME=0
-HAS_DESKTOP=0
-DESKTOP_ENVS=""
-FEDORA_VARIANT="unknown"
-FEDORA_MAJOR=0
-UI_SECTION_DONE=0
-UI_SECTION_TOTAL=21
+# ---------- Command-line option flags -----------------------------------------
+TARGET_USER=""                          # Target username for SSH/home-dir hardening (--user)
+ASSUME_YES=0                            # Non-interactive mode (--yes)
+DRY_RUN=0                               # Print what would run without making changes (--dry-run)
+SKIP_LIST=""                            # Comma-separated section numbers to skip (--skip)
+ONLY_LIST=""                            # Comma-separated sections to run exclusively (--only)
+IMPORT_AUDIT_PATH=""                    # Path to audit PDF/TXT to import (--import-audit)
+FORCE_GUI=0                             # Request graphical prompts (--gui)
+FORCE_GUI_FULL=0                        # Full GUI frontend with progress (--gui-full)
+
+# ---------- GUI mode state ------------------------------------------------
+GUI_MODE=0                              # Set to 1 if kdialog/zenity available and enabled
+GUI_FULL_MODE=0                         # Set to 1 if --gui-full requested and display available
+GUI_TOOL=""                             # Selected dialog tool: "kdialog" or "zenity"
+GUI_PROGRESS_REF=""                     # D-Bus reference for kdialog progress tracking
+GUI_PROGRESS_PIPE_FD=""                 # File descriptor for GUI progress updates
+GUI_PROGRESS_PID=""                     # PID of running GUI progress process
+GUI_LAST_STATUS=""                      # Last status message sent to GUI
+GUI_CANCEL_REQUESTED=0                  # Set to 1 if user cancels via GUI
+
+# ---------- Execution state flags -------------------------------------------
+LOG_READY=0                             # Set to 1 after log file initialized
+PRECHECK_FAILED=0                       # Set to 1 if preflight checks fail
+EXPECTED_ABORT=0                        # Set to 1 if clean exit expected (--list, --rollback)
+
+# ---------- Platform/variant detection flags --------------------------------
+IS_OSTREE=0                             # Set to 1 if system uses immutable rpm-ostree
+IS_KINOITE=0                            # Set to 1 if Fedora Kinoite (immutable + KDE)
+IS_SILVERBLUE=0                         # Set to 1 if Fedora Silverblue (immutable)
+IS_SERVER=0                             # Set to 1 if Fedora Server
+IS_WORKSTATION=0                        # Set to 1 if Fedora Workstation
+IS_IOT=0                                # Set to 1 if Fedora IoT (immutable)
+IS_CLOUD=0                              # Set to 1 if Fedora Cloud
+IS_COREOS=0                             # Set to 1 if Fedora CoreOS (immutable)
+IS_ATOMIC_DESKTOP=0                     # Set to 1 if Atomic Desktop variant
+IS_FEDORA=0                             # Set to 1 if any Fedora detected
+HAS_KDE=0                               # Set to 1 if KDE Plasma session detected
+HAS_GNOME=0                             # Set to 1 if GNOME session detected
+HAS_DESKTOP=0                           # Set to 1 if any desktop environment detected
+DESKTOP_ENVS=""                         # Comma-separated list of detected desktop environments
+FEDORA_VARIANT="unknown"                # Human-readable Fedora variant name
+FEDORA_MAJOR=0                          # Fedora major version number
+UI_SECTION_DONE=0                       # Count of completed sections for progress tracking
+UI_SECTION_TOTAL=21                     # Total hardening sections to execute
 
 # Error tracking & remediation infrastructure
 ERROR_LOG=""                                # Structured error log file path
@@ -251,7 +258,7 @@ setup_ui_mode() {
     local has_display=0
     local prefers_kde=0
     [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] && has_display=1
-    [[ "${XDG_CURRENT_DESKTOP:-}${DESKTOP_SESSION:-}" =~ [Kk][Dd][Ee]|[Pp]lasma ]] && prefers_kde=1
+    [[ "${XDG_CURRENT_DESKTOP:-}${DESKTOP_SESSION:-}" =~ ([Kk][Dd][Ee]|[Pp]lasma) ]] && prefers_kde=1
 
     # If GUI mode is requested, try to satisfy missing GUI dialog dependencies.
     if (( has_display && (FORCE_GUI || FORCE_GUI_FULL) )); then
@@ -2543,6 +2550,9 @@ preflight() {
 # ============================================================================
 #  SECTION 2 — System updates
 # ============================================================================
+# sec_02_updates() - Perform full system package updates (dnf upgrade)
+# Ensures all system packages are current. For rpm-ostree systems, stages updates
+# for next boot. Recommends reboot after completion.
 sec_02_updates() {
     should_run 2 || return 0
     section 2 "System updates"
@@ -2553,6 +2563,9 @@ sec_02_updates() {
 # ============================================================================
 #  SECTION 3 — dnf5-automatic (Fedora 41+)
 # ============================================================================
+# sec_03_dnf_automatic() - Configure automatic security updates
+# Sets up dnf5-automatic for mutable systems or rpm-ostreed policy for immutable
+# systems to apply security patches automatically. On rpm-ostree, stages updates.
 sec_03_dnf_automatic() {
     should_run 3 || return 0
     section 3 "Automatic security updates"
@@ -2616,6 +2629,9 @@ sec_03_dnf_automatic() {
 # ============================================================================
 #  SECTION 4 — SELinux
 # ============================================================================
+# sec_04_selinux() - Verify SELinux is enforcing and install tools
+# Confirms SELinux is in enforcing mode; installs debugging and management tools
+# (policycoreutils, selinux-policy-devel). Logs policy violations.
 sec_04_selinux() {
     should_run 4 || return 0
     section 4 "SELinux (verify enforcing + install tools)"
@@ -2708,6 +2724,8 @@ firewalld_add_service() {
 # ============================================================================
 #  SECTION 5 — firewalld
 # ============================================================================
+# sec_05_firewalld() - Harden firewalld with drop-default policy
+# Sets default policy to DROP, allows minimal services, enables logging
 sec_05_firewalld() {
     should_run 5 || return 0
     section 5 "firewalld — drop-by-default with explicit allow-list"
@@ -2727,6 +2745,10 @@ sec_05_firewalld() {
     done
     (( attempt >= max_attempts )) && warn "firewalld failed to become ready; proceeding anyway"
 
+    # Cache firewall services list to avoid repeated calls
+    local FIREWALL_SERVICES
+    FIREWALL_SERVICES="$(firewall-cmd --get-services 2>/dev/null || true)"
+
     # Set default zone and configure services (batch permanent operations)
     info "Setting default zone to 'drop'..."
     run "firewall-cmd --set-default-zone=drop"
@@ -2739,7 +2761,7 @@ sec_05_firewalld() {
     if (( HAS_KDE )); then
         if confirm "Allow 'kde-connect' through the firewall?"; then
             firewalld_ensure_service "kde-connect" "KDE Connect" \
-                "1714-1764/tcp" "1714-1764/udp"
+                "1714-1764/tcp" "1714-1764/udp" "$FIREWALL_SERVICES"
             services_to_allow+=("kde-connect")
         fi
     fi
@@ -2768,6 +2790,8 @@ sec_05_firewalld() {
 # ============================================================================
 #  SECTION 6 — Secure Boot verification
 # ============================================================================
+# sec_06_secureboot() - Verify Secure Boot is enabled
+# Confirms UEFI Secure Boot is active. GRUB password is manual task.
 sec_06_secureboot() {
     should_run 6 || return 0
     section 6 "Secure Boot verification"
@@ -2805,6 +2829,8 @@ EOF
 # ============================================================================
 #  SECTION 7 — SSH hardening
 # ============================================================================
+# sec_07_ssh() - Configure SSH for key-based auth with hardened ciphers
+# Disables password auth, enables key-based auth, applies strong cipher suite.
 sec_07_ssh() {
     should_run 7 || return 0
     section 7 "SSH hardening"
@@ -2878,6 +2904,8 @@ EOF
 # ============================================================================
 #  SECTION 8 — USBGuard
 # ============================================================================
+# sec_08_usbguard() - Install and configure USBGuard
+# Configures device control policy; note: can lock out input devices if misconfigured.
 sec_08_usbguard() {
     should_run 8 || return 0
     section 8 "USBGuard — ⚠ BE CAREFUL ⚠"
@@ -2931,6 +2959,8 @@ EOF
 # ============================================================================
 #  SECTION 9 — Password & PAM policy
 # ============================================================================
+# sec_09_pam() - Configure PAM policy
+# Sets password quality, account lockout, aging rules via pwquality and faillock.
 sec_09_pam() {
     should_run 9 || return 0
     section 9 "Password quality + account lockout + aging"
@@ -2986,6 +3016,8 @@ sec_09_pam() {
 # ============================================================================
 #  SECTION 10 — Kernel sysctl
 # ============================================================================
+# sec_10_sysctl() - Apply kernel sysctl hardening
+# Hardens network, VM, filesystem, memory protections via kernel parameters.
 sec_10_sysctl() {
     should_run 10 || return 0
     section 10 "Kernel & network sysctl hardening"
@@ -3060,6 +3092,8 @@ EOF
 # ============================================================================
 #  SECTION 11 — auditd
 # ============================================================================
+# sec_11_auditd() - Configure auditd audit rules
+# Tracks identity, privilege escalation, kernel module loading for compliance.
 sec_11_auditd() {
     should_run 11 || return 0
     section 11 "auditd rules"
@@ -3123,6 +3157,8 @@ EOF
 # ============================================================================
 #  SECTION 12 — rkhunter + AIDE
 # ============================================================================
+# sec_12_ids() - Install intrusion and file integrity detection
+# Installs rkhunter for rootkit detection and AIDE for file integrity monitoring.
 sec_12_ids() {
     should_run 12 || return 0
     section 12 "rkhunter + AIDE"
@@ -3216,6 +3252,8 @@ CRONEOF
 # ============================================================================
 #  SECTION 13 — Flatpak / Flathub
 # ============================================================================
+# sec_13_flatpak() - Configure Flatpak for app sandboxing
+# Installs Flatpak and sets Flathub for containerized application support.
 sec_13_flatpak() {
     should_run 13 || return 0
     section 13 "Flatpak + Flathub"
@@ -3234,6 +3272,8 @@ sec_13_flatpak() {
 # ============================================================================
 #  SECTION 14 — DNS over TLS
 # ============================================================================
+# sec_14_dot() - Configure DNS over TLS (DoT)
+# Sets systemd-resolved to use Quad9 and Cloudflare DNS with TLS encryption.
 sec_14_dot() {
     should_run 14 || return 0
     section 14 "DNS over TLS via systemd-resolved"
@@ -3259,6 +3299,8 @@ EOF
 # ============================================================================
 #  SECTION 15 — KDE CLI settings
 # ============================================================================
+# sec_15_kde() - Apply KDE-specific security settings
+# Configures screen lock timeout, disables Bluetooth, clears recent documents.
 sec_15_kde() {
     should_run 15 || return 0
     section 15 "KDE-specific CLI settings"
@@ -3303,6 +3345,8 @@ sec_15_kde() {
 # ============================================================================
 #  SECTION 16 — Firefox Flatpak + arkenfox + extensions
 # ============================================================================
+# sec_16_firefox() - Harden Firefox Flatpak with arkenfox + extensions
+# Installs Firefox Flatpak with arkenfox profiles and security extensions (uBlock, Privacy Badger, etc).
 sec_16_firefox() {
     should_run 16 || return 0
     section 16 "Firefox hardening (Flatpak preferred + arkenfox + privacy extensions)"
@@ -3445,6 +3489,8 @@ EOF
 # ============================================================================
 #  SECTION 17 — WireGuard tools
 # ============================================================================
+# sec_17_wireguard() - Install WireGuard VPN tools
+# Installs WireGuard CLI; tunnel configuration is manual task.
 sec_17_wireguard() {
     should_run 17 || return 0
     section 17 "WireGuard (tools only — tunnel config is manual)"
@@ -3456,6 +3502,8 @@ sec_17_wireguard() {
 # ============================================================================
 #  SECTION 18 — Fail2Ban
 # ============================================================================
+# sec_18_fail2ban() - Install and configure Fail2Ban IDS
+# Installs Fail2Ban for intrusion detection and auto-banning of brute-force attempts.
 sec_18_fail2ban() {
     should_run 18 || return 0
     section 18 "Fail2Ban"
@@ -3550,6 +3598,8 @@ EOF
 # ============================================================================
 #  SECTION 19 — Disable unnecessary services (interactive)
 # ============================================================================
+# sec_19_services() - Disable unnecessary services
+# Disables avahi, cups, bluetooth, modemmanager and similar auto-start services.
 sec_19_services() {
     should_run 19 || return 0
     section 19 "Disable unnecessary services (interactive)"
@@ -3580,6 +3630,8 @@ sec_19_services() {
 # ============================================================================
 #  SECTION 20 — File permission hardening
 # ============================================================================
+# sec_20_perms() - Harden file permissions
+# Tightens permissions on shadow files, /tmp, and disables compiler access.
 sec_20_perms() {
     should_run 20 || return 0
     section 20 "File permission hardening"
@@ -3615,6 +3667,8 @@ sec_20_perms() {
 # ============================================================================
 #  SECTION 21 — ClamAV
 # ============================================================================
+# sec_21_clamav() - Install ClamAV antivirus
+# Installs ClamAV engine and freshclam for signature updates and scanning.
 sec_21_clamav() {
     should_run 21 || return 0
     section 21 "ClamAV antivirus"
@@ -3664,6 +3718,8 @@ sec_21_clamav() {
 # ============================================================================
 #  SECTION 22 — OpenSCAP
 # ============================================================================
+# sec_22_openscap() - Install and run OpenSCAP compliance scanner
+# Installs OpenSCAP framework and runs initial compliance scan against security baseline.
 sec_22_openscap() {
     should_run 22 || return 0
     section 22 "OpenSCAP compliance scanner"
@@ -4056,6 +4112,11 @@ EOF
 }
 
 # ---------- Main ------------------------------------------------------------
+# main() - Master orchestrator for fedora-harden script execution
+# Manages command-line argument parsing, permission verification, session tracking,
+# and execution of all 21 hardening sections in dependency-optimized order.
+# Includes error analysis, auto-remediation, and structured session reporting.
+# Exit codes: 0 = success, 1 = preflight failed, catch-all for other errors
 main() {
     parse_args "$@"
 
