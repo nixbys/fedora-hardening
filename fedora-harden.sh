@@ -78,13 +78,17 @@
 #    13  Flatpak / Flathub (app sandboxing foundation) + optional Firejail
 #    14  DNS over TLS (systemd-resolved with Quad9 + Cloudflare)
 #   14b  NetworkManager MAC address randomization (network-layer privacy)
-#    15  KDE-specific CLI settings (screen lock, Bluetooth, recent documents)
-#   15b  GNOME-specific CLI settings (screen lock, location, privacy, recent files)
-#  15b2  Budgie/Cinnamon/MATE CLI settings (gsettings for non-KDE/GNOME DEs)
-#   15c  XFCE CLI settings (xfconf-query screensaver + power manager)
-#   15d  Sway/wlroots settings (swaylock + swayidle auto-lock config)
-#   15e  Hyprland/i3 settings (hypridle or xss-lock+i3lock auto-lock config)
-#   15f  LXQt CLI settings (screensaver + power management config files)
+#    15  Desktop environment settings — auto-dispatches by detected DE:
+#            KDE Plasma (kwriteconfig6/5: screen lock, recent-docs, BT)
+#            GNOME/Onyx (gsettings: lock, location, privacy, mic)
+#            Budgie     (gsettings GNOME backend)
+#            Cinnamon   (org.cinnamon.desktop.screensaver + GNOME privacy)
+#            MATE       (org.mate.screensaver + power-manager)
+#            XFCE/Vauxite (xfconf-query: screensaver, power manager)
+#            Sway/Sericea (swaylock.conf + swayidle.conf)
+#            Hyprland   (hypridle.conf)
+#            i3         (xss-lock + i3lock drop-in via config.d/)
+#            LXQt/Lazurite (lxqt-screensaver.conf + lxqt-powermanagement.conf)
 #    16  Firefox Flatpak + arkenfox + extensions (uBlock Origin, LocalCDN,
 #        Multi-Account Containers) + VPN detection + recommendations
 #    17  WireGuard tool install (tunnel config is manual; autostart guidance)
@@ -99,9 +103,10 @@
 #     1  LUKS — must be chosen during Anaconda install
 #    6b  GRUB password — requires interactive grub2-mkpasswd-pbkdf2
 #    15  KDE GUI-only screens (Privacy, KWallet master password, Activity tracking)
-#   15b  GNOME GUI-only screens (Online Accounts, Sharing, Bluetooth)
-#   15d  Sway compositor config exec autostart (added as action item)
-#   15e  Hyprland/i3 keybind and exec-once (added as action item)
+#    15  GNOME GUI-only screens (Online Accounts, Sharing, Bluetooth)
+#    15  Sway compositor: add 'exec swayidle -w' to sway config (action item)
+#    15  Hyprland: add 'exec-once = hypridle' to hyprland.conf (action item)
+#    15  i3: add lock keybind (action item)
 #    17  WireGuard tunnel config (requires peer keys & endpoint configuration)
 #    23  Ongoing maintenance checklist (scheduled human task)
 #
@@ -1278,9 +1283,9 @@ section_compatible() {
 	local s="$1"
 	case "$s" in
 	15)
-		# Section 15 requires KDE/Plasma to be installed and available.
-		if ((!HAS_KDE)); then
-			info "Skipping section 15: KDE/Plasma tooling is not installed on this host."
+		# Section 15 requires at least one desktop environment to be installed.
+		if ((!HAS_DESKTOP)); then
+			info "Skipping section 15: no desktop environment detected on this host."
 			return 1
 		fi
 		;;
@@ -2560,14 +2565,18 @@ list_sections() {
  12  rkhunter + AIDE
  13  Flatpak / Flathub (incl. optional Firejail)
  14  DNS over TLS (14b: NetworkManager MAC address randomization)
- 15  KDE settings
-15b  GNOME privacy/lockscreen settings
-15b2 Budgie/Cinnamon/MATE privacy/lockscreen settings (gsettings)
-15c  XFCE screensaver + power manager (xfconf-query)
-15d  Sway/wlroots swaylock + swayidle auto-lock config
-15e  Hyprland (hypridle) + i3 (xss-lock/i3lock) auto-lock config
-15f  LXQt screensaver + power management config
- 16  Firefox Flatpak + arkenfox + extensions (uBlock, LocalCDN, Containers) + VPN check (16b)
+ 15  Desktop environment settings (auto-dispatches by detected DE):
+       KDE Plasma  — kwriteconfig6/5: screen lock, recent-docs, BT opt-out
+       GNOME/Onyx  — gsettings: lock, location off, privacy, mic off
+       Budgie      — gsettings (GNOME backend): same privacy stack
+       Cinnamon    — org.cinnamon.desktop.screensaver + GNOME privacy schemas
+       MATE        — org.mate.screensaver + org.mate.power-manager
+       XFCE/Vauxite— xfconf-query: screensaver + power manager idle
+       Sway/Sericea— writes swaylock.conf + swayidle.conf
+       Hyprland    — writes hypridle.conf (lock 5 min, suspend 10 min)
+       i3          — xss-lock + i3lock drop-in via config.d/
+       LXQt/Lazurite — lxqt-screensaver.conf + lxqt-powermanagement.conf
+ 16  Firefox Flatpak + arkenfox + extensions (uBlock, LocalCDN, Containers) + VPN check
  17  WireGuard
  18  Fail2Ban
  19  Service trim
@@ -2578,14 +2587,12 @@ list_sections() {
  Optimized execution order (guide section numbers):
     2,3,6,13,4,5,7,9,10,11,14,18,15,16,17,21,22,12,19,20,8
 
- Desktop environment detection (auto-detected; per-DE sections run only if DE present):
-    KDE Plasma   → sec 15
-    GNOME        → sec 15b
-    Budgie/Cinnamon/MATE → sec 15b2
-    XFCE         → sec 15c
-    Sway         → sec 15d
-    Hyprland/i3  → sec 15e
-    LXQt         → sec 15f
+ DE detection (section 15 auto-dispatches — all detected DEs are hardened):
+    Running session: XDG_CURRENT_DESKTOP / DESKTOP_SESSION
+    Installed tools: kwriteconfig, gnome-shell, cinnamon, mate-session,
+                     xfce4-session, startlxqt, sway, Hyprland, i3, budgie-desktop
+    Spin → DE:  Kinoite/Aurora→KDE  Silverblue/Onyx→GNOME  Sericea→Sway
+                Lazurite→LXQt  Vauxite→XFCE  Bazzite→KDE or GNOME
 
  Supported Fedora variants (auto-detected):
     Workstation, Server, IoT, Cloud, CoreOS
@@ -3699,132 +3706,111 @@ EOF
 }
 
 # ============================================================================
-#  SECTION 15 — KDE CLI settings
+#  SECTION 15 — Desktop environment privacy & screen-lock settings
 # ============================================================================
-# sec_15_kde() - Apply KDE-specific security settings
-# Configures screen lock timeout, disables Bluetooth, clears recent documents.
-sec_15_kde() {
+# sec_15_desktop() - Apply security and privacy settings for every detected DE.
+#
+# Single entry-point that auto-dispatches to per-DE sub-handlers based on the
+# HAS_* flags set by detect_desktop_envs(). Multiple DEs can be active at once
+# (e.g. GNOME + KDE on a multi-seat box); all detected ones are hardened.
+#
+# DE coverage (each block runs only if the corresponding HAS_* flag is set):
+#   KDE Plasma    — kwriteconfig6/5: screen lock, recent-docs off, BT opt-out
+#   GNOME/Onyx    — gsettings: screen lock, location off, privacy, mic off
+#   Budgie        — gsettings (GNOME backend): same privacy stack as GNOME
+#   Cinnamon      — gsettings: org.cinnamon.desktop.screensaver + GNOME privacy
+#   MATE          — gsettings: org.mate.screensaver + power-manager
+#   XFCE/Vauxite  — xfconf-query: screensaver lock + power manager idle
+#   Sway/Sericea  — writes ~/.config/swaylock/config + ~/.config/swayidle/config
+#   Hyprland      — writes ~/.config/hypr/hypridle.conf
+#   i3            — xss-lock + i3lock drop-in in ~/.config/i3/config.d/
+#   LXQt/Lazurite — writes lxqt-screensaver.conf + lxqt-powermanagement.conf
+#
+# Spin → DE mapping (inferred by detect_fedora_release_type + detect_desktop_envs):
+#   Kinoite/Aurora/Bazzite-KDE → KDE
+#   Silverblue/Onyx/Bazzite-GNOME → GNOME
+#   Sericea → Sway    |  Lazurite → LXQt    |  Vauxite → XFCE
+#   XFCE/LXQt/Cinnamon/MATE/Budgie spins → respective DE
+sec_15_desktop() {
 	should_run 15 || return 0
-	section 15 "KDE-specific CLI settings"
-	if ((!HAS_KDE)); then
-		warn "Host variant does not appear KDE-based; skipping KDE-specific section."
+	section 15 "Desktop environment settings (all detected DEs)"
+
+	if ((!HAS_DESKTOP)); then
+		info "No desktop environment detected — skipping section 15."
 		return 0
 	fi
-
-	# Detect which kwriteconfig is available (Plasma 6 uses kwriteconfig6)
-	local KW=""
-	for c in kwriteconfig6 kwriteconfig5; do
-		if cmd_exists "$c"; then
-			KW="$c"
-			break
-		fi
-	done
-	if [[ -z "$KW" ]]; then
-		warn "Neither kwriteconfig6 nor kwriteconfig5 found — Plasma may not be installed. Skipping KDE tweaks."
-		return 0
-	fi
-	info "Using $KW"
-
-	if [[ -z "$TARGET_USER" ]]; then
-		warn "No target user — cannot apply per-user KDE settings."
-		return 0
-	fi
-
-	# Run as the user so the file is written into their ~/.config
-	run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key Timeout 5"
-	run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key Lock true"
-	run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key LockGrace 0"
-	run "sudo -u '$TARGET_USER' '$KW' --file kdeglobals --group RecentDocuments --key UseRecent false"
-
-	# Per guide 15c — disable Bluetooth if user has no BT peripherals
-	if confirm "Disable Bluetooth entirely (do this only if you use no BT peripherals)?"; then
-		run "systemctl disable --now bluetooth || true"
-		if [[ -f /etc/bluetooth/main.conf ]]; then
-			backup_file /etc/bluetooth/main.conf
-			run "sed -i 's|^#\?AutoEnable=.*|AutoEnable=false|' /etc/bluetooth/main.conf"
-		fi
-	fi
-	info "GUI-only tweaks (KWallet master password, Privacy, Activity tracking) must be done in System Settings."
-}
-
-# ============================================================================
-#  SECTION 15b — GNOME CLI settings
-# ============================================================================
-# sec_15b_gnome() - Apply GNOME-specific security settings
-# Configures screen lock, privacy settings, and disables location services via gsettings.
-# ============================================================================
-#  SECTION 15b — GNOME-specific CLI settings
-# ============================================================================
-# sec_15b_gnome() - Apply GNOME-specific privacy and screen-lock settings
-# Uses gsettings to configure screen lock (idle 5 min, lock on suspend),
-# disable location services, remove old temp/trash files, disable recent-files
-# tracking, and suppress usage telemetry — for privacy per privacyguides.org.
-# Skips silently if GNOME is not detected or no TARGET_USER is set.
-# GUI-only settings (Online Accounts, Sharing, Bluetooth) are noted as manual.
-sec_15b_gnome() {
-	should_run 15 || return 0
-	if ((!HAS_GNOME)); then
-		return 0
-	fi
-	info "=== Section 15b: GNOME-specific CLI settings ==="
-
-	if [[ -z "$TARGET_USER" ]]; then
-		warn "No target user — cannot apply per-user GNOME settings."
-		return 0
-	fi
-
-	info "Applying GNOME privacy and screen-lock settings for $TARGET_USER..."
-
-	# Batch all gsettings calls into a single sudo invocation (8→1 process spawns)
-	if ((!DRY_RUN)); then
-		log "[RUN]   sudo -u '$TARGET_USER' bash -c 'gsettings batch for GNOME privacy'"
-		sudo -u "$TARGET_USER" bash -c '
-			# Screen lock: idle after 5 minutes, lock immediately on suspend
-			gsettings set org.gnome.desktop.session idle-delay 300
-			gsettings set org.gnome.desktop.screensaver lock-enabled true
-			gsettings set org.gnome.desktop.screensaver lock-delay 0
-			# Location services: off
-			gsettings set org.gnome.system.location enabled false
-			# Remove old temp/trash files after 7 days; suppress usage telemetry
-			gsettings set org.gnome.desktop.privacy remove-old-temp-files true
-			gsettings set org.gnome.desktop.privacy remove-old-trash-files true
-			gsettings set org.gnome.desktop.privacy old-files-age 7
-			gsettings set org.gnome.desktop.privacy send-software-usage-stats false
-			gsettings set org.gnome.desktop.privacy report-technical-problems false
-			# Disable recent-files tracking
-			gsettings set org.gnome.desktop.privacy remember-recent-files false
-			# Disable microphone (privacy — mute hardware mic by default)
-			gsettings set org.gnome.desktop.privacy disable-microphone true
-		' 2>/dev/null || true
-	else
-		info "Would apply GNOME gsettings: screen lock, location off, privacy, recent-files off, mic off"
-	fi
-
-	ok "GNOME privacy and screen-lock settings applied."
-	info "Remaining GNOME GUI tweaks: Online Accounts, Sharing, and Bluetooth — configure in GNOME Settings."
-}
-
-# ============================================================================
-#  SECTION 15b2 — Budgie/Cinnamon/MATE CLI settings (gsettings-based DEs)
-# ============================================================================
-# sec_15b2_budgie_cinnamon_mate() - Apply security settings for Budgie, Cinnamon, and MATE
-# Budgie and Cinnamon share the GSettings/dconf stack, so many GNOME schema keys apply.
-# MATE uses distinct org.mate.* schemas. Configures screen lock timeout and
-# privacy settings across all three environments.
-sec_15b2_budgie_cinnamon_mate() {
-	should_run 15 || return 0
-	(( HAS_BUDGIE || HAS_CINNAMON || HAS_MATE )) || return 0
 
 	if [[ -z "$TARGET_USER" ]]; then
 		warn "No target user — cannot apply per-user DE settings."
 		return 0
 	fi
 
-	if ((HAS_BUDGIE)); then
-		info "=== Section 15b2: Budgie-specific CLI settings ==="
-		# Budgie uses GNOME's gsettings backend
+	local user_home applied_des=()
+	user_home="$(eval echo "~${TARGET_USER}")"
+
+	info "Detected desktop(s): ${DESKTOP_ENVS:-unknown}  (spin: ${FEDORA_VARIANT})"
+
+	# ── KDE Plasma ────────────────────────────────────────────────────────────
+	if ((HAS_KDE)); then
+		info "--- KDE Plasma settings ---"
+		local KW=""
+		for c in kwriteconfig6 kwriteconfig5; do
+			cmd_exists "$c" && KW="$c" && break
+		done
+		if [[ -z "$KW" ]]; then
+			warn "kwriteconfig6/5 not found — KDE may not be fully installed; skipping KDE tweaks."
+			add_action_item 15 MEDIUM "KDE_KWRITECONFIG_MISSING" \
+				"kwriteconfig6/5 not found. After installing plasma-desktop, rerun: sudo ./fedora-harden.sh --only 15"
+		else
+			info "Using $KW for KDE settings"
+			run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key Timeout 5"
+			run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key Lock true"
+			run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key LockGrace 0"
+			run "sudo -u '$TARGET_USER' '$KW' --file kdeglobals --group RecentDocuments --key UseRecent false"
+			if confirm "Disable Bluetooth entirely (only if you use no BT peripherals)?"; then
+				run "systemctl disable --now bluetooth || true"
+				if [[ -f /etc/bluetooth/main.conf ]]; then
+					backup_file /etc/bluetooth/main.conf
+					run "sed -i 's|^#\?AutoEnable=.*|AutoEnable=false|' /etc/bluetooth/main.conf"
+				fi
+			fi
+			ok "KDE: screen lock, recent-docs disabled."
+			info "KDE GUI-only: KWallet master password, Privacy tab, Activity tracking → System Settings."
+			applied_des+=("KDE")
+		fi
+	fi
+
+	# ── GNOME (Silverblue, Onyx, Workstation GNOME) ──────────────────────────
+	if ((HAS_GNOME)); then
+		info "--- GNOME settings ---"
 		if ((!DRY_RUN)); then
-			log "[RUN]   sudo -u '$TARGET_USER' bash -c 'gsettings batch for Budgie privacy'"
+			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (GNOME privacy)"
+			sudo -u "$TARGET_USER" bash -c '
+				gsettings set org.gnome.desktop.session idle-delay 300
+				gsettings set org.gnome.desktop.screensaver lock-enabled true
+				gsettings set org.gnome.desktop.screensaver lock-delay 0
+				gsettings set org.gnome.system.location enabled false
+				gsettings set org.gnome.desktop.privacy remove-old-temp-files true
+				gsettings set org.gnome.desktop.privacy remove-old-trash-files true
+				gsettings set org.gnome.desktop.privacy old-files-age 7
+				gsettings set org.gnome.desktop.privacy send-software-usage-stats false
+				gsettings set org.gnome.desktop.privacy report-technical-problems false
+				gsettings set org.gnome.desktop.privacy remember-recent-files false
+				gsettings set org.gnome.desktop.privacy disable-microphone true
+			' 2>/dev/null || true
+		else
+			info "Would apply GNOME gsettings: screen lock, location off, privacy, mic off"
+		fi
+		ok "GNOME: screen lock, location off, privacy, mic off."
+		info "GNOME GUI-only: Online Accounts, Sharing, Bluetooth → GNOME Settings."
+		applied_des+=("GNOME")
+	fi
+
+	# ── Budgie (GNOME gsettings backend) ─────────────────────────────────────
+	if ((HAS_BUDGIE)); then
+		info "--- Budgie settings ---"
+		if ((!DRY_RUN)); then
+			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (Budgie/GNOME privacy)"
 			sudo -u "$TARGET_USER" bash -c '
 				gsettings set org.gnome.desktop.session idle-delay 300
 				gsettings set org.gnome.desktop.screensaver lock-enabled true
@@ -3838,21 +3824,21 @@ sec_15b2_budgie_cinnamon_mate() {
 				gsettings set org.gnome.desktop.privacy disable-microphone true
 			' 2>/dev/null || true
 		else
-			info "Would apply Budgie/GNOME gsettings: screen lock, location off, privacy, mic off"
+			info "Would apply Budgie gsettings: screen lock, location off, privacy, mic off"
 		fi
-		ok "Budgie privacy and screen-lock settings applied."
+		ok "Budgie: screen lock, privacy applied."
+		applied_des+=("Budgie")
 	fi
 
+	# ── Cinnamon ──────────────────────────────────────────────────────────────
 	if ((HAS_CINNAMON)); then
-		info "=== Section 15b2: Cinnamon-specific CLI settings ==="
+		info "--- Cinnamon settings ---"
 		if ((!DRY_RUN)); then
-			log "[RUN]   sudo -u '$TARGET_USER' bash -c 'gsettings batch for Cinnamon privacy'"
+			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (Cinnamon privacy)"
 			sudo -u "$TARGET_USER" bash -c '
-				# Cinnamon-specific screensaver schema
 				gsettings set org.cinnamon.desktop.screensaver lock-enabled true
 				gsettings set org.cinnamon.desktop.screensaver lock-delay 0
 				gsettings set org.cinnamon.desktop.session idle-delay 300 2>/dev/null || true
-				# Shared GNOME privacy schemas available in Cinnamon
 				gsettings set org.gnome.desktop.privacy remember-recent-files false 2>/dev/null || true
 				gsettings set org.gnome.desktop.privacy remove-old-temp-files true 2>/dev/null || true
 				gsettings set org.gnome.desktop.privacy remove-old-trash-files true 2>/dev/null || true
@@ -3862,188 +3848,111 @@ sec_15b2_budgie_cinnamon_mate() {
 		else
 			info "Would apply Cinnamon gsettings: screen lock, privacy, location off"
 		fi
-		ok "Cinnamon privacy and screen-lock settings applied."
+		ok "Cinnamon: screen lock, privacy applied."
+		applied_des+=("Cinnamon")
 	fi
 
+	# ── MATE ──────────────────────────────────────────────────────────────────
 	if ((HAS_MATE)); then
-		info "=== Section 15b2: MATE-specific CLI settings ==="
+		info "--- MATE settings ---"
 		if ((!DRY_RUN)); then
-			log "[RUN]   sudo -u '$TARGET_USER' bash -c 'gsettings/mateconftool batch for MATE privacy'"
+			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (MATE privacy)"
 			sudo -u "$TARGET_USER" bash -c '
-				# MATE screensaver uses org.mate.screensaver
 				gsettings set org.mate.screensaver lock-enabled true 2>/dev/null || true
 				gsettings set org.mate.screensaver idle-activation-enabled true 2>/dev/null || true
 				gsettings set org.mate.screensaver idle-delay 5 2>/dev/null || true
-				# MATE power-manager idle dim/suspend
 				gsettings set org.mate.power-manager sleep-display-ac 300 2>/dev/null || true
-				# Disable recent documents tracking
 				gsettings set org.gnome.desktop.privacy remember-recent-files false 2>/dev/null || true
-				# Location services (if available)
 				gsettings set org.gnome.system.location enabled false 2>/dev/null || true
 			' 2>/dev/null || true
 		else
 			info "Would apply MATE gsettings: screensaver lock, idle timeout, privacy"
 		fi
-		ok "MATE privacy and screen-lock settings applied."
-	fi
-}
-
-# ============================================================================
-#  SECTION 15c — XFCE CLI settings
-# ============================================================================
-# sec_15c_xfce() - Apply XFCE security and privacy settings via xfconf-query
-# Configures screensaver lock and power-manager settings for XFCE desktops,
-# including Fedora XFCE Spin and Vauxite (XFCE Atomic).
-sec_15c_xfce() {
-	should_run 15 || return 0
-	(( HAS_XFCE )) || return 0
-	info "=== Section 15c: XFCE-specific CLI settings ==="
-
-	if [[ -z "$TARGET_USER" ]]; then
-		warn "No target user — cannot apply per-user XFCE settings."
-		return 0
+		ok "MATE: screensaver lock, power-manager idle applied."
+		applied_des+=("MATE")
 	fi
 
-	if ! cmd_exists xfconf-query; then
-		warn "xfconf-query not found — cannot configure XFCE settings programmatically."
-		add_action_item 15 MEDIUM "XFCE_SCREENSAVER_MANUAL" \
-			"Manually enable screensaver lock in XFCE Settings → Screensaver (lock after 5 min idle)"
-		return 0
+	# ── XFCE (XFCE Spin + Vauxite Atomic) ────────────────────────────────────
+	if ((HAS_XFCE)); then
+		info "--- XFCE settings ---"
+		if ! cmd_exists xfconf-query; then
+			warn "xfconf-query not found — cannot configure XFCE settings."
+			add_action_item 15 MEDIUM "XFCE_SCREENSAVER_MANUAL" \
+				"Manually enable screensaver lock in XFCE Settings → Screensaver (lock after 5 min idle)"
+		else
+			if ((!DRY_RUN)); then
+				log "[RUN]   sudo -u '$TARGET_USER' xfconf-query batch (XFCE screensaver/power)"
+				sudo -u "$TARGET_USER" xfconf-query -c xfce4-screensaver -p /saver/enabled -s true 2>/dev/null || true
+				sudo -u "$TARGET_USER" xfconf-query -c xfce4-screensaver -p /lock/enabled -s true 2>/dev/null || true
+				sudo -u "$TARGET_USER" xfconf-query -c xfce4-screensaver -p /saver/idle-activation/enabled -s true 2>/dev/null || true
+				sudo -u "$TARGET_USER" xfconf-query -c xfce4-screensaver -p /saver/idle-activation/delay -s 5 2>/dev/null || true
+				sudo -u "$TARGET_USER" xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 5 2>/dev/null || true
+				sudo -u "$TARGET_USER" xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -s 3 2>/dev/null || true
+				sudo -u "$TARGET_USER" xfconf-query -c xfce4-session -p /general/SaveOnExit -s false 2>/dev/null || true
+			else
+				info "Would apply xfconf-query: screensaver lock, power manager idle, session save off"
+			fi
+			ok "XFCE: screensaver lock, power manager idle applied."
+			info "XFCE GUI-only: File Manager → Preferences → Privacy (clear recent files on exit)."
+		fi
+		applied_des+=("XFCE")
 	fi
 
-	if ((!DRY_RUN)); then
-		log "[RUN]   sudo -u '$TARGET_USER' xfconf-query batch for XFCE screensaver/privacy"
-		# Enable screensaver and lock after 5 minutes
-		sudo -u "$TARGET_USER" xfconf-query \
-			-c xfce4-screensaver -p /saver/enabled -s true 2>/dev/null || true
-		sudo -u "$TARGET_USER" xfconf-query \
-			-c xfce4-screensaver -p /lock/enabled -s true 2>/dev/null || true
-		sudo -u "$TARGET_USER" xfconf-query \
-			-c xfce4-screensaver -p /saver/idle-activation/enabled -s true 2>/dev/null || true
-		sudo -u "$TARGET_USER" xfconf-query \
-			-c xfce4-screensaver -p /saver/idle-activation/delay -s 5 2>/dev/null || true
-		# Power manager: blank screen after 5 min AC/battery
-		sudo -u "$TARGET_USER" xfconf-query \
-			-c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 5 2>/dev/null || true
-		sudo -u "$TARGET_USER" xfconf-query \
-			-c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -s 3 2>/dev/null || true
-		# Disable recent-files tracking via XFCE session manager
-		sudo -u "$TARGET_USER" xfconf-query \
-			-c xfce4-session -p /general/SaveOnExit -s false 2>/dev/null || true
-	else
-		info "Would apply xfconf-query: screensaver lock, power manager idle, session save off"
-	fi
-	ok "XFCE screensaver and privacy settings applied."
-	info "GUI-only XFCE tweaks: File Manager → Preferences → Privacy (clear recent files on exit)."
-}
+	# ── Sway / wlroots (Sericea Atomic + any Sway session) ───────────────────
+	if ((HAS_SWAY)); then
+		info "--- Sway/wlroots settings ---"
+		cmd_exists swaylock || { pkg_install swaylock || true; unset '_CMD_CACHE[swaylock]'; }
+		cmd_exists swayidle || { pkg_install swayidle || true; unset '_CMD_CACHE[swayidle]'; }
 
-# ============================================================================
-#  SECTION 15d — Sway/wlroots compositor settings
-# ============================================================================
-# sec_15d_sway() - Write swaylock and swayidle config for automatic screen locking
-# Creates ~/.config/swaylock/config (immediate lock on activation, no fade) and
-# ~/.config/swayidle/config (timeout 300 s lock, timeout 600 s suspend).
-# Covers Sway WM, Fedora Sericea, and any wlroots-based compositor with swaylock.
-sec_15d_sway() {
-	should_run 15 || return 0
-	(( HAS_SWAY )) || return 0
-	info "=== Section 15d: Sway/wlroots-specific screen-lock settings ==="
+		local swaylock_cfg="${user_home}/.config/swaylock/config"
+		local swayidle_cfg="${user_home}/.config/swayidle/config"
 
-	if [[ -z "$TARGET_USER" ]]; then
-		warn "No target user — cannot apply per-user Sway settings."
-		return 0
-	fi
-
-	local user_home
-	user_home="$(eval echo "~${TARGET_USER}")"
-
-	# Install swaylock-effects/swaylock and swayidle if absent
-	if ! cmd_exists swaylock; then
-		pkg_install swaylock || true
-		unset '_CMD_CACHE[swaylock]'
-	fi
-	if ! cmd_exists swayidle; then
-		pkg_install swayidle || true
-		unset '_CMD_CACHE[swayidle]'
-	fi
-
-	local swaylock_cfg="${user_home}/.config/swaylock/config"
-	local swayidle_cfg="${user_home}/.config/swayidle/config"
-
-	if ((!DRY_RUN)); then
-		run "mkdir -p '${user_home}/.config/swaylock' '${user_home}/.config/swayidle'"
-		# swaylock: solid black background, immediate lock, no grace period
-		if [[ ! -f "$swaylock_cfg" ]]; then
-			cat > "$swaylock_cfg" <<'EOF'
+		if ((!DRY_RUN)); then
+			run "mkdir -p '${user_home}/.config/swaylock' '${user_home}/.config/swayidle'"
+			if [[ ! -f "$swaylock_cfg" ]]; then
+				cat > "$swaylock_cfg" <<'SWAYEOF'
 # swaylock - privacy-hardened config (fedora-harden.sh)
 color=000000
 ignore-empty-password
 show-failed-attempts
 daemonize
-EOF
-			run "chown '${TARGET_USER}:${TARGET_USER}' '${swaylock_cfg}'"
-			ok "Wrote $swaylock_cfg"
-		else
-			info "swaylock config already exists at $swaylock_cfg — leaving intact."
-		fi
-
-		# swayidle: lock after 5 min, suspend after 10 min
-		if [[ ! -f "$swayidle_cfg" ]]; then
-			cat > "$swayidle_cfg" <<'EOF'
+SWAYEOF
+				run "chown '${TARGET_USER}:${TARGET_USER}' '${swaylock_cfg}'"
+				ok "Wrote $swaylock_cfg"
+			else
+				info "swaylock config already exists — leaving intact."
+			fi
+			if [[ ! -f "$swayidle_cfg" ]]; then
+				cat > "$swayidle_cfg" <<'SWAYEOF'
 # swayidle - auto-lock/suspend config (fedora-harden.sh)
 timeout 300 'swaylock -f'
 timeout 600 'systemctl suspend'
 before-sleep 'swaylock -f'
-EOF
-			run "chown '${TARGET_USER}:${TARGET_USER}' '${swayidle_cfg}'"
-			ok "Wrote $swayidle_cfg"
+SWAYEOF
+				run "chown '${TARGET_USER}:${TARGET_USER}' '${swayidle_cfg}'"
+				ok "Wrote $swayidle_cfg"
+			else
+				info "swayidle config already exists — leaving intact."
+			fi
 		else
-			info "swayidle config already exists at $swayidle_cfg — leaving intact."
+			info "Would write swaylock.conf (black, immediate lock) + swayidle (lock 5 min, suspend 10 min)"
 		fi
-	else
-		info "Would write swaylock config (solid black, immediate lock) and swayidle (lock 5 min, suspend 10 min)"
+		add_action_item 15 MEDIUM "SWAY_AUTOSTART_SWAYIDLE" \
+			"Add 'exec swayidle -w' to ~/.config/sway/config to autostart idle/lock daemon on login."
+		applied_des+=("Sway")
 	fi
 
-	add_action_item 15 MEDIUM "SWAY_AUTOSTART_SWAYIDLE" \
-		"Add 'exec swayidle -w' to ~/.config/sway/config to autostart the idle/lock daemon on login."
-	info "GUI-only: add 'exec swayidle -w' to your sway config to activate automatic locking."
-}
-
-# ============================================================================
-#  SECTION 15e — Hyprland/i3 tiling WM settings
-# ============================================================================
-# sec_15e_hyprland_i3() - Write screen-lock idle config for Hyprland and i3
-# Hyprland: writes a hypridle.conf fragment under ~/.config/hypr/.
-# i3: appends xss-lock/i3lock autolock exec lines to ~/.config/i3/config.
-sec_15e_hyprland_i3() {
-	should_run 15 || return 0
-	(( HAS_HYPRLAND || HAS_I3 )) || return 0
-
-	if [[ -z "$TARGET_USER" ]]; then
-		warn "No target user — cannot apply per-user tiling WM settings."
-		return 0
-	fi
-
-	local user_home
-	user_home="$(eval echo "~${TARGET_USER}")"
-
+	# ── Hyprland ──────────────────────────────────────────────────────────────
 	if ((HAS_HYPRLAND)); then
-		info "=== Section 15e: Hyprland-specific screen-lock settings ==="
+		info "--- Hyprland settings ---"
+		cmd_exists hypridle || { pkg_install hypridle 2>/dev/null || true; unset '_CMD_CACHE[hypridle]'; }
+		cmd_exists hyprlock || { pkg_install hyprlock 2>/dev/null || true; unset '_CMD_CACHE[hyprlock]'; }
+
 		local hypridle_cfg="${user_home}/.config/hypr/hypridle.conf"
-
-		if ! cmd_exists hypridle; then
-			pkg_install hypridle 2>/dev/null || true
-			unset '_CMD_CACHE[hypridle]'
-		fi
-		if ! cmd_exists hyprlock; then
-			pkg_install hyprlock 2>/dev/null || true
-			unset '_CMD_CACHE[hyprlock]'
-		fi
-
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/hypr'"
 			if [[ ! -f "$hypridle_cfg" ]]; then
-				cat > "$hypridle_cfg" <<'EOF'
+				cat > "$hypridle_cfg" <<'HYPREOF'
 # hypridle - auto-lock config (fedora-harden.sh)
 general {
     lock_cmd = pidof hyprlock || hyprlock
@@ -4059,121 +3968,93 @@ listener {
     timeout = 600
     on-timeout = systemctl suspend
 }
-EOF
+HYPREOF
 				run "chown '${TARGET_USER}:${TARGET_USER}' '${hypridle_cfg}'"
 				ok "Wrote $hypridle_cfg"
 			else
-				info "hypridle config already exists at $hypridle_cfg — leaving intact."
+				info "hypridle config already exists — leaving intact."
 			fi
 		else
 			info "Would write hypridle.conf (lock 5 min, suspend 10 min)"
 		fi
-
 		add_action_item 15 MEDIUM "HYPRLAND_AUTOSTART_HYPRIDLE" \
 			"Add 'exec-once = hypridle' to ~/.config/hypr/hyprland.conf to autostart the idle daemon."
+		applied_des+=("Hyprland")
 	fi
 
+	# ── i3 ────────────────────────────────────────────────────────────────────
 	if ((HAS_I3)); then
-		info "=== Section 15e: i3-specific screen-lock settings ==="
+		info "--- i3 settings ---"
+		cmd_exists xss-lock || { pkg_install xss-lock 2>/dev/null || true; unset '_CMD_CACHE[xss-lock]'; }
+		cmd_exists i3lock   || { pkg_install i3lock   2>/dev/null || true; unset '_CMD_CACHE[i3lock]'; }
+
 		local i3_cfg="${user_home}/.config/i3/config"
 		local i3_cfg_d="${user_home}/.config/i3/config.d"
-
-		if ! cmd_exists xss-lock; then
-			pkg_install xss-lock 2>/dev/null || true
-			unset '_CMD_CACHE[xss-lock]'
-		fi
-		if ! cmd_exists i3lock; then
-			pkg_install i3lock 2>/dev/null || true
-			unset '_CMD_CACHE[i3lock]'
-		fi
+		local i3_lock_frag="${i3_cfg_d}/99-autolock.conf"
 
 		if ((!DRY_RUN)); then
-			# Prefer a config.d drop-in to avoid clobbering the main config
 			run "mkdir -p '${i3_cfg_d}'"
-			local i3_lock_frag="${i3_cfg_d}/99-autolock.conf"
 			if [[ ! -f "$i3_lock_frag" ]]; then
-				cat > "$i3_lock_frag" <<'EOF'
+				cat > "$i3_lock_frag" <<'I3EOF'
 # i3 auto-lock via xss-lock + i3lock (fedora-harden.sh)
 exec --no-startup-id xss-lock --transfer-sleep-lock -- i3lock --nofork --color=000000
 exec --no-startup-id xautolock -time 5 -locker 'i3lock --color=000000'
-EOF
+I3EOF
 				run "chown '${TARGET_USER}:${TARGET_USER}' '${i3_lock_frag}'"
 				ok "Wrote $i3_lock_frag"
 			else
-				info "i3 autolock fragment already exists at $i3_lock_frag — leaving intact."
+				info "i3 autolock fragment already exists — leaving intact."
 			fi
-			# Ensure config.d files are included in the main i3 config
 			if [[ -f "$i3_cfg" ]] && ! grep -q "config.d" "$i3_cfg" 2>/dev/null; then
-				echo -e "\n# Auto-included by fedora-harden.sh\ninclude ${i3_cfg_d}/*.conf" >> "$i3_cfg" || true
+				printf '\n# Auto-included by fedora-harden.sh\ninclude %s/*.conf\n' "${i3_cfg_d}" >> "$i3_cfg" || true
 			fi
 		else
-			info "Would write i3 autolock fragment (xss-lock + i3lock) in ${i3_cfg_d}/"
+			info "Would write i3 autolock drop-in (xss-lock + i3lock) in ${i3_cfg_d}/"
 		fi
-
 		add_action_item 15 MEDIUM "I3_LOCK_KEYBIND" \
-			"Add a manual lock keybind in i3 config: bindsym \$mod+l exec i3lock --color=000000"
-	fi
-}
-
-# ============================================================================
-#  SECTION 15f — LXQt CLI settings
-# ============================================================================
-# sec_15f_lxqt() - Apply LXQt security settings
-# Configures LXQt screensaver (idle lock) and power-management settings.
-# Covers Fedora LXQt Spin and Lazurite (LXQt Atomic).
-sec_15f_lxqt() {
-	should_run 15 || return 0
-	(( HAS_LXQT )) || return 0
-	info "=== Section 15f: LXQt-specific CLI settings ==="
-
-	if [[ -z "$TARGET_USER" ]]; then
-		warn "No target user — cannot apply per-user LXQt settings."
-		return 0
+			"Add a manual lock keybind: bindsym \$mod+l exec i3lock --color=000000"
+		applied_des+=("i3")
 	fi
 
-	local user_home
-	user_home="$(eval echo "~${TARGET_USER}")"
-
-	if ((!DRY_RUN)); then
-		# LXQt screensaver settings live in ~/.config/lxqt/lxqt-screensaver.conf
+	# ── LXQt (LXQt Spin + Lazurite Atomic) ───────────────────────────────────
+	if ((HAS_LXQT)); then
+		info "--- LXQt settings ---"
 		local ss_cfg="${user_home}/.config/lxqt/lxqt-screensaver.conf"
-		run "mkdir -p '${user_home}/.config/lxqt'"
-		if [[ ! -f "$ss_cfg" ]]; then
-			cat > "$ss_cfg" <<'EOF'
-[General]
-lockAfterEnable=true
-lockAfterTimeout=300
-screensaverTimeout=300
-EOF
-			run "chown '${TARGET_USER}:${TARGET_USER}' '${ss_cfg}'"
-			ok "Wrote LXQt screensaver config at $ss_cfg"
-		else
-			backup_file "$ss_cfg"
-			# Patch existing config: ensure lockAfterEnable=true and timeout=300
-			sed -i \
-				-e 's|^lockAfterEnable=.*|lockAfterEnable=true|' \
-				-e 's|^lockAfterTimeout=.*|lockAfterTimeout=300|' \
-				-e 's|^screensaverTimeout=.*|screensaverTimeout=300|' \
-				"$ss_cfg" || true
-			ok "Patched existing LXQt screensaver config at $ss_cfg"
-		fi
-
-		# LXQt power management: suspend on idle
 		local pm_cfg="${user_home}/.config/lxqt/lxqt-powermanagement.conf"
-		if [[ ! -f "$pm_cfg" ]]; then
-			cat > "$pm_cfg" <<'EOF'
-[General]
-enableIdleSuspend=true
-idleSuspendTimeout=600
-EOF
-			run "chown '${TARGET_USER}:${TARGET_USER}' '${pm_cfg}'"
-			ok "Wrote LXQt power management config at $pm_cfg"
+
+		if ((!DRY_RUN)); then
+			run "mkdir -p '${user_home}/.config/lxqt'"
+			if [[ ! -f "$ss_cfg" ]]; then
+				printf '[General]\nlockAfterEnable=true\nlockAfterTimeout=300\nscreensaverTimeout=300\n' > "$ss_cfg"
+				run "chown '${TARGET_USER}:${TARGET_USER}' '${ss_cfg}'"
+				ok "Wrote LXQt screensaver config"
+			else
+				backup_file "$ss_cfg"
+				sed -i \
+					-e 's|^lockAfterEnable=.*|lockAfterEnable=true|' \
+					-e 's|^lockAfterTimeout=.*|lockAfterTimeout=300|' \
+					-e 's|^screensaverTimeout=.*|screensaverTimeout=300|' \
+					"$ss_cfg" || true
+				ok "Patched LXQt screensaver config"
+			fi
+			if [[ ! -f "$pm_cfg" ]]; then
+				printf '[General]\nenableIdleSuspend=true\nidleSuspendTimeout=600\n' > "$pm_cfg"
+				run "chown '${TARGET_USER}:${TARGET_USER}' '${pm_cfg}'"
+				ok "Wrote LXQt power management config"
+			fi
+		else
+			info "Would write LXQt screensaver (lock 5 min) + power management (suspend 10 min) configs"
 		fi
-	else
-		info "Would write LXQt screensaver (lock after 5 min) and power management (suspend after 10 min) config"
+		info "LXQt GUI-only: verify in LXQt Settings → Screensaver / Power Management."
+		applied_des+=("LXQt")
 	fi
 
-	info "GUI-only: verify lock settings in LXQt Settings → Screensaver and LXQt Settings → Power Management."
+	# ── Summary ───────────────────────────────────────────────────────────────
+	if ((${#applied_des[@]} > 0)); then
+		ok "Section 15 complete. Hardened: ${applied_des[*]}"
+	else
+		warn "Section 15: desktop detected but no DE-specific settings could be applied."
+	fi
 }
 # ============================================================================
 # sec_16_firefox() - Harden Firefox Flatpak with arkenfox + extensions + VPN check
@@ -5214,13 +5095,7 @@ main() {
 	sec_11_auditd
 	sec_14_dot
 	sec_18_fail2ban
-	sec_15_kde
-	sec_15b_gnome
-	sec_15b2_budgie_cinnamon_mate
-	sec_15c_xfce
-	sec_15d_sway
-	sec_15e_hyprland_i3
-	sec_15f_lxqt
+	sec_15_desktop
 	sec_16_firefox
 	sec_17_wireguard
 	sec_21_clamav
