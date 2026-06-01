@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Fedora 44+ Security Hardening Script (multi-release + desktop aware)
+#  Fedora 44+ Security Hardening Script (multi-release + multi-desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
 #  Aligned with privacyguides.org and inteltechniques.com recommendations
-#  Efficiency-tuned and low-I/O focused (v2.0 - June 2026)
+#  Efficiency-tuned and low-I/O focused (v2.1 - June 2026)
 #
 #  FEATURES:
-#    • 22 hardening sections (plus subsections 14b, 15b) with automatic
+#    • 22 hardening sections (plus subsections 14b, 15b–15f) with automatic
 #      release/profile detection
 #    • Dual-mode support: mutable (dnf) and immutable (rpm-ostree) systems
 #    • Fedora release detection: Workstation, Server, IoT, Cloud, CoreOS,
-#      Kinoite, Silverblue, and Atomic desktop variants
-#    • KDE Plasma and GNOME desktop environment support with per-DE privacy
-#      and screen-lock settings (CLI-configurable via kwriteconfig6/gsettings)
+#      Kinoite, Silverblue, Onyx, Sericea, Lazurite, Vauxite, Bazzite, Aurora,
+#      and all Atomic desktop variants
+#    • Full desktop environment support: KDE Plasma, GNOME, Budgie, Cinnamon,
+#      MATE, XFCE, LXQt, Sway, Hyprland, i3 — with per-DE privacy/screen-lock
+#      settings configured from the CLI
 #    • Firefox Flatpak hardening with arkenfox + 3 security extensions (uBlock, LocalCDN, Containers)
 #    • VPN detection (WireGuard, NetworkManager, Mullvad, ProtonVPN) with
 #      recommendations when absent (Mullvad/ProtonVPN/IVPN per privacyguides.org)
@@ -78,6 +80,11 @@
 #   14b  NetworkManager MAC address randomization (network-layer privacy)
 #    15  KDE-specific CLI settings (screen lock, Bluetooth, recent documents)
 #   15b  GNOME-specific CLI settings (screen lock, location, privacy, recent files)
+#  15b2  Budgie/Cinnamon/MATE CLI settings (gsettings for non-KDE/GNOME DEs)
+#   15c  XFCE CLI settings (xfconf-query screensaver + power manager)
+#   15d  Sway/wlroots settings (swaylock + swayidle auto-lock config)
+#   15e  Hyprland/i3 settings (hypridle or xss-lock+i3lock auto-lock config)
+#   15f  LXQt CLI settings (screensaver + power management config files)
 #    16  Firefox Flatpak + arkenfox + extensions (uBlock Origin, LocalCDN,
 #        Multi-Account Containers) + VPN detection + recommendations
 #    17  WireGuard tool install (tunnel config is manual; autostart guidance)
@@ -93,6 +100,8 @@
 #    6b  GRUB password — requires interactive grub2-mkpasswd-pbkdf2
 #    15  KDE GUI-only screens (Privacy, KWallet master password, Activity tracking)
 #   15b  GNOME GUI-only screens (Online Accounts, Sharing, Bluetooth)
+#   15d  Sway compositor config exec autostart (added as action item)
+#   15e  Hyprland/i3 keybind and exec-once (added as action item)
 #    17  WireGuard tunnel config (requires peer keys & endpoint configuration)
 #    23  Ongoing maintenance checklist (scheduled human task)
 #
@@ -104,8 +113,19 @@
 #    ✓ Fedora CoreOS (immutable, rpm-ostree)
 #    ✓ Fedora Kinoite (immutable, rpm-ostree + KDE)
 #    ✓ Fedora Silverblue (immutable, rpm-ostree + GNOME)
+#    ✓ Fedora Onyx (immutable, rpm-ostree + GNOME Atomic)
+#    ✓ Fedora Sericea (immutable, rpm-ostree + Sway Atomic)
+#    ✓ Fedora Lazurite (immutable, rpm-ostree + LXQt Atomic)
+#    ✓ Fedora Vauxite (immutable, rpm-ostree + XFCE Atomic)
+#    ✓ Bazzite (gaming remix, rpm-ostree + KDE or GNOME)
+#    ✓ Aurora / Universal Blue (rpm-ostree + KDE)
+#    ✓ Fedora XFCE Spin (mutable, dnf + XFCE)
+#    ✓ Fedora LXQt Spin (mutable, dnf + LXQt)
+#    ✓ Fedora Cinnamon Spin (mutable, dnf + Cinnamon)
+#    ✓ Fedora MATE-Compiz Spin (mutable, dnf + MATE)
+#    ✓ Fedora Budgie Spin (mutable, dnf + Budgie)
 #    Auto-detection: Reads /etc/os-release metadata + /run/ostree-booted
-#    Desktop detection: session and installed tooling/packages (KDE/GNOME/Sway)
+#    Desktop detection: XDG_CURRENT_DESKTOP + installed tooling/packages
 #
 #  PERFORMANCE OPTIMIZATIONS:
 #    • Caching layers: command availability, package status, user home dirs
@@ -184,16 +204,31 @@ EXPECTED_ABORT=0  # Set to 1 if clean exit expected (--list, --rollback)
 # ---------- Platform/variant detection flags --------------------------------
 IS_OSTREE=0              # Set to 1 if system uses immutable rpm-ostree
 IS_KINOITE=0             # Set to 1 if Fedora Kinoite (immutable + KDE)
-IS_SILVERBLUE=0          # Set to 1 if Fedora Silverblue (immutable)
+IS_SILVERBLUE=0          # Set to 1 if Fedora Silverblue (immutable + GNOME)
+IS_ONYX=0                # Set to 1 if Fedora Onyx (immutable + GNOME, Atomic)
+IS_SERICEA=0             # Set to 1 if Fedora Sericea (immutable + Sway, Atomic)
+IS_LAZURITE=0            # Set to 1 if Fedora Lazurite (immutable + LXQt, Atomic)
+IS_VAUXITE=0             # Set to 1 if Fedora Vauxite (immutable + XFCE, Atomic)
+IS_BAZZITE=0             # Set to 1 if Bazzite (gaming remix, KDE or GNOME)
+IS_AURORA=0              # Set to 1 if Aurora (Universal Blue KDE remix)
 IS_SERVER=0              # Set to 1 if Fedora Server
 IS_WORKSTATION=0         # Set to 1 if Fedora Workstation
 IS_IOT=0                 # Set to 1 if Fedora IoT (immutable)
 IS_CLOUD=0               # Set to 1 if Fedora Cloud
 IS_COREOS=0              # Set to 1 if Fedora CoreOS (immutable)
 IS_ATOMIC_DESKTOP=0      # Set to 1 if Atomic Desktop variant
+IS_GAMING_SPIN=0         # Set to 1 if gaming-oriented spin (Bazzite, etc.)
 IS_FEDORA=0              # Set to 1 if any Fedora detected
 HAS_KDE=0                # Set to 1 if KDE Plasma session detected
 HAS_GNOME=0              # Set to 1 if GNOME session detected
+HAS_SWAY=0               # Set to 1 if Sway/wlroots compositor detected
+HAS_HYPRLAND=0           # Set to 1 if Hyprland compositor detected
+HAS_I3=0                 # Set to 1 if i3 window manager detected
+HAS_XFCE=0               # Set to 1 if XFCE desktop detected
+HAS_CINNAMON=0           # Set to 1 if Cinnamon desktop detected
+HAS_MATE=0               # Set to 1 if MATE desktop detected
+HAS_BUDGIE=0             # Set to 1 if Budgie desktop detected
+HAS_LXQT=0               # Set to 1 if LXQt desktop detected
 HAS_DESKTOP=0            # Set to 1 if any desktop environment detected
 DESKTOP_ENVS=""          # Comma-separated list of detected desktop environments
 FEDORA_VARIANT="unknown" # Human-readable Fedora variant name
@@ -1100,60 +1135,136 @@ pkg_cached() {
 }
 
 # detect_fedora_release_type() - Classify Fedora release family from os-release metadata.
+# Handles all official Fedora variants, Atomic Desktop spins, and community remixes
+# (Bazzite, Aurora, Universal Blue). Sets IS_* flags for downstream feature-gating.
 detect_fedora_release_type() {
 	local release_blob
 	release_blob="${NAME:-} ${PRETTY_NAME:-} ${VARIANT:-} ${VARIANT_ID:-} ${CPE_NAME:-} ${PLATFORM_ID:-} ${ID_LIKE:-}"
 	release_blob="${release_blob,,}"
 
+	# Official Fedora variants
 	[[ "$release_blob" == *"workstation"* ]] && IS_WORKSTATION=1
-	[[ "$release_blob" == *"server"* ]] && IS_SERVER=1
-	[[ "$release_blob" == *"kinoite"* ]] && IS_KINOITE=1
-	[[ "$release_blob" == *"silverblue"* ]] && IS_SILVERBLUE=1
-	[[ "$release_blob" == *"iot"* ]] && IS_IOT=1
-	[[ "$release_blob" == *"cloud"* ]] && IS_CLOUD=1
-	[[ "$release_blob" == *"coreos"* ]] && IS_COREOS=1
+	[[ "$release_blob" == *"server"*      ]] && IS_SERVER=1
+	[[ "$release_blob" == *"kinoite"*     ]] && IS_KINOITE=1
+	[[ "$release_blob" == *"silverblue"*  ]] && IS_SILVERBLUE=1
+	[[ "$release_blob" == *"onyx"*        ]] && IS_ONYX=1
+	[[ "$release_blob" == *"sericea"*     ]] && IS_SERICEA=1
+	[[ "$release_blob" == *"lazurite"*    ]] && IS_LAZURITE=1
+	[[ "$release_blob" == *"vauxite"*     ]] && IS_VAUXITE=1
+	[[ "$release_blob" == *"iot"*         ]] && IS_IOT=1
+	[[ "$release_blob" == *"cloud"*       ]] && IS_CLOUD=1
+	[[ "$release_blob" == *"coreos"*      ]] && IS_COREOS=1
 
-	# Fedora Atomic desktops include Kinoite/Silverblue and the named Atomic editions.
-	if ((IS_KINOITE || IS_SILVERBLUE)) ||
-		[[ "$release_blob" == *"atomic"* && "$release_blob" == *"fedora"* ]]; then
+	# Universal Blue / community remixes
+	if [[ "$release_blob" == *"bazzite"* ]]; then
+		IS_BAZZITE=1
+		IS_GAMING_SPIN=1
+	fi
+	if [[ "$release_blob" == *"aurora"* && "$release_blob" == *"universal blue"* ]] || \
+	   [[ "${ID:-}" == "aurora" ]] || [[ "${VARIANT_ID:-}" == "aurora" ]]; then
+		IS_AURORA=1
+	fi
+	# Generic Universal Blue detection (bluefin, aurora, etc. share a common base)
+	if [[ "${ID_LIKE:-}" == *"fedora"* ]] && \
+	   [[ "$release_blob" == *"universal blue"* || "$release_blob" == *"bluefin"* || \
+	      "$release_blob" == *"aurora"* ]]; then
+		IS_AURORA=1
+	fi
+
+	# Fedora Atomic desktops: Kinoite, Silverblue, Onyx, Sericea, Lazurite, Vauxite,
+	# and any other Fedora Atomic variant
+	if ((IS_KINOITE || IS_SILVERBLUE || IS_ONYX || IS_SERICEA || IS_LAZURITE || IS_VAUXITE)) || \
+	   ((IS_BAZZITE || IS_AURORA)) || \
+	   [[ "$release_blob" == *"atomic"* && "$release_blob" == *"fedora"* ]]; then
 		IS_ATOMIC_DESKTOP=1
 	fi
 }
 
 # detect_desktop_envs() - Detect active/installed desktop environments for feature gating.
+# Covers KDE, GNOME, Sway, Hyprland, i3, XFCE, Cinnamon, MATE, Budgie, LXQt.
+# Uses both running-session hints (XDG_CURRENT_DESKTOP) and installed-package hints.
 detect_desktop_envs() {
 	local detected=()
 	local xdg_blob="${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}"
 	xdg_blob="${xdg_blob,,}"
 
-	# Running session hints.
+	# ── Running session hints ────────────────────────────────────────────────
 	if [[ "$xdg_blob" == *"kde"* || "$xdg_blob" == *"plasma"* ]]; then
-		HAS_KDE=1
-		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+		HAS_KDE=1; [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
 	fi
 	if [[ "$xdg_blob" == *"gnome"* ]]; then
-		HAS_GNOME=1
-		[[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+		HAS_GNOME=1; [[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+	fi
+	if [[ "$xdg_blob" == *"budgie"* ]]; then
+		HAS_BUDGIE=1; [[ ",${detected[*]}," == *",budgie,"* ]] || detected+=("budgie")
+	fi
+	if [[ "$xdg_blob" == *"cinnamon"* ]]; then
+		HAS_CINNAMON=1; [[ ",${detected[*]}," == *",cinnamon,"* ]] || detected+=("cinnamon")
+	fi
+	if [[ "$xdg_blob" == *"mate"* ]]; then
+		HAS_MATE=1; [[ ",${detected[*]}," == *",mate,"* ]] || detected+=("mate")
+	fi
+	if [[ "$xdg_blob" == *"xfce"* ]]; then
+		HAS_XFCE=1; [[ ",${detected[*]}," == *",xfce,"* ]] || detected+=("xfce")
+	fi
+	if [[ "$xdg_blob" == *"lxqt"* ]]; then
+		HAS_LXQT=1; [[ ",${detected[*]}," == *",lxqt,"* ]] || detected+=("lxqt")
 	fi
 	if [[ "$xdg_blob" == *"sway"* ]]; then
-		[[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+		HAS_SWAY=1; [[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+	fi
+	if [[ "$xdg_blob" == *"hyprland"* ]]; then
+		HAS_HYPRLAND=1; [[ ",${detected[*]}," == *",hyprland,"* ]] || detected+=("hyprland")
+	fi
+	if [[ "$xdg_blob" == *"i3"* ]]; then
+		HAS_I3=1; [[ ",${detected[*]}," == *",i3,"* ]] || detected+=("i3")
 	fi
 
-	# Installed desktop/tooling hints.
+	# ── Installed-package / command hints ────────────────────────────────────
 	if cmd_exists kwriteconfig6 || cmd_exists kwriteconfig5 || pkg_cached plasma-workspace; then
-		HAS_KDE=1
-		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+		HAS_KDE=1; [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
 	fi
 	if cmd_exists gnome-shell || pkg_cached gnome-shell || pkg_cached gnome-session; then
-		HAS_GNOME=1
-		[[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+		HAS_GNOME=1; [[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+	fi
+	if pkg_cached budgie-desktop || pkg_cached budgie-desktop-view; then
+		HAS_BUDGIE=1; [[ ",${detected[*]}," == *",budgie,"* ]] || detected+=("budgie")
+	fi
+	if cmd_exists cinnamon || pkg_cached cinnamon; then
+		HAS_CINNAMON=1; [[ ",${detected[*]}," == *",cinnamon,"* ]] || detected+=("cinnamon")
+	fi
+	if cmd_exists mate-session || pkg_cached mate-session-manager; then
+		HAS_MATE=1; [[ ",${detected[*]}," == *",mate,"* ]] || detected+=("mate")
+	fi
+	if cmd_exists xfce4-session || pkg_cached xfce4-session; then
+		HAS_XFCE=1; [[ ",${detected[*]}," == *",xfce,"* ]] || detected+=("xfce")
+	fi
+	if cmd_exists startlxqt || pkg_cached lxqt-session; then
+		HAS_LXQT=1; [[ ",${detected[*]}," == *",lxqt,"* ]] || detected+=("lxqt")
 	fi
 	if cmd_exists sway || pkg_cached sway; then
-		[[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+		HAS_SWAY=1; [[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+	fi
+	if cmd_exists Hyprland || cmd_exists hyprland || pkg_cached hyprland; then
+		HAS_HYPRLAND=1; [[ ",${detected[*]}," == *",hyprland,"* ]] || detected+=("hyprland")
+	fi
+	if cmd_exists i3 || pkg_cached i3; then
+		HAS_I3=1; [[ ",${detected[*]}," == *",i3,"* ]] || detected+=("i3")
 	fi
 
-	((HAS_KDE || HAS_GNOME || ${#detected[@]} > 0)) && HAS_DESKTOP=1
-	# Join detected desktop names with commas using a local IFS — avoids a subshell fork.
+	# Sericea and Lazurite Atomic spins imply their respective DEs
+	((IS_SERICEA)) && { HAS_SWAY=1; [[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway"); }
+	((IS_LAZURITE)) && { HAS_LXQT=1; [[ ",${detected[*]}," == *",lxqt,"* ]] || detected+=("lxqt"); }
+	((IS_VAUXITE)) && { HAS_XFCE=1; [[ ",${detected[*]}," == *",xfce,"* ]] || detected+=("xfce"); }
+	# Onyx is GNOME Atomic; Kinoite/Aurora are KDE
+	((IS_ONYX)) && { HAS_GNOME=1; [[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome"); }
+	((IS_AURORA)) && { HAS_KDE=1; [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde"); }
+	# Bazzite ships both KDE and GNOME editions — honour running session above; default to KDE
+	if ((IS_BAZZITE)) && ((!HAS_KDE && !HAS_GNOME)); then
+		HAS_KDE=1; [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+	fi
+
+	((${#detected[@]} > 0)) && HAS_DESKTOP=1
 	local IFS=','
 	DESKTOP_ENVS="${detected[*]:-}"
 }
@@ -1184,6 +1295,10 @@ section_compatible() {
 		# Section 8 can interfere with remote access if USB input devices are not whitelisted.
 		if ((IS_SERVER)) && ((!ASSUME_YES)); then
 			warn "Section 8 (USBGuard) can disrupt remote-only server access if input devices are blocked."
+		fi
+		# Sway/Hyprland/i3 users: input-device whitelists in compositors must allow USB keyboards/mice.
+		if ((HAS_SWAY || HAS_HYPRLAND || HAS_I3)) && ((!ASSUME_YES)); then
+			warn "Section 8 (USBGuard): tiling WM users should whitelist USB input devices in their compositor config."
 		fi
 		;;
 	esac
@@ -2445,7 +2560,13 @@ list_sections() {
  12  rkhunter + AIDE
  13  Flatpak / Flathub (incl. optional Firejail)
  14  DNS over TLS (14b: NetworkManager MAC address randomization)
- 15  KDE settings | 15b: GNOME privacy/lockscreen settings
+ 15  KDE settings
+15b  GNOME privacy/lockscreen settings
+15b2 Budgie/Cinnamon/MATE privacy/lockscreen settings (gsettings)
+15c  XFCE screensaver + power manager (xfconf-query)
+15d  Sway/wlroots swaylock + swayidle auto-lock config
+15e  Hyprland (hypridle) + i3 (xss-lock/i3lock) auto-lock config
+15f  LXQt screensaver + power management config
  16  Firefox Flatpak + arkenfox + extensions (uBlock, LocalCDN, Containers) + VPN check (16b)
  17  WireGuard
  18  Fail2Ban
@@ -2456,6 +2577,22 @@ list_sections() {
 
  Optimized execution order (guide section numbers):
     2,3,6,13,4,5,7,9,10,11,14,18,15,16,17,21,22,12,19,20,8
+
+ Desktop environment detection (auto-detected; per-DE sections run only if DE present):
+    KDE Plasma   → sec 15
+    GNOME        → sec 15b
+    Budgie/Cinnamon/MATE → sec 15b2
+    XFCE         → sec 15c
+    Sway         → sec 15d
+    Hyprland/i3  → sec 15e
+    LXQt         → sec 15f
+
+ Supported Fedora variants (auto-detected):
+    Workstation, Server, IoT, Cloud, CoreOS
+    Kinoite (KDE), Silverblue (GNOME), Onyx (GNOME Atomic)
+    Sericea (Sway Atomic), Lazurite (LXQt Atomic), Vauxite (XFCE Atomic)
+    Bazzite (gaming), Aurora / Universal Blue (KDE)
+    XFCE/LXQt/Cinnamon/MATE/Budgie spins (mutable)
 EOF
 }
 
@@ -2919,6 +3056,19 @@ sec_05_firewalld() {
 			firewalld_ensure_service "kde-connect" "KDE Connect" \
 				"1714-1764/tcp" "1714-1764/udp"
 			services_to_allow+=("kde-connect")
+		fi
+	fi
+
+	# Bazzite/gaming spins: offer Steam Remote Play and game streaming ports
+	if ((IS_GAMING_SPIN)); then
+		if confirm "Gaming spin detected (Bazzite). Allow Steam Remote Play + game-streaming ports?"; then
+			firewalld_ensure_service "steam-remote-play" "Steam Remote Play" \
+				"27031/tcp" "27036/tcp" "27031/udp" "27032/udp" "27033/udp" "27034/udp" "27035/udp" "27036/udp"
+			services_to_allow+=("steam-remote-play")
+			add_action_item 5 LOW "GAMING_FIREWALL_REVIEW" \
+				"Bazzite/gaming spin: review firewall zone after game installs (Steam, Heroic, etc. may request additional ports)."
+		else
+			info "Skipping Steam Remote Play ports — add manually if needed."
 		fi
 	fi
 
@@ -3655,7 +3805,376 @@ sec_15b_gnome() {
 }
 
 # ============================================================================
-#  SECTION 16 — Firefox Flatpak + arkenfox + extensions
+#  SECTION 15b2 — Budgie/Cinnamon/MATE CLI settings (gsettings-based DEs)
+# ============================================================================
+# sec_15b2_budgie_cinnamon_mate() - Apply security settings for Budgie, Cinnamon, and MATE
+# Budgie and Cinnamon share the GSettings/dconf stack, so many GNOME schema keys apply.
+# MATE uses distinct org.mate.* schemas. Configures screen lock timeout and
+# privacy settings across all three environments.
+sec_15b2_budgie_cinnamon_mate() {
+	should_run 15 || return 0
+	(( HAS_BUDGIE || HAS_CINNAMON || HAS_MATE )) || return 0
+
+	if [[ -z "$TARGET_USER" ]]; then
+		warn "No target user — cannot apply per-user DE settings."
+		return 0
+	fi
+
+	if ((HAS_BUDGIE)); then
+		info "=== Section 15b2: Budgie-specific CLI settings ==="
+		# Budgie uses GNOME's gsettings backend
+		if ((!DRY_RUN)); then
+			log "[RUN]   sudo -u '$TARGET_USER' bash -c 'gsettings batch for Budgie privacy'"
+			sudo -u "$TARGET_USER" bash -c '
+				gsettings set org.gnome.desktop.session idle-delay 300
+				gsettings set org.gnome.desktop.screensaver lock-enabled true
+				gsettings set org.gnome.desktop.screensaver lock-delay 0
+				gsettings set org.gnome.system.location enabled false
+				gsettings set org.gnome.desktop.privacy remember-recent-files false
+				gsettings set org.gnome.desktop.privacy remove-old-temp-files true
+				gsettings set org.gnome.desktop.privacy remove-old-trash-files true
+				gsettings set org.gnome.desktop.privacy old-files-age 7
+				gsettings set org.gnome.desktop.privacy send-software-usage-stats false
+				gsettings set org.gnome.desktop.privacy disable-microphone true
+			' 2>/dev/null || true
+		else
+			info "Would apply Budgie/GNOME gsettings: screen lock, location off, privacy, mic off"
+		fi
+		ok "Budgie privacy and screen-lock settings applied."
+	fi
+
+	if ((HAS_CINNAMON)); then
+		info "=== Section 15b2: Cinnamon-specific CLI settings ==="
+		if ((!DRY_RUN)); then
+			log "[RUN]   sudo -u '$TARGET_USER' bash -c 'gsettings batch for Cinnamon privacy'"
+			sudo -u "$TARGET_USER" bash -c '
+				# Cinnamon-specific screensaver schema
+				gsettings set org.cinnamon.desktop.screensaver lock-enabled true
+				gsettings set org.cinnamon.desktop.screensaver lock-delay 0
+				gsettings set org.cinnamon.desktop.session idle-delay 300 2>/dev/null || true
+				# Shared GNOME privacy schemas available in Cinnamon
+				gsettings set org.gnome.desktop.privacy remember-recent-files false 2>/dev/null || true
+				gsettings set org.gnome.desktop.privacy remove-old-temp-files true 2>/dev/null || true
+				gsettings set org.gnome.desktop.privacy remove-old-trash-files true 2>/dev/null || true
+				gsettings set org.gnome.desktop.privacy old-files-age 7 2>/dev/null || true
+				gsettings set org.gnome.system.location enabled false 2>/dev/null || true
+			' 2>/dev/null || true
+		else
+			info "Would apply Cinnamon gsettings: screen lock, privacy, location off"
+		fi
+		ok "Cinnamon privacy and screen-lock settings applied."
+	fi
+
+	if ((HAS_MATE)); then
+		info "=== Section 15b2: MATE-specific CLI settings ==="
+		if ((!DRY_RUN)); then
+			log "[RUN]   sudo -u '$TARGET_USER' bash -c 'gsettings/mateconftool batch for MATE privacy'"
+			sudo -u "$TARGET_USER" bash -c '
+				# MATE screensaver uses org.mate.screensaver
+				gsettings set org.mate.screensaver lock-enabled true 2>/dev/null || true
+				gsettings set org.mate.screensaver idle-activation-enabled true 2>/dev/null || true
+				gsettings set org.mate.screensaver idle-delay 5 2>/dev/null || true
+				# MATE power-manager idle dim/suspend
+				gsettings set org.mate.power-manager sleep-display-ac 300 2>/dev/null || true
+				# Disable recent documents tracking
+				gsettings set org.gnome.desktop.privacy remember-recent-files false 2>/dev/null || true
+				# Location services (if available)
+				gsettings set org.gnome.system.location enabled false 2>/dev/null || true
+			' 2>/dev/null || true
+		else
+			info "Would apply MATE gsettings: screensaver lock, idle timeout, privacy"
+		fi
+		ok "MATE privacy and screen-lock settings applied."
+	fi
+}
+
+# ============================================================================
+#  SECTION 15c — XFCE CLI settings
+# ============================================================================
+# sec_15c_xfce() - Apply XFCE security and privacy settings via xfconf-query
+# Configures screensaver lock and power-manager settings for XFCE desktops,
+# including Fedora XFCE Spin and Vauxite (XFCE Atomic).
+sec_15c_xfce() {
+	should_run 15 || return 0
+	(( HAS_XFCE )) || return 0
+	info "=== Section 15c: XFCE-specific CLI settings ==="
+
+	if [[ -z "$TARGET_USER" ]]; then
+		warn "No target user — cannot apply per-user XFCE settings."
+		return 0
+	fi
+
+	if ! cmd_exists xfconf-query; then
+		warn "xfconf-query not found — cannot configure XFCE settings programmatically."
+		add_action_item 15 MEDIUM "XFCE_SCREENSAVER_MANUAL" \
+			"Manually enable screensaver lock in XFCE Settings → Screensaver (lock after 5 min idle)"
+		return 0
+	fi
+
+	if ((!DRY_RUN)); then
+		log "[RUN]   sudo -u '$TARGET_USER' xfconf-query batch for XFCE screensaver/privacy"
+		# Enable screensaver and lock after 5 minutes
+		sudo -u "$TARGET_USER" xfconf-query \
+			-c xfce4-screensaver -p /saver/enabled -s true 2>/dev/null || true
+		sudo -u "$TARGET_USER" xfconf-query \
+			-c xfce4-screensaver -p /lock/enabled -s true 2>/dev/null || true
+		sudo -u "$TARGET_USER" xfconf-query \
+			-c xfce4-screensaver -p /saver/idle-activation/enabled -s true 2>/dev/null || true
+		sudo -u "$TARGET_USER" xfconf-query \
+			-c xfce4-screensaver -p /saver/idle-activation/delay -s 5 2>/dev/null || true
+		# Power manager: blank screen after 5 min AC/battery
+		sudo -u "$TARGET_USER" xfconf-query \
+			-c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 5 2>/dev/null || true
+		sudo -u "$TARGET_USER" xfconf-query \
+			-c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -s 3 2>/dev/null || true
+		# Disable recent-files tracking via XFCE session manager
+		sudo -u "$TARGET_USER" xfconf-query \
+			-c xfce4-session -p /general/SaveOnExit -s false 2>/dev/null || true
+	else
+		info "Would apply xfconf-query: screensaver lock, power manager idle, session save off"
+	fi
+	ok "XFCE screensaver and privacy settings applied."
+	info "GUI-only XFCE tweaks: File Manager → Preferences → Privacy (clear recent files on exit)."
+}
+
+# ============================================================================
+#  SECTION 15d — Sway/wlroots compositor settings
+# ============================================================================
+# sec_15d_sway() - Write swaylock and swayidle config for automatic screen locking
+# Creates ~/.config/swaylock/config (immediate lock on activation, no fade) and
+# ~/.config/swayidle/config (timeout 300 s lock, timeout 600 s suspend).
+# Covers Sway WM, Fedora Sericea, and any wlroots-based compositor with swaylock.
+sec_15d_sway() {
+	should_run 15 || return 0
+	(( HAS_SWAY )) || return 0
+	info "=== Section 15d: Sway/wlroots-specific screen-lock settings ==="
+
+	if [[ -z "$TARGET_USER" ]]; then
+		warn "No target user — cannot apply per-user Sway settings."
+		return 0
+	fi
+
+	local user_home
+	user_home="$(eval echo "~${TARGET_USER}")"
+
+	# Install swaylock-effects/swaylock and swayidle if absent
+	if ! cmd_exists swaylock; then
+		pkg_install swaylock || true
+		unset '_CMD_CACHE[swaylock]'
+	fi
+	if ! cmd_exists swayidle; then
+		pkg_install swayidle || true
+		unset '_CMD_CACHE[swayidle]'
+	fi
+
+	local swaylock_cfg="${user_home}/.config/swaylock/config"
+	local swayidle_cfg="${user_home}/.config/swayidle/config"
+
+	if ((!DRY_RUN)); then
+		run "mkdir -p '${user_home}/.config/swaylock' '${user_home}/.config/swayidle'"
+		# swaylock: solid black background, immediate lock, no grace period
+		if [[ ! -f "$swaylock_cfg" ]]; then
+			cat > "$swaylock_cfg" <<'EOF'
+# swaylock - privacy-hardened config (fedora-harden.sh)
+color=000000
+ignore-empty-password
+show-failed-attempts
+daemonize
+EOF
+			run "chown '${TARGET_USER}:${TARGET_USER}' '${swaylock_cfg}'"
+			ok "Wrote $swaylock_cfg"
+		else
+			info "swaylock config already exists at $swaylock_cfg — leaving intact."
+		fi
+
+		# swayidle: lock after 5 min, suspend after 10 min
+		if [[ ! -f "$swayidle_cfg" ]]; then
+			cat > "$swayidle_cfg" <<'EOF'
+# swayidle - auto-lock/suspend config (fedora-harden.sh)
+timeout 300 'swaylock -f'
+timeout 600 'systemctl suspend'
+before-sleep 'swaylock -f'
+EOF
+			run "chown '${TARGET_USER}:${TARGET_USER}' '${swayidle_cfg}'"
+			ok "Wrote $swayidle_cfg"
+		else
+			info "swayidle config already exists at $swayidle_cfg — leaving intact."
+		fi
+	else
+		info "Would write swaylock config (solid black, immediate lock) and swayidle (lock 5 min, suspend 10 min)"
+	fi
+
+	add_action_item 15 MEDIUM "SWAY_AUTOSTART_SWAYIDLE" \
+		"Add 'exec swayidle -w' to ~/.config/sway/config to autostart the idle/lock daemon on login."
+	info "GUI-only: add 'exec swayidle -w' to your sway config to activate automatic locking."
+}
+
+# ============================================================================
+#  SECTION 15e — Hyprland/i3 tiling WM settings
+# ============================================================================
+# sec_15e_hyprland_i3() - Write screen-lock idle config for Hyprland and i3
+# Hyprland: writes a hypridle.conf fragment under ~/.config/hypr/.
+# i3: appends xss-lock/i3lock autolock exec lines to ~/.config/i3/config.
+sec_15e_hyprland_i3() {
+	should_run 15 || return 0
+	(( HAS_HYPRLAND || HAS_I3 )) || return 0
+
+	if [[ -z "$TARGET_USER" ]]; then
+		warn "No target user — cannot apply per-user tiling WM settings."
+		return 0
+	fi
+
+	local user_home
+	user_home="$(eval echo "~${TARGET_USER}")"
+
+	if ((HAS_HYPRLAND)); then
+		info "=== Section 15e: Hyprland-specific screen-lock settings ==="
+		local hypridle_cfg="${user_home}/.config/hypr/hypridle.conf"
+
+		if ! cmd_exists hypridle; then
+			pkg_install hypridle 2>/dev/null || true
+			unset '_CMD_CACHE[hypridle]'
+		fi
+		if ! cmd_exists hyprlock; then
+			pkg_install hyprlock 2>/dev/null || true
+			unset '_CMD_CACHE[hyprlock]'
+		fi
+
+		if ((!DRY_RUN)); then
+			run "mkdir -p '${user_home}/.config/hypr'"
+			if [[ ! -f "$hypridle_cfg" ]]; then
+				cat > "$hypridle_cfg" <<'EOF'
+# hypridle - auto-lock config (fedora-harden.sh)
+general {
+    lock_cmd = pidof hyprlock || hyprlock
+    before_sleep_cmd = loginctl lock-session
+}
+
+listener {
+    timeout = 300
+    on-timeout = loginctl lock-session
+}
+
+listener {
+    timeout = 600
+    on-timeout = systemctl suspend
+}
+EOF
+				run "chown '${TARGET_USER}:${TARGET_USER}' '${hypridle_cfg}'"
+				ok "Wrote $hypridle_cfg"
+			else
+				info "hypridle config already exists at $hypridle_cfg — leaving intact."
+			fi
+		else
+			info "Would write hypridle.conf (lock 5 min, suspend 10 min)"
+		fi
+
+		add_action_item 15 MEDIUM "HYPRLAND_AUTOSTART_HYPRIDLE" \
+			"Add 'exec-once = hypridle' to ~/.config/hypr/hyprland.conf to autostart the idle daemon."
+	fi
+
+	if ((HAS_I3)); then
+		info "=== Section 15e: i3-specific screen-lock settings ==="
+		local i3_cfg="${user_home}/.config/i3/config"
+		local i3_cfg_d="${user_home}/.config/i3/config.d"
+
+		if ! cmd_exists xss-lock; then
+			pkg_install xss-lock 2>/dev/null || true
+			unset '_CMD_CACHE[xss-lock]'
+		fi
+		if ! cmd_exists i3lock; then
+			pkg_install i3lock 2>/dev/null || true
+			unset '_CMD_CACHE[i3lock]'
+		fi
+
+		if ((!DRY_RUN)); then
+			# Prefer a config.d drop-in to avoid clobbering the main config
+			run "mkdir -p '${i3_cfg_d}'"
+			local i3_lock_frag="${i3_cfg_d}/99-autolock.conf"
+			if [[ ! -f "$i3_lock_frag" ]]; then
+				cat > "$i3_lock_frag" <<'EOF'
+# i3 auto-lock via xss-lock + i3lock (fedora-harden.sh)
+exec --no-startup-id xss-lock --transfer-sleep-lock -- i3lock --nofork --color=000000
+exec --no-startup-id xautolock -time 5 -locker 'i3lock --color=000000'
+EOF
+				run "chown '${TARGET_USER}:${TARGET_USER}' '${i3_lock_frag}'"
+				ok "Wrote $i3_lock_frag"
+			else
+				info "i3 autolock fragment already exists at $i3_lock_frag — leaving intact."
+			fi
+			# Ensure config.d files are included in the main i3 config
+			if [[ -f "$i3_cfg" ]] && ! grep -q "config.d" "$i3_cfg" 2>/dev/null; then
+				echo -e "\n# Auto-included by fedora-harden.sh\ninclude ${i3_cfg_d}/*.conf" >> "$i3_cfg" || true
+			fi
+		else
+			info "Would write i3 autolock fragment (xss-lock + i3lock) in ${i3_cfg_d}/"
+		fi
+
+		add_action_item 15 MEDIUM "I3_LOCK_KEYBIND" \
+			"Add a manual lock keybind in i3 config: bindsym \$mod+l exec i3lock --color=000000"
+	fi
+}
+
+# ============================================================================
+#  SECTION 15f — LXQt CLI settings
+# ============================================================================
+# sec_15f_lxqt() - Apply LXQt security settings
+# Configures LXQt screensaver (idle lock) and power-management settings.
+# Covers Fedora LXQt Spin and Lazurite (LXQt Atomic).
+sec_15f_lxqt() {
+	should_run 15 || return 0
+	(( HAS_LXQT )) || return 0
+	info "=== Section 15f: LXQt-specific CLI settings ==="
+
+	if [[ -z "$TARGET_USER" ]]; then
+		warn "No target user — cannot apply per-user LXQt settings."
+		return 0
+	fi
+
+	local user_home
+	user_home="$(eval echo "~${TARGET_USER}")"
+
+	if ((!DRY_RUN)); then
+		# LXQt screensaver settings live in ~/.config/lxqt/lxqt-screensaver.conf
+		local ss_cfg="${user_home}/.config/lxqt/lxqt-screensaver.conf"
+		run "mkdir -p '${user_home}/.config/lxqt'"
+		if [[ ! -f "$ss_cfg" ]]; then
+			cat > "$ss_cfg" <<'EOF'
+[General]
+lockAfterEnable=true
+lockAfterTimeout=300
+screensaverTimeout=300
+EOF
+			run "chown '${TARGET_USER}:${TARGET_USER}' '${ss_cfg}'"
+			ok "Wrote LXQt screensaver config at $ss_cfg"
+		else
+			backup_file "$ss_cfg"
+			# Patch existing config: ensure lockAfterEnable=true and timeout=300
+			sed -i \
+				-e 's|^lockAfterEnable=.*|lockAfterEnable=true|' \
+				-e 's|^lockAfterTimeout=.*|lockAfterTimeout=300|' \
+				-e 's|^screensaverTimeout=.*|screensaverTimeout=300|' \
+				"$ss_cfg" || true
+			ok "Patched existing LXQt screensaver config at $ss_cfg"
+		fi
+
+		# LXQt power management: suspend on idle
+		local pm_cfg="${user_home}/.config/lxqt/lxqt-powermanagement.conf"
+		if [[ ! -f "$pm_cfg" ]]; then
+			cat > "$pm_cfg" <<'EOF'
+[General]
+enableIdleSuspend=true
+idleSuspendTimeout=600
+EOF
+			run "chown '${TARGET_USER}:${TARGET_USER}' '${pm_cfg}'"
+			ok "Wrote LXQt power management config at $pm_cfg"
+		fi
+	else
+		info "Would write LXQt screensaver (lock after 5 min) and power management (suspend after 10 min) config"
+	fi
+
+	info "GUI-only: verify lock settings in LXQt Settings → Screensaver and LXQt Settings → Power Management."
+}
 # ============================================================================
 # sec_16_firefox() - Harden Firefox Flatpak with arkenfox + extensions + VPN check
 # Installs Firefox Flatpak with arkenfox profiles and security extensions (uBlock Origin,
@@ -4044,6 +4563,12 @@ sec_19_services() {
 		"rsh.socket:RSH socket (unencrypted remote shell)"
 		"rlogin.socket:RLogin socket (unencrypted remote login)"
 	)
+
+	# On tiling/minimal WMs (Sway, Hyprland, i3), bluetooth is typically unwanted —
+	# note it for the user but the interactive prompt already handles it.
+	if ((HAS_SWAY || HAS_HYPRLAND || HAS_I3)); then
+		info "Tiling WM detected: consider disabling bluetooth unless you use BT peripherals."
+	fi
 	for entry in "${candidates[@]}"; do
 		svc="${entry%%:*}"
 		local desc="${entry#*:}"
@@ -4691,6 +5216,11 @@ main() {
 	sec_18_fail2ban
 	sec_15_kde
 	sec_15b_gnome
+	sec_15b2_budgie_cinnamon_mate
+	sec_15c_xfce
+	sec_15d_sway
+	sec_15e_hyprland_i3
+	sec_15f_lxqt
 	sec_16_firefox
 	sec_17_wireguard
 	sec_21_clamav
