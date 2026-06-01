@@ -3,7 +3,7 @@
 #  Fedora 44+ Security Hardening Script (multi-release + multi-desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
 #  Aligned with privacyguides.org and inteltechniques.com recommendations
-#  Efficiency-tuned and low-I/O focused (v2.5 - June 2026)
+#  Efficiency-tuned and low-I/O focused (v2.6 - June 2026)
 #
 #  FEATURES:
 #    • 23 hardening sections (plus subsection 14b) with automatic
@@ -2594,7 +2594,7 @@ usage() {
 # Usage: list_sections (called by --list flag)
 list_sections() {
 	cat <<'EOF'
-  2  System updates (incl. fwupd firmware updates + CPU microcode)
+  2  System updates (incl. fwupd firmware/microcode + hardware key support)
   3  Automatic updates
   4  SELinux tools
   5  firewalld
@@ -2917,7 +2917,7 @@ sec_02_updates() {
 		printf '%s║  • Plug in your hardware key BEFORE section 8 runs so it     ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s║    gets added to the allowlist automatically.                ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s║  • If you miss it, run afterwards:                           ║%s\n' "$C_YEL" "$C_RST"
-		printf '%s║      sudo usbguard generate-policy >> /etc/usbguard/rules.conf║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║     sudo usbguard generate-policy >> /etc/usbguard/rules.conf║%s\n' "$C_YEL" "$C_RST"
 		printf '%s║    or use the USBGuard GUI / CLI to allow the device.        ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s╚══════════════════════════════════════════════════════════════╝%s\n\n' "$C_YEL" "$C_RST"
 		add_action_item 2 HIGH "HWKEY_USBGUARD_READY" \
