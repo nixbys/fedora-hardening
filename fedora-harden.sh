@@ -9,7 +9,7 @@
 #    • Dual-mode support: mutable (dnf) and immutable (rpm-ostree) systems
 #    • Fedora release detection: Workstation, Server, IoT, Cloud, CoreOS,
 #      Kinoite, Silverblue, and Atomic desktop variants
-#    • Firefox Flatpak hardening with arkenfox + 4 security extensions
+#    • Firefox Flatpak hardening with arkenfox + 3 security extensions (uBlock, LocalCDN, Containers)
 #    • Comprehensive error handling (EXIT/ERR traps + resource cleanup)
 #    • Performance optimized: 4 caching layers, batched operations, smart waits
 #    • Session-level memoization: command, package, user home, and rpm-ostree pending layer
@@ -66,7 +66,7 @@
 #    13  Flatpak / Flathub (app sandboxing foundation)
 #    14  DNS over TLS (systemd-resolved with Quad9 + Cloudflare)
 #    15  KDE-specific CLI settings (screen lock, Bluetooth, recent documents)
-#    16  Firefox Flatpak + arkenfox + extensions (uBlock, Privacy Badger, etc.)
+#    16  Firefox Flatpak + arkenfox + extensions (uBlock Origin, LocalCDN, Multi-Account Containers) + VPN check
 #    17  WireGuard tool install (tunnel config is manual)
 #    18  Fail2Ban (intrusion detection + auto-ban)
 #    19  Disable unnecessary services (avahi, cups, bluetooth, modemmanager)
@@ -2431,7 +2431,7 @@ list_sections() {
  13  Flatpak / Flathub
  14  DNS over TLS
  15  KDE settings
- 16  Firefox Flatpak + arkenfox + extensions
+ 16  Firefox Flatpak + arkenfox + extensions (uBlock, LocalCDN, Containers) + VPN check
  17  WireGuard
  18  Fail2Ban
  19  Service trim
@@ -3163,6 +3163,10 @@ net.ipv4.icmp_ignore_bogus_error_responses = 1
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.default.accept_redirects = 0
 net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
 
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
@@ -3171,6 +3175,7 @@ net.ipv4.ip_forward = 0
 net.ipv6.conf.all.forwarding = 0
 
 net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_rfc1337 = 1
 
 # Uncomment to fully disable IPv6:
 # net.ipv6.conf.all.disable_ipv6 = 1
@@ -3413,7 +3418,7 @@ sec_14_dot() {
 		if ! cat >/etc/systemd/resolved.conf.d/99-hardening.conf <<'EOF'; then
 [Resolve]
 DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 1.1.1.1#cloudflare-dns.com
-FallbackDNS=8.8.8.8#dns.google
+FallbackDNS=149.112.112.112#dns.quad9.net
 DNSOverTLS=yes
 DNSSEC=yes
 EOF
@@ -3478,8 +3483,9 @@ sec_15_kde() {
 # ============================================================================
 #  SECTION 16 — Firefox Flatpak + arkenfox + extensions
 # ============================================================================
-# sec_16_firefox() - Harden Firefox Flatpak with arkenfox + extensions
-# Installs Firefox Flatpak with arkenfox profiles and security extensions (uBlock, Privacy Badger, etc).
+# sec_16_firefox() - Harden Firefox Flatpak with arkenfox + extensions + VPN check
+# Installs Firefox Flatpak with arkenfox profiles and security extensions (uBlock Origin,
+# LocalCDN, Multi-Account Containers). Also detects active VPN and recommends one if absent.
 sec_16_firefox() {
 	should_run 16 || return 0
 	section 16 "Firefox hardening (Flatpak preferred + arkenfox + privacy extensions)"
@@ -3593,8 +3599,7 @@ sec_16_firefox() {
     "Extensions": {
       "Install": [
         "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi",
-        "https://addons.mozilla.org/firefox/downloads/latest/privacy-badger17/latest.xpi",
-        "https://addons.mozilla.org/firefox/downloads/latest/skip-redirect/latest.xpi",
+        "https://addons.mozilla.org/firefox/downloads/latest/localcdn-fork-of-decentraleyes/latest.xpi",
         "https://addons.mozilla.org/firefox/downloads/latest/multi-account-containers/latest.xpi"
       ]
     },
@@ -3620,8 +3625,101 @@ EOF
 	fi
 
 	run "sudo -u '$ff_user' xdg-settings set default-web-browser org.mozilla.firefox.desktop || true"
-	info "Firefox hardening complete for user '$ff_user' (Flatpak + arkenfox + uBlock Origin/Privacy Badger/Skip Redirect/Multi-Account Containers policy)."
+	info "Firefox hardening complete for user '$ff_user' (Flatpak + arkenfox + uBlock Origin/LocalCDN/Multi-Account Containers policy)."
 	info "Restart Firefox to apply enterprise policy installs and arkenfox preferences."
+
+	# --- 16b: VPN detection and recommendation ---------------------------------
+	info "Checking for an active VPN connection (system or browser)..."
+	local vpn_found=0 vpn_source=""
+
+	# Check for WireGuard interfaces
+	if ip link show 2>/dev/null | grep -qE '^[0-9]+: wg[0-9]+'; then
+		vpn_found=1 vpn_source="WireGuard interface"
+	fi
+
+	# Check active NetworkManager VPN connections
+	if ! ((vpn_found)) && cmd_exists nmcli; then
+		if nmcli connection show --active 2>/dev/null | grep -qi 'vpn'; then
+			vpn_found=1 vpn_source="NetworkManager VPN"
+		fi
+	fi
+
+	# Check running VPN daemon processes
+	local _vp
+	for _vp in openvpn mullvad protonvpn; do
+		if ! ((vpn_found)) && pgrep -x "$_vp" >/dev/null 2>&1; then
+			vpn_found=1 vpn_source="$_vp process"
+		fi
+	done
+
+	# Check Mullvad CLI status if available
+	if ! ((vpn_found)) && cmd_exists mullvad; then
+		local _ms
+		_ms="$(mullvad status 2>/dev/null || true)"
+		if [[ "$_ms" == *"Connected"* ]]; then
+			vpn_found=1 vpn_source="Mullvad VPN"
+		fi
+	fi
+
+	# Check Firefox profile extensions directory for known VPN extension patterns
+	if ! ((vpn_found)) && [[ -d "$ff_root" ]]; then
+		if find "$ff_root" -maxdepth 5 \( -iname '*vpn*' -o -iname '*mullvad*' -o -iname '*proton*' -o -iname '*ivpn*' \) 2>/dev/null | grep -q .; then
+			vpn_found=1 vpn_source="browser VPN extension"
+		fi
+	fi
+
+	if ((vpn_found)); then
+		ok "VPN detected ($vpn_source) — no action needed."
+	else
+		warn "No active VPN detected on this system or in Firefox."
+		if ((!GUI_FULL_MODE)); then
+			cat <<'VPNEOF'
+
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║  VPN Recommendations (privacyguides.org + inteltechniques.com)      ║
+  ╚══════════════════════════════════════════════════════════════════════╝
+
+  All three options below are audited, open-source, no-logs VPNs. They
+  support WireGuard and accept anonymous payment methods (cash / Monero).
+  Section 17 installs wireguard-tools for use with any of these providers.
+
+  1. Mullvad VPN — https://mullvad.net
+     • No account e-mail needed; each account is a random 16-digit number
+     • Accepts cash, Monero, and other crypto; no payment record tied to identity
+     • Audited no-logs policy; open-source Linux app + browser extension
+     • Top pick by privacyguides.org AND Michael Bazzell (inteltechniques.com)
+     • Install:  flatpak install flathub net.mullvad.MullvadVpn
+       or download the native app:  https://mullvad.net/en/download/linux
+
+  2. ProtonVPN — https://protonvpn.com
+     • Based in Switzerland; independently audited no-logs; open-source apps
+     • Free tier available; strong integration with Proton Mail/Drive ecosystem
+     • Supports WireGuard, OpenVPN, and Stealth protocol (censorship bypass)
+     • Recommended by privacyguides.org
+     • Install:  flatpak install flathub com.protonvpn.desktop
+       or see:   https://protonvpn.com/support/linux-vpn-setup/
+
+  3. IVPN — https://ivpn.net
+     • No e-mail or personal info required to create an account
+     • Accepts cash and Monero; audited no-logs; multi-hop routing available
+     • Supports WireGuard + OpenVPN; includes ad/tracker blocking (AntiTracker)
+     • Recommended by privacyguides.org AND Michael Bazzell (inteltechniques.com)
+     • Install:  https://ivpn.net/apps-linux/
+
+  Quick WireGuard config (after choosing a provider):
+    sudo dnf install wireguard-tools       # section 17 handles this
+    # download provider WireGuard config, then:
+    sudo install -m 600 <provider>.conf /etc/wireguard/wg0.conf
+    sudo wg-quick up wg0
+    sudo systemctl enable wg-quick@wg0    # autostart on boot
+
+VPNEOF
+		else
+			gui_alert warning "No VPN detected.\n\nRecommended VPNs (privacyguides.org + inteltechniques.com):\n• Mullvad VPN — mullvad.net (flatpak install flathub net.mullvad.MullvadVpn)\n• ProtonVPN — protonvpn.com (flatpak install flathub com.protonvpn.desktop)\n• IVPN — ivpn.net"
+		fi
+		add_action_item 16 MEDIUM "NO_VPN_DETECTED" \
+			"No VPN detected — install Mullvad (recommended), ProtonVPN, or IVPN. See section 16b output and section 17 for WireGuard setup."
+	fi
 }
 
 # ============================================================================
@@ -3750,6 +3848,11 @@ sec_19_services() {
 		"ModemManager:Mobile broadband / 4G modem manager"
 		"iscsi:iSCSI initiator (network block storage)"
 		"iscsid:iSCSI daemon"
+		"nfs-server:NFS server (network file sharing)"
+		"rpcbind:RPC portmapper (required by NFS)"
+		"telnet.socket:Telnet socket (unencrypted remote shell)"
+		"rsh.socket:RSH socket (unencrypted remote shell)"
+		"rlogin.socket:RLogin socket (unencrypted remote login)"
 	)
 	for entry in "${candidates[@]}"; do
 		svc="${entry%%:*}"
@@ -4182,6 +4285,7 @@ final_summary() {
 			printf '  • LUKS full-disk encryption  — set during Fedora installation only.\n'
 			printf '  • GRUB password (section 6b) — run: sudo grub2-mkpasswd-pbkdf2\n'
 			printf '  • SSH keys                   — generate on CLIENT, then: ssh-copy-id user@host\n'
+			printf '  • VPN                        — if not detected in section 16b: install Mullvad, ProtonVPN, or IVPN.\n'
 			printf '  • WireGuard tunnel           — configure /etc/wireguard/wg0.conf with peer keys.\n'
 			printf '  • arkenfox overrides         — add exceptions in user-overrides.js as needed.\n'
 			printf '  • KDE GUI-only settings      — KWallet master password, Privacy, Activity.\n'
@@ -4215,6 +4319,7 @@ final_summary() {
        • LUKS full-disk encryption — set during Fedora installation only.
        • GRUB password (§6b) — run 'sudo grub2-mkpasswd-pbkdf2' manually.
        • SSH keys — generate on your CLIENT machine and ssh-copy-id to this host.
+       • VPN — if not detected in §16b: install Mullvad, ProtonVPN, or IVPN.
        • WireGuard tunnel — edit /etc/wireguard/wg0.conf with your peer keys.
        • Review arkenfox defaults and add local exceptions in user-overrides.js as needed.
        • KDE GUI-only settings: KWallet master password, Privacy, Activity tracking.
