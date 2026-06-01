@@ -2,14 +2,23 @@
 # =============================================================================
 #  Fedora 44+ Security Hardening Script (multi-release + desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
-#  Efficiency-tuned and low-I/O focused (v1.9 - May 2026)
+#  Aligned with privacyguides.org and inteltechniques.com recommendations
+#  Efficiency-tuned and low-I/O focused (v2.0 - June 2026)
 #
 #  FEATURES:
-#    • 21 hardening sections with automatic release/profile detection
+#    • 22 hardening sections (plus subsections 14b, 15b) with automatic
+#      release/profile detection
 #    • Dual-mode support: mutable (dnf) and immutable (rpm-ostree) systems
 #    • Fedora release detection: Workstation, Server, IoT, Cloud, CoreOS,
 #      Kinoite, Silverblue, and Atomic desktop variants
+#    • KDE Plasma and GNOME desktop environment support with per-DE privacy
+#      and screen-lock settings (CLI-configurable via kwriteconfig6/gsettings)
 #    • Firefox Flatpak hardening with arkenfox + 3 security extensions (uBlock, LocalCDN, Containers)
+#    • VPN detection (WireGuard, NetworkManager, Mullvad, ProtonVPN) with
+#      recommendations when absent (Mullvad/ProtonVPN/IVPN per privacyguides.org)
+#    • Firmware and CPU microcode updates via fwupd (privacyguides.org)
+#    • NetworkManager MAC address randomization (privacyguides.org network privacy)
+#    • IPv6 privacy extensions (RFC 4941 temporary addresses)
 #    • Comprehensive error handling (EXIT/ERR traps + resource cleanup)
 #    • Performance optimized: 4 caching layers, batched operations, smart waits
 #    • Session-level memoization: command, package, user home, and rpm-ostree pending layer
@@ -52,7 +61,7 @@
 #    -h, --help             Show this help and exit
 #
 #  SECTIONS (execution order optimized for dependency flow):
-#     2  System updates
+#     2  System updates (dnf upgrade + fwupd firmware/microcode install)
 #     3  Automatic updates (dnf5-automatic or rpm-ostreed)
 #     4  SELinux verification + tools
 #     5  firewalld hardening (drop-default policy)
@@ -60,24 +69,30 @@
 #     7  SSH hardening (key-based auth, hardened cipher suite)
 #     8  USBGuard (interactive — can lock out input devices if misconfigured)
 #     9  Password & PAM policy (pwquality, faillock, account aging)
-#    10  Kernel sysctl hardening (network, VM, filesystem protections)
-#    11  auditd rules (identity, privilege escalation, kernel module tracking)
+#    10  Kernel sysctl hardening (network, VM, filesystem, IPv6 privacy extensions)
+#    11  auditd rules (identity, privilege escalation, module tracking,
+#        time/network-config/mount/delete syscall coverage)
 #    12  rkhunter + AIDE (rootkit detection + file integrity monitoring)
-#    13  Flatpak / Flathub (app sandboxing foundation)
+#    13  Flatpak / Flathub (app sandboxing foundation) + optional Firejail
 #    14  DNS over TLS (systemd-resolved with Quad9 + Cloudflare)
+#   14b  NetworkManager MAC address randomization (network-layer privacy)
 #    15  KDE-specific CLI settings (screen lock, Bluetooth, recent documents)
-#    16  Firefox Flatpak + arkenfox + extensions (uBlock Origin, LocalCDN, Multi-Account Containers) + VPN check
-#    17  WireGuard tool install (tunnel config is manual)
+#   15b  GNOME-specific CLI settings (screen lock, location, privacy, recent files)
+#    16  Firefox Flatpak + arkenfox + extensions (uBlock Origin, LocalCDN,
+#        Multi-Account Containers) + VPN detection + recommendations
+#    17  WireGuard tool install (tunnel config is manual; autostart guidance)
 #    18  Fail2Ban (intrusion detection + auto-ban)
 #    19  Disable unnecessary services (avahi, cups, bluetooth, modemmanager)
-#    20  File permission hardening (shadow files, /tmp, compiler access)
-#    21  ClamAV install + freshclam (antivirus engine + signature updates)
+#    20  File permission hardening (shadow files, /tmp, compiler access,
+#        umask 077, core dump limits, hostname privacy check)
+#    21  ClamAV install + freshclam + on-access scanning for /home
 #    22  OpenSCAP scanner install + initial scan (compliance framework)
 #
 #  SECTIONS NOT AUTOMATED (by design):
 #     1  LUKS — must be chosen during Anaconda install
-#     6b GRUB password — requires interactive grub2-mkpasswd-pbkdf2
+#    6b  GRUB password — requires interactive grub2-mkpasswd-pbkdf2
 #    15  KDE GUI-only screens (Privacy, KWallet master password, Activity tracking)
+#   15b  GNOME GUI-only screens (Online Accounts, Sharing, Bluetooth)
 #    17  WireGuard tunnel config (requires peer keys & endpoint configuration)
 #    23  Ongoing maintenance checklist (scheduled human task)
 #
@@ -88,7 +103,7 @@
 #    ✓ Fedora Cloud (mutable images/variants)
 #    ✓ Fedora CoreOS (immutable, rpm-ostree)
 #    ✓ Fedora Kinoite (immutable, rpm-ostree + KDE)
-#    ✓ Fedora Silverblue (immutable, rpm-ostree)
+#    ✓ Fedora Silverblue (immutable, rpm-ostree + GNOME)
 #    Auto-detection: Reads /etc/os-release metadata + /run/ostree-booted
 #    Desktop detection: session and installed tooling/packages (KDE/GNOME/Sway)
 #
@@ -184,7 +199,7 @@ DESKTOP_ENVS=""          # Comma-separated list of detected desktop environments
 FEDORA_VARIANT="unknown" # Human-readable Fedora variant name
 FEDORA_MAJOR=0           # Fedora major version number
 UI_SECTION_DONE=0        # Count of completed sections for progress tracking
-UI_SECTION_TOTAL=21      # Total hardening sections to execute
+UI_SECTION_TOTAL=22      # Total hardening sections to execute
 
 # Error tracking & remediation infrastructure
 ERROR_LOG=""                         # Structured error log file path
@@ -2649,18 +2664,21 @@ preflight() {
 # ============================================================================
 #  SECTION 2 — System updates
 # ============================================================================
-# sec_02_updates() - Perform full system package updates (dnf upgrade)
-# Ensures all system packages are current. For rpm-ostree systems, stages updates
-# for next boot. Recommends reboot after completion.
+# sec_02_updates() - Perform full system package updates plus firmware/microcode
+# Runs dnf upgrade (or rpm-ostree update on immutable systems). Also installs fwupd
+# for firmware updates (privacyguides.org) and ensures CPU microcode is current
+# (Intel: microcode_ctl; AMD: linux-firmware) to patch Spectre/Meltdown and similar.
+# Recommends reboot after completion.
 sec_02_updates() {
 	should_run 2 || return 0
 	section 2 "System updates"
 	pkg_upgrade
 	ok "System packages updated. A reboot is recommended when the script finishes."
 
-	# Install fwupd for firmware/microcode updates (privacyguides.org recommendation)
+	# Install fwupd for firmware updates and check for available updates (privacyguides.org)
 	if ! cmd_exists fwupdmgr; then
 		pkg_install fwupd
+		unset '_CMD_CACHE[fwupdmgr]' # Invalidate stale cache after install
 	fi
 	if cmd_exists fwupdmgr; then
 		info "Refreshing fwupd metadata and checking for firmware updates..."
@@ -3261,7 +3279,9 @@ EOF
 #  SECTION 11 — auditd
 # ============================================================================
 # sec_11_auditd() - Configure auditd audit rules
-# Tracks identity, privilege escalation, kernel module loading for compliance.
+# Tracks identity changes, privilege escalation, kernel module loading, time
+# changes, network configuration edits, filesystem mounts, and file deletions
+# per inteltechniques.com recommendations. Covers NIST/CIS baseline events.
 sec_11_auditd() {
 	should_run 11 || return 0
 	section 11 "auditd rules"
@@ -3443,7 +3463,9 @@ CRONEOF
 #  SECTION 13 — Flatpak / Flathub
 # ============================================================================
 # sec_13_flatpak() - Configure Flatpak for app sandboxing
-# Installs Flatpak and sets Flathub for containerized application support.
+# Installs Flatpak, adds Flathub, and offers Flatseal for permission management.
+# Optionally installs Firejail for sandboxing non-Flatpak applications
+# (inteltechniques.com recommendation); runs firecfg for desktop integration.
 sec_13_flatpak() {
 	should_run 13 || return 0
 	section 13 "Flatpak + Flathub"
@@ -3461,6 +3483,7 @@ sec_13_flatpak() {
 	# Optional: Firejail for sandboxing non-Flatpak apps (inteltechniques.com recommendation)
 	if confirm "Install Firejail (sandbox non-Flatpak applications)?"; then
 		pkg_install firejail
+		unset '_CMD_CACHE[firecfg]' # Invalidate stale cache after install
 		if cmd_exists firecfg; then
 			info "Running firecfg to create desktop integration symlinks..."
 			run "firecfg || true"
@@ -3472,17 +3495,21 @@ sec_13_flatpak() {
 # ============================================================================
 #  SECTION 14 — DNS over TLS
 # ============================================================================
-# sec_14_dot() - Configure DNS over TLS (DoT)
-# Sets systemd-resolved to use Quad9 and Cloudflare DNS with TLS encryption.
+# sec_14_dot() - Configure DNS over TLS (DoT) + NetworkManager MAC randomization
+# Sets systemd-resolved to use Quad9 and Cloudflare DNS with TLS encryption and
+# DNSSEC validation. Also writes a NetworkManager drop-in (14b) to randomize MAC
+# addresses for Wi-Fi scans and connections, and for Ethernet — per
+# privacyguides.org network-layer privacy guidance.
 sec_14_dot() {
 	should_run 14 || return 0
 	section 14 "DNS over TLS via systemd-resolved"
-	local cfg="/etc/systemd/resolved.conf"
-	backup_file "$cfg"
+	local dropin_dir="/etc/systemd/resolved.conf.d"
+	local dropin="${dropin_dir}/99-hardening.conf"
+	# Back up the drop-in if it already exists (not the base file, which we don't touch)
+	[[ -f "$dropin" ]] && backup_file "$dropin"
 	if ((!DRY_RUN)); then
-		# Write a drop-in instead of clobbering the main file.
-		install -d -m 755 /etc/systemd/resolved.conf.d 2>/dev/null || true
-		if ! cat >/etc/systemd/resolved.conf.d/99-hardening.conf <<'EOF'; then
+		install -d -m 755 "$dropin_dir" 2>/dev/null || true
+		if ! cat >"$dropin" <<'EOF'; then
 [Resolve]
 DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 1.1.1.1#cloudflare-dns.com
 FallbackDNS=149.112.112.112#dns.quad9.net
@@ -3492,7 +3519,7 @@ EOF
 			err "Failed to write DNS-over-TLS configuration"
 			return 1
 		fi
-		ok "Wrote /etc/systemd/resolved.conf.d/99-hardening.conf"
+		ok "Wrote $dropin"
 	fi
 	run "systemctl restart systemd-resolved"
 	run "resolvectl status | head -25 || true"
@@ -3575,6 +3602,15 @@ sec_15_kde() {
 # ============================================================================
 # sec_15b_gnome() - Apply GNOME-specific security settings
 # Configures screen lock, privacy settings, and disables location services via gsettings.
+# ============================================================================
+#  SECTION 15b — GNOME-specific CLI settings
+# ============================================================================
+# sec_15b_gnome() - Apply GNOME-specific privacy and screen-lock settings
+# Uses gsettings to configure screen lock (idle 5 min, lock on suspend),
+# disable location services, remove old temp/trash files, disable recent-files
+# tracking, and suppress usage telemetry — for privacy per privacyguides.org.
+# Skips silently if GNOME is not detected or no TARGET_USER is set.
+# GUI-only settings (Online Accounts, Sharing, Bluetooth) are noted as manual.
 sec_15b_gnome() {
 	should_run 15 || return 0
 	if ((!HAS_GNOME)); then
@@ -3589,24 +3625,30 @@ sec_15b_gnome() {
 
 	info "Applying GNOME privacy and screen-lock settings for $TARGET_USER..."
 
-	# Screen lock after 5 minutes idle, lock on suspend
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.session idle-delay 300 || true"
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.screensaver lock-enabled true || true"
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.screensaver lock-delay 0 || true"
-
-	# Privacy: disable location services, remove old temp files, usage data
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.system.location enabled false || true"
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy remove-old-temp-files true || true"
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy remove-old-trash-files true || true"
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy old-files-age 7 || true"
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy send-software-usage-stats false || true"
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy report-technical-problems false || true"
-
-	# Disable recent files tracking
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy remember-recent-files false || true"
-
-	# Disable automatic screen cast / microphone indicator if supported
-	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy disable-microphone false || true"
+	# Batch all gsettings calls into a single sudo invocation (8→1 process spawns)
+	if ((!DRY_RUN)); then
+		log "[RUN]   sudo -u '$TARGET_USER' bash -c 'gsettings batch for GNOME privacy'"
+		sudo -u "$TARGET_USER" bash -c '
+			# Screen lock: idle after 5 minutes, lock immediately on suspend
+			gsettings set org.gnome.desktop.session idle-delay 300
+			gsettings set org.gnome.desktop.screensaver lock-enabled true
+			gsettings set org.gnome.desktop.screensaver lock-delay 0
+			# Location services: off
+			gsettings set org.gnome.system.location enabled false
+			# Remove old temp/trash files after 7 days; suppress usage telemetry
+			gsettings set org.gnome.desktop.privacy remove-old-temp-files true
+			gsettings set org.gnome.desktop.privacy remove-old-trash-files true
+			gsettings set org.gnome.desktop.privacy old-files-age 7
+			gsettings set org.gnome.desktop.privacy send-software-usage-stats false
+			gsettings set org.gnome.desktop.privacy report-technical-problems false
+			# Disable recent-files tracking
+			gsettings set org.gnome.desktop.privacy remember-recent-files false
+			# Disable microphone (privacy — mute hardware mic by default)
+			gsettings set org.gnome.desktop.privacy disable-microphone true
+		' 2>/dev/null || true
+	else
+		info "Would apply GNOME gsettings: screen lock, location off, privacy, recent-files off, mic off"
+	fi
 
 	ok "GNOME privacy and screen-lock settings applied."
 	info "Remaining GNOME GUI tweaks: Online Accounts, Sharing, and Bluetooth — configure in GNOME Settings."
@@ -3859,6 +3901,15 @@ VPNEOF
 # ============================================================================
 # sec_17_wireguard() - Install WireGuard VPN tools
 # Installs WireGuard CLI; tunnel configuration is manual task.
+# ============================================================================
+#  SECTION 17 — WireGuard
+# ============================================================================
+# sec_17_wireguard() - Install WireGuard tools and print quick-start guide
+# Installs wireguard-tools (wg, wg-quick). Tunnel configuration is intentionally
+# left manual since it requires provider-specific keys and endpoints. Prints a
+# concise setup guide covering key generation, config install (chmod 600),
+# wg-quick bring-up, and systemd autostart (wg-quick@wg0). Adds an action item
+# reminding the user to complete tunnel configuration.
 sec_17_wireguard() {
 	should_run 17 || return 0
 	section 17 "WireGuard (tools only — tunnel config is manual)"
@@ -4095,8 +4146,11 @@ EOF
 # ============================================================================
 #  SECTION 21 — ClamAV
 # ============================================================================
-# sec_21_clamav() - Install ClamAV antivirus
-# Installs ClamAV engine and freshclam for signature updates and scanning.
+# sec_21_clamav() - Install ClamAV antivirus with on-access scanning
+# Installs ClamAV engine, clamd daemon, and freshclam for signature updates.
+# Enables clamav-freshclam for automatic daily database updates and clamd@scan
+# for real-time scanning. Configures on-access scanning for /home directories
+# in /etc/clamd.d/scan.conf per inteltechniques.com recommendation.
 sec_21_clamav() {
 	should_run 21 || return 0
 	section 21 "ClamAV antivirus"
