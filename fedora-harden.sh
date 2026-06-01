@@ -730,14 +730,15 @@ _load_ostree_staged_packages() {
 			warn "Failed to query rpm-ostree staged packages"
 			return 1
 		fi
-		echo "$out" | awk '
+		# Use a here-string to avoid a fork for the echo process.
+		awk '
             /LayeredPackages:/ {
                 sub(/.*LayeredPackages:[[:space:]]*/, "", $0)
                 for (i=1; i<=NF; i++) {
                     if ($i !~ /^\(/) print $i
                 }
             }
-        '
+        ' <<<"$out"
 	)
 }
 
@@ -1137,10 +1138,9 @@ detect_desktop_envs() {
 	fi
 
 	((HAS_KDE || HAS_GNOME || ${#detected[@]} > 0)) && HAS_DESKTOP=1
-	DESKTOP_ENVS="$(
-		IFS=,
-		echo "${detected[*]}"
-	)"
+	# Join detected desktop names with commas using a local IFS — avoids a subshell fork.
+	local IFS=','
+	DESKTOP_ENVS="${detected[*]:-}"
 }
 
 # section_compatible() - Check if a section is compatible with current system.
@@ -1570,9 +1570,13 @@ list_sessions_cmd() {
 		for f in "$SESSION_DIR"/session-*.txt; do
 			[[ -f "$f" ]] || continue
 			((found++))
-			local session_id status
-			session_id="$(awk '/^Session:/{print $2; exit}' "$f" 2>/dev/null || echo unknown)"
-			status="$(awk '/^Status:/{print $2; exit}' "$f" 2>/dev/null || echo unknown)"
+			# Single awk pass extracts both Session and Status fields to avoid reading the file twice.
+			local session_id status _awk_out
+			_awk_out="$(awk '/^Session:/{sid=$2} /^Status:/{sts=$2} END{print (sid?sid:"unknown"), (sts?sts:"unknown")}' "$f" 2>/dev/null || true)"
+			session_id="${_awk_out%% *}"
+			status="${_awk_out##* }"
+			[[ -z "$session_id" ]] && session_id="unknown"
+			[[ -z "$status" ]] && status="unknown"
 			seen_stamps["$session_id"]=1
 			case "$status" in
 			completed) printf '  %s[✓]%s %s  (completed)\n' "$C_GRN" "$C_RST" "$session_id" ;;
@@ -2068,6 +2072,10 @@ rollback_all_sessions() {
 	info "A system reboot is strongly recommended to finalize all rollback changes."
 	return 0
 }
+# get_user_downloads_dir() - Resolve the XDG Downloads directory for the target user.
+# Uses xdg-user-dir if available; falls back to ~/Downloads.
+# Returns 1 (prints nothing) when no valid non-root target user is configured.
+# Usage: get_user_downloads_dir
 get_user_downloads_dir() {
 	local user="${TARGET_USER:-${SUDO_USER:-}}"
 	[[ -z "$user" || "$user" == "root" ]] && return 1
@@ -2850,10 +2858,6 @@ sec_05_firewalld() {
 	done
 	((attempt >= max_attempts)) && warn "firewalld failed to become ready; proceeding anyway"
 
-	# Cache firewall services list to avoid repeated calls
-	local FIREWALL_SERVICES
-	FIREWALL_SERVICES="$(firewall-cmd --get-services 2>/dev/null || true)"
-
 	# Set default zone and configure services (batch permanent operations)
 	info "Setting default zone to 'drop'..."
 	run "firewall-cmd --set-default-zone=drop"
@@ -2863,10 +2867,11 @@ sec_05_firewalld() {
 		services_to_allow+=("mdns")
 	fi
 	# kde-connect is KDE-specific and requires a custom service XML (not built-in to firewalld).
+	# firewalld_ensure_service queries firewall-cmd --get-services internally, so no pre-caching needed.
 	if ((HAS_KDE)); then
 		if confirm "Allow 'kde-connect' through the firewall?"; then
 			firewalld_ensure_service "kde-connect" "KDE Connect" \
-				"1714-1764/tcp" "1714-1764/udp" "$FIREWALL_SERVICES"
+				"1714-1764/tcp" "1714-1764/udp"
 			services_to_allow+=("kde-connect")
 		fi
 	fi
@@ -3824,16 +3829,13 @@ sec_21_clamav() {
 		fi
 		# Collect status output safely
 		{
-			echo "=== Section 21: ClamAV Report ==="
-			echo "Generated: $RUN_STAMP_HUMAN"
-			echo ""
-			echo "--- clamav-freshclam status ---"
+			printf '=== Section 21: ClamAV Report ===\n'
+			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
+			printf '--- clamav-freshclam status ---\n'
 			systemctl status clamav-freshclam --no-pager 2>&1 || true
-			echo ""
-			echo "--- clamd@scan status ---"
+			printf '\n--- clamd@scan status ---\n'
 			systemctl status clamd@scan --no-pager 2>&1 || systemctl status clamd@scan.service --no-pager 2>&1 || true
-			echo ""
-			echo "--- ClamAV version / DB ---"
+			printf '\n--- ClamAV version / DB ---\n'
 			clamscan --version 2>&1 || true
 			freshclam --version 2>&1 || true
 		} | write_user_report "section-21-clamav-${REPORT_DATE}.txt" || true
