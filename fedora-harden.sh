@@ -6,7 +6,7 @@
 #  Efficiency-tuned and low-I/O focused (v2.5 - June 2026)
 #
 #  FEATURES:
-#    • 22 hardening sections (plus subsection 14b) with automatic
+#    • 23 hardening sections (plus subsection 14b) with automatic
 #      release/profile detection
 #    • Dual-mode support: mutable (dnf) and immutable (rpm-ostree) systems
 #    • Fedora release detection: Workstation, Server, IoT, Cloud, CoreOS,
@@ -21,6 +21,8 @@
 #    • Firmware and CPU microcode updates via fwupd (privacyguides.org)
 #    • NetworkManager MAC address randomization (privacyguides.org network privacy)
 #    • IPv6 privacy extensions (RFC 4941 temporary addresses)
+#    • Rootless Podman + Toolbox containerized-mindset setup (image policy, seccomp,
+#      no-new-privileges, subuid/subgid, unqualified-registry block)
 #    • Comprehensive error handling (EXIT/ERR traps + resource cleanup)
 #    • Performance optimized: 4 caching layers, batched operations, smart waits
 #    • Session-level memoization: command, package, user home, and rpm-ostree pending layer
@@ -63,7 +65,8 @@
 #    -h, --help             Show this help and exit
 #
 #  SECTIONS (execution order optimized for dependency flow):
-#     2  System updates (dnf upgrade + fwupd firmware/microcode install)
+#     2  System updates (dnf upgrade + fwupd firmware/microcode install
+#        + optional hardware security key support: YubiKey/FIDO2/PIV/pam-u2f)
 #     3  Automatic updates (dnf5-automatic or rpm-ostreed)
 #     4  SELinux verification + tools
 #     5  firewalld hardening (drop-default policy)
@@ -98,6 +101,9 @@
 #        umask 077, core dump limits, hostname privacy check)
 #    21  ClamAV install + freshclam + on-access scanning for /home
 #    22  OpenSCAP scanner install + initial scan (compliance framework)
+#    23  Container security — rootless Podman + Toolbox (containerized-mindset setup:
+#        image policy hardening, no-new-privileges, seccomp, subuid/subgid,
+#        unqualified-registry block, optional buildah/skopeo/podman-compose)
 #
 #  SECTIONS NOT AUTOMATED (by design):
 #     1  LUKS — must be chosen during Anaconda install
@@ -239,7 +245,7 @@ DESKTOP_ENVS=""          # Comma-separated list of detected desktop environments
 FEDORA_VARIANT="unknown" # Human-readable Fedora variant name
 FEDORA_MAJOR=0           # Fedora major version number
 UI_SECTION_DONE=0        # Count of completed sections for progress tracking
-UI_SECTION_TOTAL=22      # Total hardening sections to execute
+UI_SECTION_TOTAL=23      # Total hardening sections to execute
 
 # Error tracking & remediation infrastructure
 ERROR_LOG=""                         # Structured error log file path
@@ -374,7 +380,7 @@ setup_ui_mode() {
 # calc_section_total() - Estimate number of sections that will run for progress display.
 # Uses current --only/--skip filters against the fixed execution plan.
 calc_section_total() {
-	local planned=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 12 19 20 8)
+	local planned=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 23 12 19 20 8)
 	local s n=0
 	for s in "${planned[@]}"; do
 		[[ -n "$ONLY_LIST" ]] && ! in_list "$s" "$ONLY_LIST" && continue
@@ -1149,38 +1155,38 @@ detect_fedora_release_type() {
 
 	# Official Fedora variants
 	[[ "$release_blob" == *"workstation"* ]] && IS_WORKSTATION=1
-	[[ "$release_blob" == *"server"*      ]] && IS_SERVER=1
-	[[ "$release_blob" == *"kinoite"*     ]] && IS_KINOITE=1
-	[[ "$release_blob" == *"silverblue"*  ]] && IS_SILVERBLUE=1
-	[[ "$release_blob" == *"onyx"*        ]] && IS_ONYX=1
-	[[ "$release_blob" == *"sericea"*     ]] && IS_SERICEA=1
-	[[ "$release_blob" == *"lazurite"*    ]] && IS_LAZURITE=1
-	[[ "$release_blob" == *"vauxite"*     ]] && IS_VAUXITE=1
-	[[ "$release_blob" == *"iot"*         ]] && IS_IOT=1
-	[[ "$release_blob" == *"cloud"*       ]] && IS_CLOUD=1
-	[[ "$release_blob" == *"coreos"*      ]] && IS_COREOS=1
+	[[ "$release_blob" == *"server"* ]] && IS_SERVER=1
+	[[ "$release_blob" == *"kinoite"* ]] && IS_KINOITE=1
+	[[ "$release_blob" == *"silverblue"* ]] && IS_SILVERBLUE=1
+	[[ "$release_blob" == *"onyx"* ]] && IS_ONYX=1
+	[[ "$release_blob" == *"sericea"* ]] && IS_SERICEA=1
+	[[ "$release_blob" == *"lazurite"* ]] && IS_LAZURITE=1
+	[[ "$release_blob" == *"vauxite"* ]] && IS_VAUXITE=1
+	[[ "$release_blob" == *"iot"* ]] && IS_IOT=1
+	[[ "$release_blob" == *"cloud"* ]] && IS_CLOUD=1
+	[[ "$release_blob" == *"coreos"* ]] && IS_COREOS=1
 
 	# Universal Blue / community remixes
 	if [[ "$release_blob" == *"bazzite"* ]]; then
 		IS_BAZZITE=1
 		IS_GAMING_SPIN=1
 	fi
-	if [[ "$release_blob" == *"aurora"* && "$release_blob" == *"universal blue"* ]] || \
-	   [[ "${ID:-}" == "aurora" ]] || [[ "${VARIANT_ID:-}" == "aurora" ]]; then
+	if [[ "$release_blob" == *"aurora"* && "$release_blob" == *"universal blue"* ]] ||
+		[[ "${ID:-}" == "aurora" ]] || [[ "${VARIANT_ID:-}" == "aurora" ]]; then
 		IS_AURORA=1
 	fi
 	# Generic Universal Blue detection (bluefin, aurora, etc. share a common base)
-	if [[ "${ID_LIKE:-}" == *"fedora"* ]] && \
-	   [[ "$release_blob" == *"universal blue"* || "$release_blob" == *"bluefin"* || \
-	      "$release_blob" == *"aurora"* ]]; then
+	if [[ "${ID_LIKE:-}" == *"fedora"* ]] &&
+		[[ "$release_blob" == *"universal blue"* || "$release_blob" == *"bluefin"* ||
+			"$release_blob" == *"aurora"* ]]; then
 		IS_AURORA=1
 	fi
 
 	# Fedora Atomic desktops: Kinoite, Silverblue, Onyx, Sericea, Lazurite, Vauxite,
 	# and any other Fedora Atomic variant
-	if ((IS_KINOITE || IS_SILVERBLUE || IS_ONYX || IS_SERICEA || IS_LAZURITE || IS_VAUXITE)) || \
-	   ((IS_BAZZITE || IS_AURORA)) || \
-	   [[ "$release_blob" == *"atomic"* && "$release_blob" == *"fedora"* ]]; then
+	if ((IS_KINOITE || IS_SILVERBLUE || IS_ONYX || IS_SERICEA || IS_LAZURITE || IS_VAUXITE)) ||
+		((IS_BAZZITE || IS_AURORA)) ||
+		[[ "$release_blob" == *"atomic"* && "$release_blob" == *"fedora"* ]]; then
 		IS_ATOMIC_DESKTOP=1
 	fi
 }
@@ -1195,78 +1201,114 @@ detect_desktop_envs() {
 
 	# ── Running session hints ────────────────────────────────────────────────
 	if [[ "$xdg_blob" == *"kde"* || "$xdg_blob" == *"plasma"* ]]; then
-		HAS_KDE=1; [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+		HAS_KDE=1
+		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
 	fi
 	if [[ "$xdg_blob" == *"gnome"* ]]; then
-		HAS_GNOME=1; [[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+		HAS_GNOME=1
+		[[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
 	fi
 	if [[ "$xdg_blob" == *"budgie"* ]]; then
-		HAS_BUDGIE=1; [[ ",${detected[*]}," == *",budgie,"* ]] || detected+=("budgie")
+		HAS_BUDGIE=1
+		[[ ",${detected[*]}," == *",budgie,"* ]] || detected+=("budgie")
 	fi
 	if [[ "$xdg_blob" == *"cinnamon"* ]]; then
-		HAS_CINNAMON=1; [[ ",${detected[*]}," == *",cinnamon,"* ]] || detected+=("cinnamon")
+		HAS_CINNAMON=1
+		[[ ",${detected[*]}," == *",cinnamon,"* ]] || detected+=("cinnamon")
 	fi
 	if [[ "$xdg_blob" == *"mate"* ]]; then
-		HAS_MATE=1; [[ ",${detected[*]}," == *",mate,"* ]] || detected+=("mate")
+		HAS_MATE=1
+		[[ ",${detected[*]}," == *",mate,"* ]] || detected+=("mate")
 	fi
 	if [[ "$xdg_blob" == *"xfce"* ]]; then
-		HAS_XFCE=1; [[ ",${detected[*]}," == *",xfce,"* ]] || detected+=("xfce")
+		HAS_XFCE=1
+		[[ ",${detected[*]}," == *",xfce,"* ]] || detected+=("xfce")
 	fi
 	if [[ "$xdg_blob" == *"lxqt"* ]]; then
-		HAS_LXQT=1; [[ ",${detected[*]}," == *",lxqt,"* ]] || detected+=("lxqt")
+		HAS_LXQT=1
+		[[ ",${detected[*]}," == *",lxqt,"* ]] || detected+=("lxqt")
 	fi
 	if [[ "$xdg_blob" == *"sway"* ]]; then
-		HAS_SWAY=1; [[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+		HAS_SWAY=1
+		[[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
 	fi
 	if [[ "$xdg_blob" == *"hyprland"* ]]; then
-		HAS_HYPRLAND=1; [[ ",${detected[*]}," == *",hyprland,"* ]] || detected+=("hyprland")
+		HAS_HYPRLAND=1
+		[[ ",${detected[*]}," == *",hyprland,"* ]] || detected+=("hyprland")
 	fi
 	if [[ "$xdg_blob" == *"i3"* ]]; then
-		HAS_I3=1; [[ ",${detected[*]}," == *",i3,"* ]] || detected+=("i3")
+		HAS_I3=1
+		[[ ",${detected[*]}," == *",i3,"* ]] || detected+=("i3")
 	fi
 
 	# ── Installed-package / command hints ────────────────────────────────────
 	if cmd_exists kwriteconfig6 || cmd_exists kwriteconfig5 || pkg_cached plasma-workspace; then
-		HAS_KDE=1; [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+		HAS_KDE=1
+		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
 	fi
 	if cmd_exists gnome-shell || pkg_cached gnome-shell || pkg_cached gnome-session; then
-		HAS_GNOME=1; [[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+		HAS_GNOME=1
+		[[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
 	fi
 	if pkg_cached budgie-desktop || pkg_cached budgie-desktop-view; then
-		HAS_BUDGIE=1; [[ ",${detected[*]}," == *",budgie,"* ]] || detected+=("budgie")
+		HAS_BUDGIE=1
+		[[ ",${detected[*]}," == *",budgie,"* ]] || detected+=("budgie")
 	fi
 	if cmd_exists cinnamon || pkg_cached cinnamon; then
-		HAS_CINNAMON=1; [[ ",${detected[*]}," == *",cinnamon,"* ]] || detected+=("cinnamon")
+		HAS_CINNAMON=1
+		[[ ",${detected[*]}," == *",cinnamon,"* ]] || detected+=("cinnamon")
 	fi
 	if cmd_exists mate-session || pkg_cached mate-session-manager; then
-		HAS_MATE=1; [[ ",${detected[*]}," == *",mate,"* ]] || detected+=("mate")
+		HAS_MATE=1
+		[[ ",${detected[*]}," == *",mate,"* ]] || detected+=("mate")
 	fi
 	if cmd_exists xfce4-session || pkg_cached xfce4-session; then
-		HAS_XFCE=1; [[ ",${detected[*]}," == *",xfce,"* ]] || detected+=("xfce")
+		HAS_XFCE=1
+		[[ ",${detected[*]}," == *",xfce,"* ]] || detected+=("xfce")
 	fi
 	if cmd_exists startlxqt || pkg_cached lxqt-session; then
-		HAS_LXQT=1; [[ ",${detected[*]}," == *",lxqt,"* ]] || detected+=("lxqt")
+		HAS_LXQT=1
+		[[ ",${detected[*]}," == *",lxqt,"* ]] || detected+=("lxqt")
 	fi
 	if cmd_exists sway || pkg_cached sway; then
-		HAS_SWAY=1; [[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+		HAS_SWAY=1
+		[[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
 	fi
 	if cmd_exists Hyprland || cmd_exists hyprland || pkg_cached hyprland; then
-		HAS_HYPRLAND=1; [[ ",${detected[*]}," == *",hyprland,"* ]] || detected+=("hyprland")
+		HAS_HYPRLAND=1
+		[[ ",${detected[*]}," == *",hyprland,"* ]] || detected+=("hyprland")
 	fi
 	if cmd_exists i3 || pkg_cached i3; then
-		HAS_I3=1; [[ ",${detected[*]}," == *",i3,"* ]] || detected+=("i3")
+		HAS_I3=1
+		[[ ",${detected[*]}," == *",i3,"* ]] || detected+=("i3")
 	fi
 
 	# Sericea and Lazurite Atomic spins imply their respective DEs
-	((IS_SERICEA)) && { HAS_SWAY=1; [[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway"); }
-	((IS_LAZURITE)) && { HAS_LXQT=1; [[ ",${detected[*]}," == *",lxqt,"* ]] || detected+=("lxqt"); }
-	((IS_VAUXITE)) && { HAS_XFCE=1; [[ ",${detected[*]}," == *",xfce,"* ]] || detected+=("xfce"); }
+	((IS_SERICEA)) && {
+		HAS_SWAY=1
+		[[ ",${detected[*]}," == *",sway,"* ]] || detected+=("sway")
+	}
+	((IS_LAZURITE)) && {
+		HAS_LXQT=1
+		[[ ",${detected[*]}," == *",lxqt,"* ]] || detected+=("lxqt")
+	}
+	((IS_VAUXITE)) && {
+		HAS_XFCE=1
+		[[ ",${detected[*]}," == *",xfce,"* ]] || detected+=("xfce")
+	}
 	# Onyx is GNOME Atomic; Kinoite/Aurora are KDE
-	((IS_ONYX)) && { HAS_GNOME=1; [[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome"); }
-	((IS_AURORA)) && { HAS_KDE=1; [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde"); }
+	((IS_ONYX)) && {
+		HAS_GNOME=1
+		[[ ",${detected[*]}," == *",gnome,"* ]] || detected+=("gnome")
+	}
+	((IS_AURORA)) && {
+		HAS_KDE=1
+		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+	}
 	# Bazzite ships both KDE and GNOME editions — honour running session above; default to KDE
 	if ((IS_BAZZITE)) && ((!HAS_KDE && !HAS_GNOME)); then
-		HAS_KDE=1; [[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
+		HAS_KDE=1
+		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
 	fi
 
 	((${#detected[@]} > 0)) && HAS_DESKTOP=1
@@ -2583,9 +2625,10 @@ list_sections() {
  20  File permissions (incl. umask 077, core dump limits, hostname privacy)
  21  ClamAV (incl. on-access scanning for /home)
  22  OpenSCAP
+ 23  Container security (Podman + Toolbox / containerized-mindset setup)
 
  Optimized execution order (guide section numbers):
-    2,3,6,13,4,5,7,9,10,11,14,18,15,16,17,21,22,12,19,20,8
+    2,3,6,13,4,5,7,9,10,11,14,18,15,16,17,21,22,23,12,19,20,8
 
  DE detection (section 15 auto-dispatches — all detected DEs are hardened):
     Running session: XDG_CURRENT_DESKTOP / DESKTOP_SESSION
@@ -2809,6 +2852,9 @@ preflight() {
 # Runs dnf upgrade (or rpm-ostree update on immutable systems). Also installs fwupd
 # for firmware updates (privacyguides.org) and ensures CPU microcode is current
 # (Intel: microcode_ctl; AMD: linux-firmware) to patch Spectre/Meltdown and similar.
+# Optionally installs hardware security key support (YubiKey/FIDO2/PIV: pcsc-lite,
+# opensc, libfido2, yubico-piv-tool, yubikey-manager, pam-u2f) and reminds the user
+# to have the key plugged in before section 8 (USBGuard) runs.
 # Recommends reboot after completion.
 sec_02_updates() {
 	should_run 2 || return 0
@@ -2844,6 +2890,39 @@ sec_02_updates() {
 		info "CPU vendor not Intel/AMD ('${cpu_vendor:-unknown}') — skipping microcode install."
 		;;
 	esac
+
+	# ── Hardware security key support (YubiKey, FIDO2, PIV smart cards) ──────
+	# Ask if the user owns a hardware security key. If yes, install support packages
+	# and remind them to have the key physically accessible during section 8 (USBGuard),
+	# since USBGuard will prompt to allow or block every new USB device — a key that
+	# is unplugged at that point would need to be explicitly allowed afterwards.
+	if confirm "Do you use a hardware security key (YubiKey, FIDO2 token, PIV smart card)?"; then
+		info "Installing hardware security key support packages..."
+		pkg_install pcsc-lite pcsc-lite-libs opensc libfido2 yubico-piv-tool yubikey-manager
+		run "systemctl enable --now pcscd.socket || true"
+		ok "Hardware key support packages installed and pcscd.socket enabled."
+		if confirm "Install pam_u2f for PAM/sudo authentication via FIDO2/U2F key?"; then
+			pkg_install pam-u2f
+			info "pam_u2f installed — configure /etc/pam.d/ manually to add the U2F factor."
+			info "  Reference: https://developers.yubico.com/pam-u2f/"
+			add_action_item 2 MEDIUM "HWKEY_PAM_U2F" \
+				"pam-u2f was installed. Configure PAM (/etc/pam.d/sudo, /etc/pam.d/system-auth) to require your hardware key for authentication. See: https://developers.yubico.com/pam-u2f/"
+		fi
+		printf '\n%s╔══════════════════════════════════════════════════════════════╗%s\n' "$C_YEL" "$C_RST"
+		printf '%s║  ⚠  HARDWARE KEY REMINDER — READ BEFORE SECTION 8            ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║                                                              ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║  Section 8 (USBGuard) will prompt you to ALLOW or BLOCK      ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║  every USB device it sees at configuration time.             ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║                                                              ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║  • Plug in your hardware key BEFORE section 8 runs so it     ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║    gets added to the allowlist automatically.                ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║  • If you miss it, run afterwards:                           ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║      sudo usbguard generate-policy >> /etc/usbguard/rules.conf║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║    or use the USBGuard GUI / CLI to allow the device.        ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s╚══════════════════════════════════════════════════════════════╝%s\n\n' "$C_YEL" "$C_RST"
+		add_action_item 2 HIGH "HWKEY_USBGUARD_READY" \
+			"Hardware security key detected: ensure it is plugged in BEFORE section 8 (USBGuard) runs so it is added to the allowlist. If missed, run: sudo usbguard generate-policy >> /etc/usbguard/rules.conf"
+	fi
 }
 
 # ============================================================================
@@ -3967,8 +4046,14 @@ sec_15_desktop() {
 	# ── Sway / wlroots (Sericea Atomic + any Sway session) ───────────────────
 	if ((HAS_SWAY)); then
 		info "--- Sway/wlroots settings ---"
-		cmd_exists swaylock || { pkg_install swaylock || true; unset '_CMD_CACHE[swaylock]'; }
-		cmd_exists swayidle || { pkg_install swayidle || true; unset '_CMD_CACHE[swayidle]'; }
+		cmd_exists swaylock || {
+			pkg_install swaylock || true
+			unset '_CMD_CACHE[swaylock]'
+		}
+		cmd_exists swayidle || {
+			pkg_install swayidle || true
+			unset '_CMD_CACHE[swayidle]'
+		}
 
 		local swaylock_cfg="${user_home}/.config/swaylock/config"
 		local swayidle_cfg="${user_home}/.config/swayidle/config"
@@ -3976,7 +4061,7 @@ sec_15_desktop() {
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/swaylock' '${user_home}/.config/swayidle'"
 			if [[ ! -f "$swaylock_cfg" ]]; then
-				cat > "$swaylock_cfg" <<'SWAYEOF'
+				cat >"$swaylock_cfg" <<'SWAYEOF'
 # swaylock - privacy-hardened config (fedora-harden.sh)
 color=000000
 ignore-empty-password
@@ -3989,7 +4074,7 @@ SWAYEOF
 				info "swaylock config already exists — leaving intact."
 			fi
 			if [[ ! -f "$swayidle_cfg" ]]; then
-				cat > "$swayidle_cfg" <<'SWAYEOF'
+				cat >"$swayidle_cfg" <<'SWAYEOF'
 # swayidle - auto-lock/suspend config (fedora-harden.sh)
 timeout 300 'swaylock -f'
 timeout 600 'systemctl suspend'
@@ -4011,14 +4096,20 @@ SWAYEOF
 	# ── Hyprland ──────────────────────────────────────────────────────────────
 	if ((HAS_HYPRLAND)); then
 		info "--- Hyprland settings ---"
-		cmd_exists hypridle || { pkg_install hypridle 2>/dev/null || true; unset '_CMD_CACHE[hypridle]'; }
-		cmd_exists hyprlock || { pkg_install hyprlock 2>/dev/null || true; unset '_CMD_CACHE[hyprlock]'; }
+		cmd_exists hypridle || {
+			pkg_install hypridle 2>/dev/null || true
+			unset '_CMD_CACHE[hypridle]'
+		}
+		cmd_exists hyprlock || {
+			pkg_install hyprlock 2>/dev/null || true
+			unset '_CMD_CACHE[hyprlock]'
+		}
 
 		local hypridle_cfg="${user_home}/.config/hypr/hypridle.conf"
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/hypr'"
 			if [[ ! -f "$hypridle_cfg" ]]; then
-				cat > "$hypridle_cfg" <<'HYPREOF'
+				cat >"$hypridle_cfg" <<'HYPREOF'
 # hypridle - auto-lock config (fedora-harden.sh)
 general {
     lock_cmd = pidof hyprlock || hyprlock
@@ -4051,8 +4142,14 @@ HYPREOF
 	# ── i3 ────────────────────────────────────────────────────────────────────
 	if ((HAS_I3)); then
 		info "--- i3 settings ---"
-		cmd_exists xss-lock || { pkg_install xss-lock 2>/dev/null || true; unset '_CMD_CACHE[xss-lock]'; }
-		cmd_exists i3lock   || { pkg_install i3lock   2>/dev/null || true; unset '_CMD_CACHE[i3lock]'; }
+		cmd_exists xss-lock || {
+			pkg_install xss-lock 2>/dev/null || true
+			unset '_CMD_CACHE[xss-lock]'
+		}
+		cmd_exists i3lock || {
+			pkg_install i3lock 2>/dev/null || true
+			unset '_CMD_CACHE[i3lock]'
+		}
 
 		local i3_cfg="${user_home}/.config/i3/config"
 		local i3_cfg_d="${user_home}/.config/i3/config.d"
@@ -4061,7 +4158,7 @@ HYPREOF
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${i3_cfg_d}'"
 			if [[ ! -f "$i3_lock_frag" ]]; then
-				cat > "$i3_lock_frag" <<'I3EOF'
+				cat >"$i3_lock_frag" <<'I3EOF'
 # i3 auto-lock via xss-lock + i3lock (fedora-harden.sh)
 exec --no-startup-id xss-lock --transfer-sleep-lock -- i3lock --nofork --color=000000
 exec --no-startup-id xautolock -time 5 -locker 'i3lock --color=000000'
@@ -4072,7 +4169,7 @@ I3EOF
 				info "i3 autolock fragment already exists — leaving intact."
 			fi
 			if [[ -f "$i3_cfg" ]] && ! grep -q "config.d" "$i3_cfg" 2>/dev/null; then
-				printf '\n# Auto-included by fedora-harden.sh\ninclude %s/*.conf\n' "${i3_cfg_d}" >> "$i3_cfg" || true
+				printf '\n# Auto-included by fedora-harden.sh\ninclude %s/*.conf\n' "${i3_cfg_d}" >>"$i3_cfg" || true
 			fi
 		else
 			info "Would write i3 autolock drop-in (xss-lock + i3lock) in ${i3_cfg_d}/"
@@ -4091,7 +4188,7 @@ I3EOF
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/lxqt'"
 			if [[ ! -f "$ss_cfg" ]]; then
-				printf '[General]\nlockAfterEnable=true\nlockAfterTimeout=300\nscreensaverTimeout=300\n' > "$ss_cfg"
+				printf '[General]\nlockAfterEnable=true\nlockAfterTimeout=300\nscreensaverTimeout=300\n' >"$ss_cfg"
 				run "chown '${TARGET_USER}:${TARGET_USER}' '${ss_cfg}'"
 				ok "Wrote LXQt screensaver config"
 			else
@@ -4104,7 +4201,7 @@ I3EOF
 				ok "Patched LXQt screensaver config"
 			fi
 			if [[ ! -f "$pm_cfg" ]]; then
-				printf '[General]\nenableIdleSuspend=true\nidleSuspendTimeout=600\n' > "$pm_cfg"
+				printf '[General]\nenableIdleSuspend=true\nidleSuspendTimeout=600\n' >"$pm_cfg"
 				run "chown '${TARGET_USER}:${TARGET_USER}' '${pm_cfg}'"
 				ok "Wrote LXQt power management config"
 			fi
@@ -4662,14 +4759,17 @@ sec_21_clamav() {
 			backup_file "$clamd_conf"
 			# Enable on-access scanning if not already configured
 			if ! grep -q "^OnAccessIncludePath" "$clamd_conf" 2>/dev/null; then
-				{
+				if {
 					echo ""
 					echo "# On-access scanning — monitor home directories (inteltechniques.com)"
 					echo "OnAccessIncludePath /home"
 					echo "OnAccessExcludeRootUID yes"
 					echo "OnAccessPrevention no"
-				} >>"$clamd_conf" 2>/dev/null && ok "Configured ClamAV on-access scanning for /home in $clamd_conf" \
-					|| warn "Failed to update $clamd_conf for on-access scanning"
+				} >>"$clamd_conf" 2>/dev/null; then
+					ok "Configured ClamAV on-access scanning for /home in $clamd_conf"
+				else
+					warn "Failed to update $clamd_conf for on-access scanning"
+				fi
 			else
 				info "ClamAV on-access scanning already configured in $clamd_conf"
 			fi
@@ -4804,11 +4904,209 @@ sec_22_openscap() {
 	fi
 }
 
+# ============================================================================
+#  SECTION 23 — Container Security (Podman + Toolbox)
+# ============================================================================
+# sec_23_containers() - Rootless Podman + Toolbox containerized-mindset hardening.
+# Establishes a "containerized mindset" security posture where:
+#   • System-level administration runs natively (this script, system tools)
+#   • Development, daily work, and untrusted software run inside containers
+# Hardens image policy, runtime defaults, and registry resolution to reduce
+# the attack surface of containerised workloads.
+sec_23_containers() {
+	should_run 23 || return 0
+	section 23 "Container security (Podman + Toolbox — containerized mindset)"
+
+	pkg_install podman toolbox
+	ensure_command_dep podman "rootless container engine" podman
+	if ! cmd_exists podman; then
+		warn "podman not available after install attempt — skipping section 23."
+		return 0
+	fi
+
+	if confirm "Install buildah (OCI image builder) and skopeo (image inspection/transfer)?"; then
+		pkg_install buildah skopeo
+	fi
+
+	if confirm "Install podman-compose (docker-compose compatibility layer)?"; then
+		pkg_install podman-compose
+	fi
+
+	# ── Rootless Podman: subuid/subgid ───────────────────────────────────────
+	local run_user="${TARGET_USER:-${SUDO_USER:-}}"
+	if [[ -n "$run_user" && "$run_user" != "root" ]]; then
+		if ! grep -q "^${run_user}:" /etc/subuid 2>/dev/null; then
+			info "Adding subuid range for rootless Podman (user: $run_user)..."
+			if ((!DRY_RUN)); then
+				usermod --add-subuids 100000-165535 "$run_user" 2>/dev/null ||
+					printf '%s:100000:65536\n' "$run_user" >>/etc/subuid
+			else
+				info "[DRY] Would add subuid 100000-165535 for $run_user"
+			fi
+		else
+			ok "subuid entry already present for $run_user."
+		fi
+		if ! grep -q "^${run_user}:" /etc/subgid 2>/dev/null; then
+			info "Adding subgid range for rootless Podman (user: $run_user)..."
+			if ((!DRY_RUN)); then
+				usermod --add-subgids 100000-165535 "$run_user" 2>/dev/null ||
+					printf '%s:100000:65536\n' "$run_user" >>/etc/subgid
+			else
+				info "[DRY] Would add subgid 100000-165535 for $run_user"
+			fi
+		else
+			ok "subgid entry already present for $run_user."
+		fi
+
+		# ── User-level containers.conf with secure runtime defaults ──────────
+		local user_home cont_conf_dir cont_conf
+		user_home="$(user_home "$run_user")"
+		cont_conf_dir="${user_home}/.config/containers"
+		cont_conf="${cont_conf_dir}/containers.conf"
+		if [[ -n "$user_home" ]]; then
+			if ((!DRY_RUN)); then
+				install -d -m 700 "$cont_conf_dir" 2>/dev/null || true
+				if [[ ! -f "$cont_conf" ]]; then
+					cat >"$cont_conf" <<'EOF'
+# Rootless Podman hardening defaults — written by fedora-harden.sh
+[containers]
+# Block privilege escalation inside containers
+no_new_privileges = true
+
+# Enforce kernel syscall allowlist (system default seccomp profile)
+seccomp_profile = "/usr/share/containers/seccomp.json"
+
+# Minimal capability set — grant only what is explicitly required per workload
+default_capabilities = [
+    "CHOWN",
+    "DAC_OVERRIDE",
+    "FOWNER",
+    "FSETID",
+    "KILL",
+    "NET_BIND_SERVICE",
+    "SETFCAP",
+    "SETGID",
+    "SETPCAP",
+    "SETUID",
+    "SYS_CHROOT",
+]
+
+[engine]
+# crun is the default OCI runtime on Fedora; preferred over runc for performance + security
+# runtime = "crun"
+EOF
+					run "chown '${run_user}:${run_user}' '${cont_conf}'"
+					ok "Wrote rootless containers.conf for $run_user (no-new-privileges + seccomp defaults)."
+				else
+					ok "containers.conf already exists for $run_user — not overwriting."
+				fi
+			else
+				info "[DRY] Would write ${cont_conf} with no-new-privileges + seccomp + minimal caps."
+			fi
+		fi
+	fi
+
+	# ── System image policy: reject pulls from unregistered registries ────────
+	# Default Fedora policy is 'insecureAcceptAnything' for all registries.
+	# Hardened policy sets default to 'reject' and explicitly allows trusted sources.
+	local policy_file="/etc/containers/policy.json"
+	if [[ -f "$policy_file" ]]; then
+		local current_policy
+		current_policy="$(cat "$policy_file" 2>/dev/null || true)"
+		if [[ "$current_policy" == *'"insecureAcceptAnything"'* &&
+			"$current_policy" != *'"type": "reject"'* ]]; then
+			if confirm "Harden container image policy to reject unknown registries? (Permits fedora, quay.io, docker.io; blocks all others)"; then
+				backup_file "$policy_file"
+				if ((!DRY_RUN)); then
+					cat >"$policy_file" <<'EOF'
+{
+    "default": [{"type": "reject"}],
+    "transports": {
+        "containers-storage": {
+            "": [{"type": "insecureAcceptAnything"}]
+        },
+        "docker": {
+            "registry.fedoraproject.org": [{"type": "insecureAcceptAnything"}],
+            "registry.centos.org":        [{"type": "insecureAcceptAnything"}],
+            "registry.access.redhat.com": [{"type": "insecureAcceptAnything"}],
+            "quay.io":                    [{"type": "insecureAcceptAnything"}],
+            "docker.io":                  [{"type": "insecureAcceptAnything"}]
+        },
+        "docker-daemon": {
+            "": [{"type": "insecureAcceptAnything"}]
+        }
+    }
+}
+EOF
+					ok "Image policy hardened — pulls from unlisted registries will be rejected."
+				else
+					info "[DRY] Would write restricted image policy to $policy_file"
+				fi
+			else
+				add_action_item 23 LOW "CONTAINER_POLICY_PERMISSIVE" \
+					"Container image policy allows pulls from any registry (insecureAcceptAnything). Consider restricting to trusted sources in /etc/containers/policy.json."
+			fi
+		else
+			ok "Container image policy already restricts unknown registries."
+		fi
+	else
+		warn "Container image policy file not found at $policy_file — skipping policy hardening."
+	fi
+
+	# ── Block unqualified image names resolving silently to docker.io ─────────
+	# Without this, 'podman pull nginx' silently resolves to docker.io/library/nginx.
+	# Requiring fully-qualified names (registry/org/image:tag) prevents supply-chain
+	# confusion and makes registry provenance explicit.
+	local reg_conf_d="/etc/containers/registries.conf.d"
+	local reg_conf="${reg_conf_d}/99-hardening.conf"
+	if [[ ! -f "$reg_conf" ]]; then
+		if ((!DRY_RUN)); then
+			install -d -m 755 "$reg_conf_d" 2>/dev/null || true
+			cat >"$reg_conf" <<'EOF'
+# Require fully-qualified image names — written by fedora-harden.sh
+# An empty list prevents silent docker.io resolution for unqualified names.
+# Always use full names: docker.io/library/nginx, quay.io/fedora/fedora, etc.
+unqualified-search-registries = []
+EOF
+			ok "Blocked unqualified image name resolution — explicit registry required for all pulls."
+		else
+			info "[DRY] Would write ${reg_conf} disabling unqualified registry search."
+		fi
+	else
+		ok "Registry conf.d override already present at $reg_conf."
+	fi
+
+	# ── Toolbox availability check ────────────────────────────────────────────
+	if ! cmd_exists toolbox; then
+		warn "toolbox command not found after install. On rpm-ostree systems a reboot may be required."
+		if ((IS_OSTREE)); then
+			info "After reboot, run: toolbox create && toolbox enter"
+		fi
+	else
+		ok "Toolbox is available — run 'toolbox create && toolbox enter' to start a containerized workspace."
+	fi
+
+	# ── Immutable-system guidance ─────────────────────────────────────────────
+	if ((IS_OSTREE)); then
+		info "Immutable system detected: Toolbox/Distrobox containers are the recommended"
+		info "  way to install developer packages without mutating the read-only host OS."
+		info "  Example: toolbox create --image registry.fedoraproject.org/fedora-toolbox:$(rpm -E %fedora 2>/dev/null || echo 42)"
+	fi
+
+	# ── Post-run guidance action items ────────────────────────────────────────
+	add_action_item 23 MEDIUM "CONTAINER_WORKFLOW" \
+		"Adopt a containerized mindset: use 'toolbox create && toolbox enter' for development, IDEs, compilers, and scripts (isolated from host). For services: 'podman run --read-only --security-opt no-new-privileges:true --cap-drop ALL --cap-add <only_what_is_needed>'."
+	add_action_item 23 LOW "CONTAINER_NETWORK_AUDIT" \
+		"Review Podman network isolation: run 'podman network ls' and use 'podman network create --internal' for workloads that must not reach the internet. Verify inter-container traffic is explicitly controlled."
+
+	ok "Section 23 complete — rootless Podman hardened, image policy set, Toolbox ready."
+}
+
 # ---------- Actionable-items display + remediation --------------------------
 # show_actionable_items() - Print the full prioritized actionable items list.
 show_actionable_items() {
 	if ((${#ACTIONABLE_ITEMS[@]} == 0)); then
-		ok "No actionable items — sections 12/18/21/22 appear clean."
+		ok "No actionable items — sections 12/18/21/22/23 appear clean."
 		return 0
 	fi
 	if ((!GUI_FULL_MODE)); then
@@ -5000,7 +5298,7 @@ remediation_loop() {
 }
 
 # ---------- Summary ---------------------------------------------------------
-# final_summary() - Analyze section 12/18/21/22 findings, write all reports to
+# final_summary() - Analyze section 12/18/21/22/23 findings, write all reports to
 # user Downloads/<project>/results and Downloads/<project>/logs, display actionable list, and ask
 # whether to implement recommended next steps. If declined, export a PDF audit
 # report plus TXT import bundle into the user's Downloads directory instead of
@@ -5032,7 +5330,7 @@ final_summary() {
 					((idx++))
 				done
 			else
-				printf '  None — sections 12/18/21/22 appear clean.\n'
+				printf '  None — sections 12/18/21/22/23 appear clean.\n'
 			fi
 			printf '\n=== Remediated Items (%d) ===\n' "${#REMEDIATED_ITEMS[@]}"
 			if ((${#REMEDIATED_ITEMS[@]} > 0)); then
@@ -5097,7 +5395,7 @@ EOF
 
 	gui_alert info "Fedora hardening finished.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
 
-	# Display the actionable items from sections 12/18/21/22 and handle approval/selection.
+	# Display the actionable items from sections 12/18/21/22/23 and handle approval/selection.
 	handle_actionable_follow_up "$summary_path"
 
 	# Re-write the summary with final state (after remediation updates ACTIONABLE/REMEDIATED lists)
@@ -5127,7 +5425,7 @@ EOF
 # ---------- Main ------------------------------------------------------------
 # main() - Master orchestrator for fedora-harden script execution
 # Manages command-line argument parsing, permission verification, session tracking,
-# and execution of all 21 hardening sections in dependency-optimized order.
+# and execution of all 23 hardening sections in dependency-optimized order.
 # Includes error analysis, auto-remediation, and structured session reporting.
 # Exit codes: 0 = success, 1 = preflight failed, catch-all for other errors
 main() {
@@ -5187,6 +5485,7 @@ main() {
 	sec_17_wireguard
 	sec_21_clamav
 	sec_22_openscap
+	sec_23_containers
 	sec_12_ids
 	sec_19_services
 	sec_20_perms
