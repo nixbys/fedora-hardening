@@ -3,7 +3,7 @@
 #  Fedora 44+ Security Hardening Script (multi-release + multi-desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
 #  Aligned with privacyguides.org and inteltechniques.com recommendations
-#  Efficiency-tuned and low-I/O focused (v2.4 - June 2026)
+#  Efficiency-tuned and low-I/O focused (v2.5 - June 2026)
 #
 #  FEATURES:
 #    • 22 hardening sections (plus subsection 14b) with automatic
@@ -3375,6 +3375,10 @@ sec_09_pam() {
 # ============================================================================
 # sec_10_sysctl() - Apply kernel sysctl hardening
 # Hardens network, VM, filesystem, memory protections via kernel parameters.
+# Covers: network spoofing/ICMP/redirect/forwarding mitigations, ASLR (randomize_va_space +
+# mmap_rnd_bits), BPF JIT hardening, kexec disable, ptrace restriction, sysrq disable,
+# TCP timestamp privacy, IPv6 privacy extensions, and core dump suppression.
+# Based on Madaidan's Linux Hardening Guide (linked by privacyguides.org).
 sec_10_sysctl() {
 	should_run 10 || return 0
 	section 10 "Kernel & network sysctl hardening"
@@ -3427,6 +3431,15 @@ kernel.dmesg_restrict = 1
 kernel.yama.ptrace_scope = 1
 kernel.sysrq = 0
 
+# Prevent kexec — stops loading a new kernel without a full reboot, which
+# blocks a major attack vector for persistent compromise (Madaidan / privacyguides.org)
+kernel.kexec_load_disabled = 1
+
+# Harden BPF JIT and restrict unprivileged BPF — limits exploitation of BPF
+# subsystem vulnerabilities (Madaidan Linux Hardening Guide, linked by privacyguides.org)
+net.core.bpf_jit_harden = 2
+kernel.unprivileged_bpf_disabled = 1
+
 # NOTE: 'kernel.unprivileged_userns_clone' is an Ubuntu-specific knob
 # and does not exist on the Fedora kernel. The Fedora equivalent is
 # 'user.max_user_namespaces', but setting it to 0 breaks Flatpak,
@@ -3435,6 +3448,12 @@ kernel.sysrq = 0
 # user.max_user_namespaces = 0
 
 kernel.randomize_va_space = 2
+
+# Increase ASLR entropy on 64-bit systems for stronger randomization
+# (Madaidan Linux Hardening Guide; these are the maximum safe values on x86_64)
+vm.mmap_rnd_bits = 32
+vm.mmap_rnd_compat_bits = 16
+
 kernel.pid_max = 65536
 
 fs.suid_dumpable = 0
@@ -3447,6 +3466,10 @@ fs.protected_hardlinks = 1
 # Randomize temporary IPv6 source addresses (privacyguides.org)
 net.ipv6.conf.all.use_tempaddr = 2
 net.ipv6.conf.default.use_tempaddr = 2
+
+# ── Network Privacy ───────────────────────────────────────────────────
+# Disable TCP timestamps to reduce remote clock-skew fingerprinting
+net.ipv4.tcp_timestamps = 0
 
 # ── Core Dump Suppression ─────────────────────────────────────────────
 # Route core dumps to /bin/false so they are silently discarded
@@ -3677,6 +3700,12 @@ sec_13_flatpak() {
 			ok "Firejail installed. Run 'firecfg --list' to see sandboxed apps."
 		fi
 	fi
+
+	# Remind user to review Flatpak app permissions with Flatseal after install.
+	# privacyguides.org notes Flatpak allows unsafe defaults — Flatseal lets you
+	# restrict per-app access to filesystem, network, portals, etc.
+	add_action_item 13 MEDIUM "FLATPAK_PERMISSIONS" \
+		"Review Flatpak app permissions with Flatseal (com.github.tchx84.Flatseal). Apps may have overly broad filesystem/network access by default — restrict each app to only what it needs."
 }
 
 # ============================================================================
@@ -3711,7 +3740,9 @@ EOF
 		fi
 		ok "Wrote $dropin"
 		info "DNS-over-TLS: Quad9 (primary, malware-blocking) + Cloudflare (fallback)"
-		info "Alternative no-log option per privacyguides.org: Mullvad DNS (194.242.2.2 / dns.mullvad.net)"
+		info "Alternative no-log options per privacyguides.org:"
+		info "  • Mullvad DNS  — 194.242.2.2 / dns.mullvad.net  (Sweden, no-log, DoT+DoH)"
+		info "  • AdGuard DNS  — 94.140.14.14 / dns.adguard-dns.com (anonymized, DoT+DoH+DoQ)"
 	fi
 	run "systemctl restart systemd-resolved"
 	run "resolvectl status | head -25 || true"
@@ -4092,9 +4123,10 @@ I3EOF
 	fi
 }
 # ============================================================================
-# sec_16_firefox() - Harden Firefox Flatpak with arkenfox + extensions + VPN check
+# sec_16_firefox() - Harden Firefox Flatpak with arkenfox + extensions + telemetry opt-out + VPN check
 # Installs Firefox Flatpak with arkenfox profiles and security extensions (uBlock Origin,
-# LocalCDN, Multi-Account Containers). Also detects active VPN and recommends one if absent.
+# LocalCDN, Multi-Account Containers). Enterprise policy also disables Firefox telemetry,
+# studies, and Pocket. Also detects active VPN and recommends one if absent.
 sec_16_firefox() {
 	should_run 16 || return 0
 	section 16 "Firefox hardening (Flatpak preferred + arkenfox + privacy extensions)"
@@ -4205,6 +4237,11 @@ sec_16_firefox() {
 		if ! cat >"$tmp_policy" <<'EOF'; then
 {
   "policies": {
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "DisablePocket": true,
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": "",
     "Extensions": {
       "Install": [
         "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi",
@@ -4234,7 +4271,7 @@ EOF
 	fi
 
 	run "sudo -u '$ff_user' xdg-settings set default-web-browser org.mozilla.firefox.desktop || true"
-	info "Firefox hardening complete for user '$ff_user' (Flatpak + arkenfox + uBlock Origin/LocalCDN/Multi-Account Containers policy)."
+	info "Firefox hardening complete for user '$ff_user' (Flatpak + arkenfox + uBlock Origin/LocalCDN/Multi-Account Containers policy + telemetry disabled)."
 	info "Restart Firefox to apply enterprise policy installs and arkenfox preferences."
 
 	# --- 16b: VPN detection and recommendation ---------------------------------
