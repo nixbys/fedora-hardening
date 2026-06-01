@@ -3,7 +3,7 @@
 #  Fedora 44+ Security Hardening Script (multi-release + multi-desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
 #  Aligned with privacyguides.org and inteltechniques.com recommendations
-#  Efficiency-tuned and low-I/O focused (v2.3 - June 2026)
+#  Efficiency-tuned and low-I/O focused (v2.4 - June 2026)
 #
 #  FEATURES:
 #    • 22 hardening sections (plus subsection 14b) with automatic
@@ -2849,9 +2849,12 @@ sec_02_updates() {
 # ============================================================================
 #  SECTION 3 — dnf5-automatic (Fedora 41+)
 # ============================================================================
-# sec_03_dnf_automatic() - Configure automatic security updates
+# sec_03_dnf_automatic() - Configure automatic security updates + countme opt-out
 # Sets up dnf5-automatic for mutable systems or rpm-ostreed policy for immutable
 # systems to apply security patches automatically. On rpm-ostree, stages updates.
+# Sub-section 3b disables the Fedora system-counting mechanism: sets countme=false
+# in /etc/dnf/dnf.conf on mutable systems, or masks rpm-ostree-countme.timer on
+# immutable ones — per privacyguides.org recommendation.
 sec_03_dnf_automatic() {
 	should_run 3 || return 0
 	section 3 "Automatic security updates"
@@ -2920,6 +2923,36 @@ sec_03_dnf_automatic() {
 	fi
 
 	run "systemctl enable --now $timer"
+
+	# 3b — DNF countme=false (privacyguides.org: opt out of Fedora system counting)
+	# The Fedora Project uses a 'countme' variable to count unique systems accessing
+	# its mirrors. privacyguides.org explicitly recommends opting out. On rpm-ostree
+	# the equivalent is masking the rpm-ostree-countme timer.
+	local dnf_conf="/etc/dnf/dnf.conf"
+	if ((IS_OSTREE)); then
+		if ((!DRY_RUN)); then
+			if systemctl mask rpm-ostree-countme.timer 2>/dev/null; then
+				ok "Masked rpm-ostree-countme.timer (privacyguides.org: opt out of system counting)"
+			else
+				info "rpm-ostree-countme.timer not found or already masked — skipping."
+			fi
+		else
+			info "Would mask rpm-ostree-countme.timer"
+		fi
+	elif [[ -f "$dnf_conf" ]]; then
+		if ((!DRY_RUN)); then
+			if grep -qE '^\s*countme\s*=' "$dnf_conf" 2>/dev/null; then
+				sed -i 's|^\s*countme\s*=.*|countme=false|' "$dnf_conf" 2>/dev/null || true
+			else
+				echo 'countme=false' >>"$dnf_conf" 2>/dev/null || true
+			fi
+			ok "Set countme=false in $dnf_conf (privacyguides.org: opt out of system counting)"
+		else
+			info "Would set countme=false in $dnf_conf"
+		fi
+	else
+		info "$dnf_conf not found — skipping countme opt-out."
+	fi
 }
 
 # ============================================================================
@@ -3654,6 +3687,9 @@ sec_13_flatpak() {
 # DNSSEC validation. Also writes a NetworkManager drop-in (14b) to randomize MAC
 # addresses for Wi-Fi scans and connections, and for Ethernet — per
 # privacyguides.org network-layer privacy guidance.
+# Alternative no-log DoT provider (not configured automatically but recommended by
+# privacyguides.org): Mullvad DNS — 194.242.2.2 / dns.mullvad.net — operates under
+# Sweden's strong privacy laws, enforces no-logging, and supports DoT + DoH.
 sec_14_dot() {
 	should_run 14 || return 0
 	section 14 "DNS over TLS via systemd-resolved"
@@ -3674,6 +3710,8 @@ EOF
 			return 1
 		fi
 		ok "Wrote $dropin"
+		info "DNS-over-TLS: Quad9 (primary, malware-blocking) + Cloudflare (fallback)"
+		info "Alternative no-log option per privacyguides.org: Mullvad DNS (194.242.2.2 / dns.mullvad.net)"
 	fi
 	run "systemctl restart systemd-resolved"
 	run "resolvectl status | head -25 || true"
@@ -4458,8 +4496,11 @@ sec_19_services() {
 # ============================================================================
 #  SECTION 20 — File permission hardening
 # ============================================================================
-# sec_20_perms() - Harden file permissions
-# Tightens permissions on shadow files, /tmp, and disables compiler access.
+# sec_20_perms() - Harden file permissions, umask, core dumps, hostname & username privacy
+# Tightens permissions on shadow files, /tmp, and compiler access (20a). Sets umask 077
+# for restrictive default file creation (20b). Disables core dumps via limits.d (20c).
+# Checks hostname for identity leakage (20d) and flags non-generic usernames (20e) per
+# privacyguides.org and inteltechniques.com recommendations.
 sec_20_perms() {
 	should_run 20 || return 0
 	section 20 "File permission hardening"
@@ -4538,6 +4579,23 @@ EOF
 			add_action_item 20 MEDIUM "HOSTNAME_PRIVACY" \
 				"Hostname '$current_hostname' may leak identity — change with: sudo hostnamectl set-hostname <generic-name>"
 		fi
+	fi
+
+	# 20e — username privacy check (privacyguides.org: use generic username, not real name)
+	# privacyguides.org recommends: "Consider using generic terms like 'user' rather than
+	# your actual name" to limit the amount of personal data exposed by the OS.
+	local cur_user="${TARGET_USER:-$(logname 2>/dev/null || true)}"
+	if [[ -n "$cur_user" ]]; then
+		# Flag if username is a simple word (all letters) and not already a generic term
+		case "$cur_user" in
+		root | user | admin | nobody | guest | fedora | linux) ;;
+		*)
+			info "Current username: '$cur_user' — privacyguides.org recommends a generic username" \
+				"(e.g., 'user') rather than a real name to limit OS-level personal-data exposure."
+			add_action_item 20 LOW "USERNAME_PRIVACY" \
+				"Consider a non-identifying system username instead of '$cur_user' (privacyguides.org recommendation)"
+			;;
+		esac
 	fi
 }
 
