@@ -3,10 +3,10 @@
 #  Fedora 44+ Security Hardening Script (multi-release + multi-desktop aware)
 #  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
 #  Aligned with privacyguides.org and inteltechniques.com recommendations
-#  Efficiency-tuned and low-I/O focused (v2.1 - June 2026)
+#  Efficiency-tuned and low-I/O focused (v2.3 - June 2026)
 #
 #  FEATURES:
-#    • 22 hardening sections (plus subsections 14b, 15b–15f) with automatic
+#    • 22 hardening sections (plus subsection 14b) with automatic
 #      release/profile detection
 #    • Dual-mode support: mutable (dnf) and immutable (rpm-ostree) systems
 #    • Fedora release detection: Workstation, Server, IoT, Cloud, CoreOS,
@@ -2777,9 +2777,6 @@ preflight() {
 	else
 		warn "No desktop environment detected; desktop-focused sections may be skipped."
 	fi
-	if ((!HAS_KDE)); then
-		warn "KDE/Plasma tooling not detected; KDE-specific section will be skipped."
-	fi
 	info "Log file:    $LOG_FILE"
 	info "Backup dir:  $BACKUP_DIR (created on first change)"
 	init_rollback_journal
@@ -2895,7 +2892,7 @@ sec_03_dnf_automatic() {
 	local pkg timer conf
 	pkg="dnf5-automatic"
 	timer="dnf5-automatic.timer"
-	conf="/etc/dnf/automatic5.conf"
+	conf="/etc/dnf/automatic.conf"
 	if ! cmd_exists dnf || ! dnf info dnf5-automatic &>/dev/null; then
 		pkg="dnf-automatic"
 		timer="dnf-automatic.timer"
@@ -4296,11 +4293,6 @@ VPNEOF
 	fi
 }
 
-# ============================================================================
-#  SECTION 17 — WireGuard tools
-# ============================================================================
-# sec_17_wireguard() - Install WireGuard VPN tools
-# Installs WireGuard CLI; tunnel configuration is manual task.
 # ============================================================================
 #  SECTION 17 — WireGuard
 # ============================================================================
