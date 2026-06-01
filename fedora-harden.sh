@@ -2417,7 +2417,7 @@ usage() {
 # Usage: list_sections (called by --list flag)
 list_sections() {
 	cat <<'EOF'
-  2  System updates
+  2  System updates (incl. fwupd firmware updates + CPU microcode)
   3  Automatic updates
   4  SELinux tools
   5  firewalld
@@ -2425,18 +2425,18 @@ list_sections() {
   7  SSH hardening
   8  USBGuard
   9  PAM/password policy
- 10  Kernel sysctl
- 11  auditd
+ 10  Kernel sysctl (incl. IPv6 privacy extensions)
+ 11  auditd (incl. time/network/mount/delete rules)
  12  rkhunter + AIDE
- 13  Flatpak / Flathub
- 14  DNS over TLS
- 15  KDE settings
- 16  Firefox Flatpak + arkenfox + extensions (uBlock, LocalCDN, Containers) + VPN check
+ 13  Flatpak / Flathub (incl. optional Firejail)
+ 14  DNS over TLS (14b: NetworkManager MAC address randomization)
+ 15  KDE settings | 15b: GNOME privacy/lockscreen settings
+ 16  Firefox Flatpak + arkenfox + extensions (uBlock, LocalCDN, Containers) + VPN check (16b)
  17  WireGuard
  18  Fail2Ban
  19  Service trim
- 20  File permissions
- 21  ClamAV
+ 20  File permissions (incl. umask 077, core dump limits, hostname privacy)
+ 21  ClamAV (incl. on-access scanning for /home)
  22  OpenSCAP
 
  Optimized execution order (guide section numbers):
@@ -2657,6 +2657,34 @@ sec_02_updates() {
 	section 2 "System updates"
 	pkg_upgrade
 	ok "System packages updated. A reboot is recommended when the script finishes."
+
+	# Install fwupd for firmware/microcode updates (privacyguides.org recommendation)
+	if ! cmd_exists fwupdmgr; then
+		pkg_install fwupd
+	fi
+	if cmd_exists fwupdmgr; then
+		info "Refreshing fwupd metadata and checking for firmware updates..."
+		run "fwupdmgr refresh --force || true"
+		run "fwupdmgr get-updates || true"
+		info "Apply firmware updates with: sudo fwupdmgr update"
+	fi
+
+	# Ensure CPU microcode is installed (privacyguides.org — patches Spectre/Meltdown/etc.)
+	local cpu_vendor
+	cpu_vendor="$(awk -F: '/^vendor_id/{print $2; exit}' /proc/cpuinfo 2>/dev/null | tr -d ' ')"
+	case "${cpu_vendor:-}" in
+	GenuineIntel)
+		pkg_cached microcode_ctl || pkg_install microcode_ctl
+		ok "Intel microcode package ensured."
+		;;
+	AuthenticAMD)
+		pkg_cached linux-firmware || pkg_install linux-firmware
+		ok "AMD microcode (linux-firmware) ensured."
+		;;
+	*)
+		info "CPU vendor not Intel/AMD ('${cpu_vendor:-unknown}') — skipping microcode install."
+		;;
+	esac
 }
 
 # ============================================================================
@@ -3098,7 +3126,11 @@ sec_09_pam() {
 			's|^\s*#?\s*minclass\s*=.*|minclass = 3|' \
 			's|^\s*#?\s*dictcheck\s*=.*|dictcheck = 1|' \
 			's|^\s*#?\s*usercheck\s*=.*|usercheck = 1|' \
+			's|^\s*#?\s*gecoscheck\s*=.*|gecoscheck = 1|' \
 			's|^\s*#?\s*retry\s*=.*|retry = 3|'
+		# Ensure gecoscheck and badwords are present (may not be in all pwquality.conf versions)
+		grep -qE '^\s*gecoscheck\s*=' "$pq" || echo 'gecoscheck = 1' >>"$pq"
+		grep -qE '^\s*badwords\s*=' "$pq" || echo 'badwords = admin root password' >>"$pq"
 		ok "Applied pwquality policy in $pq"
 	else
 		info "Would set minlen=14, ucredit=-1, lcredit=-1, dcredit=-1, ocredit=-1, minclass=3, dictcheck=1, usercheck=1, retry=3"
@@ -3205,6 +3237,15 @@ fs.protected_fifos = 2
 fs.protected_regular = 2
 fs.protected_symlinks = 1
 fs.protected_hardlinks = 1
+
+# ── IPv6 Privacy Extensions ───────────────────────────────────────────
+# Randomize temporary IPv6 source addresses (privacyguides.org)
+net.ipv6.conf.all.use_tempaddr = 2
+net.ipv6.conf.default.use_tempaddr = 2
+
+# ── Core Dump Suppression ─────────────────────────────────────────────
+# Route core dumps to /bin/false so they are silently discarded
+kernel.core_pattern = |/bin/false
 EOF
 			err "Failed to write sysctl configuration"
 			return 1
@@ -3269,6 +3310,22 @@ sec_11_auditd() {
 # setuid/setgid execves that land as root
 -a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k setuid
 -a always,exit -F arch=b64 -S execve -C gid!=egid -F egid=0 -k setgid
+
+# System time changes (inteltechniques.com)
+-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time_change
+-w /etc/localtime -p wa -k time_change
+
+# Network configuration changes (inteltechniques.com)
+-a always,exit -F arch=b64 -S sethostname,setdomainname -k network_config
+-w /etc/hosts        -p wa -k network_config
+-w /etc/network/     -p wa -k network_config
+-w /etc/sysconfig/network -p wa -k network_config 2>/dev/null || true
+
+# File system mounts (inteltechniques.com)
+-a always,exit -F arch=b64 -S mount -k mounts
+
+# File deletion by users (inteltechniques.com)
+-a always,exit -F arch=b64 -S unlink,unlinkat,rename,renameat -F auid>=1000 -F auid!=4294967295 -k delete
 
 # Uncomment to lock the ruleset at boot (requires reboot to change):
 # -e 2
@@ -3400,6 +3457,16 @@ sec_13_flatpak() {
 	if confirm "Install Flatseal (graphical Flatpak permission manager)?"; then
 		flatpak_install_or_update flathub com.github.tchx84.Flatseal
 	fi
+
+	# Optional: Firejail for sandboxing non-Flatpak apps (inteltechniques.com recommendation)
+	if confirm "Install Firejail (sandbox non-Flatpak applications)?"; then
+		pkg_install firejail
+		if cmd_exists firecfg; then
+			info "Running firecfg to create desktop integration symlinks..."
+			run "firecfg || true"
+			ok "Firejail installed. Run 'firecfg --list' to see sandboxed apps."
+		fi
+	fi
 }
 
 # ============================================================================
@@ -3429,6 +3496,29 @@ EOF
 	fi
 	run "systemctl restart systemd-resolved"
 	run "resolvectl status | head -25 || true"
+
+	# 14b — NetworkManager MAC address randomization (privacyguides.org network privacy)
+	info "Configuring NetworkManager MAC address randomization..."
+	local nm_mac="/etc/NetworkManager/conf.d/99-mac-randomize.conf"
+	if ((DRY_RUN)); then
+		info "Would write $nm_mac (Wi-Fi and Ethernet MAC randomization)"
+	else
+		install -d -m 755 /etc/NetworkManager/conf.d 2>/dev/null || true
+		if ! cat >"$nm_mac" <<'EOF'; then
+[device]
+wifi.scan-rand-mac-address=yes
+
+[connection]
+ethernet.cloned-mac-address=random
+wifi.cloned-mac-address=random
+EOF
+			warn "Failed to write $nm_mac"
+		else
+			chmod 644 "$nm_mac" 2>/dev/null || true
+			ok "Wrote $nm_mac (MAC address randomization enabled)"
+			run "systemctl restart NetworkManager || true"
+		fi
+	fi
 }
 
 # ============================================================================
@@ -3478,6 +3568,48 @@ sec_15_kde() {
 		fi
 	fi
 	info "GUI-only tweaks (KWallet master password, Privacy, Activity tracking) must be done in System Settings."
+}
+
+# ============================================================================
+#  SECTION 15b — GNOME CLI settings
+# ============================================================================
+# sec_15b_gnome() - Apply GNOME-specific security settings
+# Configures screen lock, privacy settings, and disables location services via gsettings.
+sec_15b_gnome() {
+	should_run 15 || return 0
+	if ((!HAS_GNOME)); then
+		return 0
+	fi
+	info "=== Section 15b: GNOME-specific CLI settings ==="
+
+	if [[ -z "$TARGET_USER" ]]; then
+		warn "No target user — cannot apply per-user GNOME settings."
+		return 0
+	fi
+
+	info "Applying GNOME privacy and screen-lock settings for $TARGET_USER..."
+
+	# Screen lock after 5 minutes idle, lock on suspend
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.session idle-delay 300 || true"
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.screensaver lock-enabled true || true"
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.screensaver lock-delay 0 || true"
+
+	# Privacy: disable location services, remove old temp files, usage data
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.system.location enabled false || true"
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy remove-old-temp-files true || true"
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy remove-old-trash-files true || true"
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy old-files-age 7 || true"
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy send-software-usage-stats false || true"
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy report-technical-problems false || true"
+
+	# Disable recent files tracking
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy remember-recent-files false || true"
+
+	# Disable automatic screen cast / microphone indicator if supported
+	run "sudo -u '$TARGET_USER' gsettings set org.gnome.desktop.privacy disable-microphone false || true"
+
+	ok "GNOME privacy and screen-lock settings applied."
+	info "Remaining GNOME GUI tweaks: Online Accounts, Sharing, and Bluetooth — configure in GNOME Settings."
 }
 
 # ============================================================================
@@ -3731,8 +3863,15 @@ sec_17_wireguard() {
 	should_run 17 || return 0
 	section 17 "WireGuard (tools only — tunnel config is manual)"
 	pkg_install wireguard-tools
-	info "Generate keys with:   wg genkey | tee privatekey | wg pubkey > publickey"
-	info "Then craft /etc/wireguard/wg0.conf (chmod 600) with your peer details."
+	info "WireGuard tools installed. Quick-start guide:"
+	info "  1. Generate keys:      wg genkey | tee private.key | wg pubkey > public.key"
+	info "  2. Install config:     sudo install -m 600 <provider>.conf /etc/wireguard/wg0.conf"
+	info "  3. Bring up tunnel:    sudo wg-quick up wg0"
+	info "  4. Autostart on boot:  sudo systemctl enable wg-quick@wg0"
+	info "  5. Verify IP:          curl -s https://am.i.mullvad.net/json || curl ifconfig.me"
+	info "Most providers (Mullvad, ProtonVPN, IVPN) offer downloadable WireGuard configs."
+	add_action_item 17 MEDIUM "WIREGUARD_TUNNEL_CONFIG" \
+		"Configure WireGuard tunnel: install provider config to /etc/wireguard/wg0.conf (chmod 600) then run: sudo systemctl enable --now wg-quick@wg0"
 }
 
 # ============================================================================
@@ -3903,6 +4042,54 @@ sec_20_perms() {
 	info "Baseline of SUID files (saved for diffing later):"
 	run "find / -xdev -perm /4000 -type f 2>/dev/null | sort > /root/suid-baseline-${RUN_DATE_YMD}.txt || true"
 	info "Saved SUID baseline to /root/suid-baseline-*.txt"
+
+	# 20b — umask 077 (inteltechniques.com: restrict new file visibility)
+	local umask_f="/etc/profile.d/99-umask.sh"
+	if ((DRY_RUN)); then
+		info "Would write $umask_f (umask 077)"
+	elif [[ ! -f "$umask_f" ]]; then
+		if ! cat >"$umask_f" <<'EOF'; then
+# Set restrictive default umask so new files are not world/group readable
+umask 077
+EOF
+			warn "Failed to write $umask_f"
+		else
+			chmod 644 "$umask_f" 2>/dev/null || true
+			ok "Wrote $umask_f (umask 077 — new files private by default)"
+		fi
+	else
+		info "$umask_f already exists — leaving unchanged."
+	fi
+
+	# 20c — Core dump suppression via limits.d (privacyguides.org)
+	local coredump_f="/etc/security/limits.d/99-coredump.conf"
+	if ((DRY_RUN)); then
+		info "Would write $coredump_f (disable core dumps)"
+	elif [[ ! -f "$coredump_f" ]]; then
+		if ! cat >"$coredump_f" <<'EOF'; then
+* soft core 0
+* hard core 0
+EOF
+			warn "Failed to write $coredump_f"
+		else
+			chmod 644 "$coredump_f" 2>/dev/null || true
+			ok "Wrote $coredump_f (core dumps disabled via PAM limits)"
+		fi
+	else
+		info "$coredump_f already exists — leaving unchanged."
+	fi
+
+	# 20d — hostname privacy check (inteltechniques.com: non-identifying hostname)
+	local current_hostname
+	current_hostname="$(hostname -s 2>/dev/null || true)"
+	local real_name="${TARGET_USER:-$(logname 2>/dev/null || true)}"
+	if [[ -n "$current_hostname" && -n "$real_name" ]]; then
+		if grep -qi "$real_name" <<<"$current_hostname" 2>/dev/null; then
+			warn "Hostname '$current_hostname' appears to contain your username — consider a non-identifying hostname."
+			add_action_item 20 MEDIUM "HOSTNAME_PRIVACY" \
+				"Hostname '$current_hostname' may leak identity — change with: sudo hostnamectl set-hostname <generic-name>"
+		fi
+	fi
 }
 
 # ============================================================================
@@ -3920,6 +4107,33 @@ sec_21_clamav() {
 	run "systemctl enable --now clamav-freshclam || true"
 	# The clamd@scan unit varies; try both
 	run "systemctl enable --now clamd@scan || systemctl enable --now clamd@scan.service || true"
+
+	# Configure on-access scanning for home directories (inteltechniques.com)
+	local clamd_conf="/etc/clamd.d/scan.conf"
+	if [[ -f "$clamd_conf" ]]; then
+		if ((!DRY_RUN)); then
+			backup_file "$clamd_conf"
+			# Enable on-access scanning if not already configured
+			if ! grep -q "^OnAccessIncludePath" "$clamd_conf" 2>/dev/null; then
+				{
+					echo ""
+					echo "# On-access scanning — monitor home directories (inteltechniques.com)"
+					echo "OnAccessIncludePath /home"
+					echo "OnAccessExcludeRootUID yes"
+					echo "OnAccessPrevention no"
+				} >>"$clamd_conf" 2>/dev/null && ok "Configured ClamAV on-access scanning for /home in $clamd_conf" \
+					|| warn "Failed to update $clamd_conf for on-access scanning"
+			else
+				info "ClamAV on-access scanning already configured in $clamd_conf"
+			fi
+		else
+			info "Would configure ClamAV on-access scanning (OnAccessIncludePath /home) in $clamd_conf"
+		fi
+	else
+		info "ClamAV clamd config not found at $clamd_conf — on-access config skipped."
+		add_action_item 21 LOW "CLAMAV_ONACCESS_CONFIG" \
+			"Manually configure on-access scanning: add 'OnAccessIncludePath /home' to your clamd config (/etc/clamd.d/scan.conf)"
+	fi
 
 	# Post-enable status check and report
 	if ((!DRY_RUN)); then
@@ -4422,6 +4636,7 @@ main() {
 	sec_14_dot
 	sec_18_fail2ban
 	sec_15_kde
+	sec_15b_gnome
 	sec_16_firefox
 	sec_17_wireguard
 	sec_21_clamav
