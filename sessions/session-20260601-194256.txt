@@ -1,0 +1,9 @@
+=== Fedora Hardening Session Report ===
+Session:   20260601-194256
+Status:    running
+Host:      bluebox
+Started:   2026-06-01T19:42:56-0700
+Log:       /var/log/fedora-harden/harden-20260601-194256.log
+Backups:   /root/harden-backups-20260601-194256
+
+(Script still running — full report written on exit)
