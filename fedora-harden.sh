@@ -4822,6 +4822,25 @@ sec_21_clamav() {
 			else
 				info "ClamAV on-access scanning already configured in $clamd_conf"
 			fi
+			# Increase scan size limits to suppress spurious decompress-exceeds-limits
+			# warnings on large XZ/archive files while keeping memory use reasonable.
+			if ! grep -q "^MaxFileSize" "$clamd_conf" 2>/dev/null; then
+				if {
+					echo ""
+					echo "# Scan size limits — raised to handle large archives/ISOs without"
+					echo "# LibClamAV 'decompress file size exceeds limits' noise"
+					echo "MaxFileSize 500M"
+					echo "MaxScanSize 2000M"
+					echo "MaxRecursion 16"
+					echo "StreamMaxLength 500M"
+				} >>"$clamd_conf" 2>/dev/null; then
+					ok "Configured ClamAV scan size limits in $clamd_conf"
+				else
+					warn "Failed to write ClamAV scan size limits to $clamd_conf"
+				fi
+			else
+				info "ClamAV scan size limits already set in $clamd_conf"
+			fi
 		else
 			info "Would configure ClamAV on-access scanning (OnAccessIncludePath /home) in $clamd_conf"
 		fi
