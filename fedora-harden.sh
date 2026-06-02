@@ -1021,8 +1021,8 @@ download_file() {
 	fi
 
 	if ! cmd_exists curl && ! cmd_exists wget; then
-		ensure_command_dep curl "download operations" curl
-		cmd_exists curl || ensure_command_dep wget "download operations fallback" wget
+		ensure_command_dep curl "download operations" curl || true
+		cmd_exists curl || ensure_command_dep wget "download operations fallback" wget || true
 	fi
 	if cmd_exists curl; then
 		run "curl -fsSL '$url' -o '$dest' 2>/dev/null" && return 0
@@ -2446,8 +2446,8 @@ generate_audit_pdf() {
 	chown "${user}:${user}" "$bundle_path" 2>/dev/null || true
 	chmod 640 "$bundle_path" 2>/dev/null || true
 
-	ensure_command_dep enscript "audit PDF generation" enscript
-	ensure_command_dep ps2pdf "audit PDF generation" ghostscript
+	ensure_command_dep enscript "audit PDF generation" enscript || true
+	ensure_command_dep ps2pdf "audit PDF generation" ghostscript || true
 	if ! cmd_exists enscript || ! cmd_exists ps2pdf; then
 		warn "PDF generation dependencies are unavailable; could not create $pdf_path"
 		return 1
@@ -2486,7 +2486,7 @@ import_audit_items() {
 	*.pdf)
 		source_path="${input_path%.pdf}.txt"
 		if [[ ! -f "$source_path" ]]; then
-			ensure_command_dep pdftotext "audit import from PDF" poppler-utils
+			ensure_command_dep pdftotext "audit import from PDF" poppler-utils || true
 			if ! cmd_exists pdftotext; then
 				err "Cannot import audit PDF without companion TXT bundle or pdftotext."
 				return 1
@@ -3247,7 +3247,7 @@ sec_06_secureboot() {
 	should_run 6 || return 0
 	section 6 "Secure Boot verification"
 	if ! cmd_exists mokutil; then
-		ensure_command_dep mokutil "Secure Boot verification" mokutil
+		ensure_command_dep mokutil "Secure Boot verification" mokutil || true
 	fi
 	if cmd_exists mokutil; then
 		local sb
@@ -4857,7 +4857,9 @@ sec_22_openscap() {
 	should_run 22 || return 0
 	section 22 "OpenSCAP compliance scanner"
 	pkg_install openscap-scanner scap-security-guide
-	ensure_command_dep oscap "OpenSCAP compliance scan" openscap-scanner
+	# On rpm-ostree, packages are staged — oscap may not be available until reboot.
+	# Use cmd_exists check only; do not hard-fail if missing.
+	ensure_command_dep oscap "OpenSCAP compliance scan" openscap-scanner || true
 	if ! cmd_exists oscap; then
 		warn "oscap command is unavailable after dependency checks — skipping section 22."
 		return 0
@@ -4952,7 +4954,7 @@ sec_23_containers() {
 	section 23 "Container security (Podman + Toolbox — containerized mindset)"
 
 	pkg_install podman toolbox
-	ensure_command_dep podman "rootless container engine" podman
+	ensure_command_dep podman "rootless container engine" podman || true
 	if ! cmd_exists podman; then
 		warn "podman not available after install attempt — skipping section 23."
 		return 0
