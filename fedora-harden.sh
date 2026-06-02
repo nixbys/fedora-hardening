@@ -3657,7 +3657,7 @@ sec_11_auditd() {
 -a always,exit -F arch=b64 -S sethostname,setdomainname -k network_config
 -w /etc/hosts        -p wa -k network_config
 -w /etc/network/     -p wa -k network_config
--w /etc/sysconfig/network -p wa -k network_config 2>/dev/null || true
+-w /etc/sysconfig/network -p wa -k network_config
 
 # File system mounts (inteltechniques.com)
 -a always,exit -F arch=b64 -S mount -k mounts
@@ -3674,7 +3674,12 @@ EOF
 		chmod 640 "$rules" 2>/dev/null || true
 		ok "Wrote $rules"
 	fi
-	run "augenrules --load"
+	local augen_rc=0
+	run "augenrules --load" || augen_rc=$?
+	if ((augen_rc != 0)); then
+		warn "augenrules --load failed (exit $augen_rc) — check $rules for syntax errors."
+		warn "Audit rules written but not loaded. Re-run 'sudo augenrules --load' after fixing."
+	fi
 	run "systemctl restart auditd || service auditd restart"
 }
 
