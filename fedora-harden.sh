@@ -1046,8 +1046,7 @@ user_home() {
 	fi
 	local entry home
 	entry="$(getent passwd "$user" 2>/dev/null || true)"
-	home="${entry#*:*:*:*:*:}"
-	[[ "$home" == "$entry" ]] && home=""
+	home="$(cut -d: -f6 <<<"$entry")"
 	_USER_HOME_CACHE[$user]="$home"
 	echo "$home"
 }
@@ -3790,7 +3789,7 @@ CRONEOF
 	else
 		ok "rkhunter scan: no warnings detected."
 	fi
-	if ((!DRY_RUN)) && [[ ! -f /var/lib/aide/aide.db.gz ]]; then
+	if ((!DRY_RUN)) && [[ ! -f /var/lib/aide/aide.db.gz ]] && cmd_exists aide; then
 		add_action_item 12 HIGH "AIDE_DB_MISSING" \
 			"AIDE database not initialized — run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
 	fi
