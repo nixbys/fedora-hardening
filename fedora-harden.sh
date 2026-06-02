@@ -3396,19 +3396,23 @@ EOF
 		local tmp_usbguard="/tmp/usbguard-rules-$$-$RANDOM-$SECONDS.conf"
 		register_tmp "$tmp_usbguard"
 		if ! usbguard generate-policy >"$tmp_usbguard" 2>/dev/null; then
-			warn "usbguard generate-policy failed"
+			warn "usbguard generate-policy failed — daemon may not be running yet or no USB devices enumerable."
 			rm -f "$tmp_usbguard" 2>/dev/null || true
-			return 1
+			add_action_item 8 HIGH "USBGUARD_POLICY_MISSING" \
+				"USBGuard policy not generated — reboot, plug in all USB devices, then run: sudo usbguard generate-policy > /etc/usbguard/rules.conf && sudo systemctl enable --now usbguard"
+			return 0
 		fi
 		if ! install -m 0600 -o root -g root "$tmp_usbguard" /etc/usbguard/rules.conf 2>/dev/null; then
 			warn "Failed to install USBGuard rules (filesystem may be read-only)"
 			rm -f "$tmp_usbguard" 2>/dev/null || true
-			return 1
+			add_action_item 8 HIGH "USBGUARD_INSTALL_FAILED" \
+				"USBGuard rules could not be written — run: sudo install -m 0600 /tmp/usbguard-rules.conf /etc/usbguard/rules.conf"
+			return 0
 		fi
 		rm -f "$tmp_usbguard" 2>/dev/null || true
 		ok "Wrote /etc/usbguard/rules.conf (0600 root:root)"
 	fi
-	run "systemctl enable --now usbguard"
+	run "systemctl enable --now usbguard || true"
 
 	if pkg_cached plasma-workspace; then
 		if confirm "Install graphical USBGuard notifier (usbguard-notifier)?"; then
