@@ -777,13 +777,27 @@ have_cmd() {
 # pkg_upgrade() - Upgrade system packages using appropriate mechanism for platform.
 # On immutable systems (rpm-ostree), changes are staged for next reboot.
 # On mutable systems, updates are applied immediately via dnf.
+# Upgrade failures are treated as warnings, not fatal errors — transient repo
+# conflicts or network issues must not abort the remaining hardening sections.
 pkg_upgrade() {
+	local rc=0
 	if ((IS_OSTREE)); then
-		run "rpm-ostree upgrade"
-		warn "rpm-ostree upgrades are applied on reboot. Reboot when this script completes."
+		run "rpm-ostree upgrade" || rc=$?
+		if ((rc != 0)); then
+			warn "rpm-ostree upgrade failed (exit $rc) — likely a transient upstream repo conflict."
+			warn "Re-run 'sudo rpm-ostree upgrade' manually once the conflict is resolved."
+			warn "Continuing with remaining hardening sections."
+		else
+			warn "rpm-ostree upgrades are staged and applied on reboot. Reboot when this script completes."
+		fi
 	else
-		run "dnf upgrade --refresh -y"
+		run "dnf upgrade --refresh -y" || rc=$?
+		if ((rc != 0)); then
+			warn "dnf upgrade failed (exit $rc) — check repo availability and re-run manually."
+			warn "Continuing with remaining hardening sections."
+		fi
 	fi
+	return 0
 }
 
 # _load_ostree_staged_packages() - Populate _PKG_PENDING_CACHE from the live rpm-ostree
