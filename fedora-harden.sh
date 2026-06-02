@@ -784,8 +784,13 @@ pkg_upgrade() {
 	if ((IS_OSTREE)); then
 		run "rpm-ostree upgrade" || rc=$?
 		if ((rc != 0)); then
-			warn "rpm-ostree upgrade failed (exit $rc) — likely a transient upstream repo conflict."
-			warn "Re-run 'sudo rpm-ostree upgrade' manually once the conflict is resolved."
+			local stderr_content=""
+			[[ -f "$ERROR_CAPTURE_FILE" ]] && stderr_content=$(<"$ERROR_CAPTURE_FILE")
+			if [[ "$stderr_content" =~ depsolve|conflicting[[:space:]]requests|cannot[[:space:]]install[[:space:]]both ]]; then
+				warn "rpm-ostree upgrade failed due to a package resolution conflict; continuing without staging an upgrade."
+			else
+				warn "rpm-ostree upgrade failed (exit $rc); continuing without staging an upgrade."
+			fi
 			warn "Continuing with remaining hardening sections."
 		else
 			warn "rpm-ostree upgrades are staged and applied on reboot. Reboot when this script completes."
