@@ -202,6 +202,7 @@ GUI_MODE=0              # Set to 1 if kdialog/zenity available and enabled
 GUI_FULL_MODE=0         # Set to 1 if --gui-full requested and display available
 GUI_TOOL=""             # Selected dialog tool: "kdialog" or "zenity"
 GUI_PROGRESS_REF=""     # D-Bus reference for kdialog progress tracking
+QDBUS_CMD=""            # qdbus binary name (qdbus-qt6 / qdbus-qt5 / qdbus)
 GUI_PROGRESS_PIPE_FD="" # File descriptor for GUI progress updates
 GUI_PROGRESS_PID=""     # PID of running GUI progress process
 GUI_LAST_STATUS=""      # Last status message sent to GUI
@@ -363,7 +364,21 @@ setup_ui_mode() {
 		FORCE_GUI=1
 		if [[ -n "$GUI_TOOL" ]]; then
 			if [[ "$GUI_TOOL" == "kdialog" ]]; then
-				cmd_exists qdbus || ensure_command_dep qdbus "kdialog full progress mode" qt6-qttools qt5-qttools
+				# Fedora 44+ ships qdbus-qt6; older releases use qdbus-qt5 or qdbus.
+				# Install the package if needed, then probe all known binary names.
+				if ! cmd_exists qdbus-qt6 && ! cmd_exists qdbus-qt5 && ! cmd_exists qdbus; then
+					install_dep_candidates qt6-qttools qt5-qttools 2>/dev/null || true
+				fi
+				if cmd_exists qdbus-qt6; then
+					QDBUS_CMD="qdbus-qt6"
+				elif cmd_exists qdbus-qt5; then
+					QDBUS_CMD="qdbus-qt5"
+				elif cmd_exists qdbus; then
+					QDBUS_CMD="qdbus"
+				else
+					QDBUS_CMD=""
+					warn "qdbus not found; kdialog progress updates will be limited."
+				fi
 			fi
 			GUI_MODE=1
 			GUI_FULL_MODE=1
@@ -441,12 +456,12 @@ gui_progress_start() {
 
 	case "$GUI_TOOL" in
 	kdialog)
-		if cmd_exists qdbus; then
+		if [[ -n "${QDBUS_CMD:-}" ]]; then
 			GUI_PROGRESS_REF="$(kdialog --title "$SCRIPT_NAME" --progressbar "Initializing hardening..." "$UI_SECTION_TOTAL")"
 			if [[ -n "$GUI_PROGRESS_REF" ]]; then
-				qdbus "$GUI_PROGRESS_REF" showCancelButton true >/dev/null 2>&1 || true
-				qdbus "$GUI_PROGRESS_REF" setLabelText "Preparing section execution..." >/dev/null 2>&1 || true
-				qdbus "$GUI_PROGRESS_REF" Set "" value 0 >/dev/null 2>&1 || true
+				"$QDBUS_CMD" "$GUI_PROGRESS_REF" showCancelButton true >/dev/null 2>&1 || true
+				"$QDBUS_CMD" "$GUI_PROGRESS_REF" setLabelText "Preparing section execution..." >/dev/null 2>&1 || true
+				"$QDBUS_CMD" "$GUI_PROGRESS_REF" Set "" value 0 >/dev/null 2>&1 || true
 			fi
 		else
 			warn "qdbus not found; kdialog progress updates are limited."
@@ -481,12 +496,12 @@ gui_progress_update() {
 	case "$GUI_TOOL" in
 	kdialog)
 		[[ -n "$GUI_PROGRESS_REF" ]] || return 0
-		if cmd_exists qdbus && [[ "$(qdbus "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
+		if [[ -n "${QDBUS_CMD:-}" ]] && [[ "$(${QDBUS_CMD} "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
 			GUI_CANCEL_REQUESTED=1
 			return 0
 		fi
-		qdbus "$GUI_PROGRESS_REF" Set "" value "$current" >/dev/null 2>&1 || true
-		qdbus "$GUI_PROGRESS_REF" setLabelText "$message" >/dev/null 2>&1 || true
+		"${QDBUS_CMD:-qdbus}" "$GUI_PROGRESS_REF" Set "" value "$current" >/dev/null 2>&1 || true
+		"${QDBUS_CMD:-qdbus}" "$GUI_PROGRESS_REF" setLabelText "$message" >/dev/null 2>&1 || true
 		;;
 	zenity)
 		[[ -n "$GUI_PROGRESS_PIPE_FD" ]] || return 0
@@ -504,7 +519,7 @@ gui_progress_close() {
 	case "$GUI_TOOL" in
 	kdialog)
 		if [[ -n "$GUI_PROGRESS_REF" ]]; then
-			qdbus "$GUI_PROGRESS_REF" close >/dev/null 2>&1 || true
+			"${QDBUS_CMD:-qdbus}" "$GUI_PROGRESS_REF" close >/dev/null 2>&1 || true
 			GUI_PROGRESS_REF=""
 		fi
 		;;
@@ -549,7 +564,7 @@ gui_check_cancel() {
 
 	case "$GUI_TOOL" in
 	kdialog)
-		if cmd_exists qdbus && [[ -n "$GUI_PROGRESS_REF" ]] && [[ "$(qdbus "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
+		if [[ -n "${QDBUS_CMD:-}" ]] && [[ -n "$GUI_PROGRESS_REF" ]] && [[ "$(${QDBUS_CMD} "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
 			GUI_CANCEL_REQUESTED=1
 			return 0
 		fi
