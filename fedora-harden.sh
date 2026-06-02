@@ -3694,58 +3694,70 @@ sec_12_ids() {
 
 	pkg_install rkhunter aide
 
-	# rkhunter: update signatures then run scan with output capture
-	run "rkhunter --update || true"
-	run "rkhunter --propupd"
-	info "Running initial rkhunter scan (this takes a minute)..."
-	local rk_tmp="/tmp/rkhunter-out-$$.tmp" rk_warn_count=0
+	local rk_tmp="/tmp/rkhunter-out-$$.tmp" rk_warn_count=0 cron_rk="/etc/cron.daily/rkhunter-scan"
 	register_tmp "$rk_tmp"
-	if ((!DRY_RUN)); then
-		log "[RUN]   rkhunter --check --sk --rwo"
-		if ((GUI_FULL_MODE)); then
-			rkhunter --check --sk --rwo >"$rk_tmp" 2>&1 || true
-		else
-			rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" || true
-		fi
-		rk_warn_count="$(awk '/^\[ Warning \]/{count++} END{print count+0}' "$rk_tmp" 2>/dev/null || echo 0)"
-	else
-		run "rkhunter --check --sk --rwo || true"
-	fi
 
-	# Daily cron
-	local cron_rk="/etc/cron.daily/rkhunter-scan"
-	if ((!DRY_RUN)); then
-		if ! cat >"$cron_rk" <<'CRONEOF'; then
+	if cmd_exists rkhunter; then
+		# rkhunter: update signatures then run scan with output capture
+		run "rkhunter --update || true"
+		run "rkhunter --propupd"
+		info "Running initial rkhunter scan (this takes a minute)..."
+		if ((!DRY_RUN)); then
+			log "[RUN]   rkhunter --check --sk --rwo"
+			if ((GUI_FULL_MODE)); then
+				rkhunter --check --sk --rwo >"$rk_tmp" 2>&1 || true
+			else
+				rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" || true
+			fi
+			rk_warn_count="$(awk '/^\[ Warning \]/{count++} END{print count+0}' "$rk_tmp" 2>/dev/null || echo 0)"
+		else
+			run "rkhunter --check --sk --rwo || true"
+		fi
+
+		# Daily cron
+		if ((!DRY_RUN)); then
+			if ! cat >"$cron_rk" <<'CRONEOF'; then
 #!/bin/bash
 /usr/bin/rkhunter --cronjob --update --quiet
 CRONEOF
-			warn "Failed to write $cron_rk"
-			return 1
+				warn "Failed to write $cron_rk"
+			else
+				chmod 755 "$cron_rk" 2>/dev/null || true
+				ok "Wrote $cron_rk"
+			fi
 		fi
-		chmod 755 "$cron_rk" 2>/dev/null || true
-		ok "Wrote $cron_rk"
+	else
+		warn "rkhunter not yet active (staged for next boot on rpm-ostree) — skipping scan; cron will run after reboot."
+		add_action_item 12 MEDIUM "RK_REBOOT_REQUIRED" \
+			"rkhunter staged but not active — reboot then run: sudo rkhunter --propupd && sudo rkhunter --check --sk --rwo"
 	fi
 
 	# AIDE: initialize database
-	info "Initializing AIDE database (this can take several minutes)..."
-	run "aide --init"
-	if ((!DRY_RUN)) && [[ -f /var/lib/aide/aide.db.new.gz ]]; then
-		run "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+	local cron_aide="/etc/cron.weekly/aide-check"
+	if cmd_exists aide; then
+		info "Initializing AIDE database (this can take several minutes)..."
+		run "aide --init"
+		if ((!DRY_RUN)) && [[ -f /var/lib/aide/aide.db.new.gz ]]; then
+			run "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+		fi
+	else
+		warn "aide not yet active (staged for next boot on rpm-ostree) — skipping database init."
+		add_action_item 12 MEDIUM "AIDE_REBOOT_REQUIRED" \
+			"aide staged but not active — reboot then run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
 	fi
 
-	local cron_aide="/etc/cron.weekly/aide-check"
-	if ((!DRY_RUN)); then
+	if cmd_exists aide && ((!DRY_RUN)); then
 		if ! cat >"$cron_aide" <<'CRONEOF'; then
 #!/bin/bash
 /usr/sbin/aide --check 2>&1 | logger -t aide
 CRONEOF
 			warn "Failed to write $cron_aide"
-			return 1
+		else
+			chmod 755 "$cron_aide" 2>/dev/null || true
+			ok "Wrote $cron_aide (results sent to journal via logger)"
 		fi
-		chmod 755 "$cron_aide" 2>/dev/null || true
-		ok "Wrote $cron_aide (results sent to journal via logger)"
+		warn "Re-initialize AIDE after legitimate package updates: 'sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
 	fi
-	warn "Re-initialize AIDE after legitimate package updates: 'sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
 
 	# Write section report to user Downloads/<project>/results/
 	if ((!DRY_RUN)); then
