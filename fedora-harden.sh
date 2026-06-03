@@ -207,6 +207,7 @@ GUI_PROGRESS_PIPE_FD="" # File descriptor for GUI progress updates
 GUI_PROGRESS_PID=""     # PID of running GUI progress process
 GUI_LAST_STATUS=""      # Last status message sent to GUI
 GUI_CANCEL_REQUESTED=0  # Set to 1 if user cancels via GUI
+GUI_SINGLE_WINDOW_MODE=0 # Set to 1 to keep GUI-full updates in one window
 
 # ---------- Execution state flags -------------------------------------------
 LOG_READY=0       # Set to 1 after log file initialized
@@ -332,6 +333,7 @@ setup_ui_mode() {
 	local prefers_kde=0
 	[[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] && has_display=1
 	[[ "${XDG_CURRENT_DESKTOP:-}${DESKTOP_SESSION:-}" =~ ([Kk][Dd][Ee]|[Pp]lasma) ]] && prefers_kde=1
+	GUI_SINGLE_WINDOW_MODE=0
 
 	# If GUI mode is requested, try to satisfy missing GUI dialog dependencies.
 	if ((has_display && (FORCE_GUI || FORCE_GUI_FULL))); then
@@ -362,6 +364,17 @@ setup_ui_mode() {
 
 	if ((FORCE_GUI_FULL)); then
 		FORCE_GUI=1
+
+		# Prefer zenity for --gui-full to avoid kdialog progress startup hangs on some stacks.
+		if ((has_display)); then
+			if ! cmd_exists zenity; then
+				ensure_command_dep zenity "full GUI frontend (--gui-full)" zenity || true
+			fi
+			if cmd_exists zenity; then
+				GUI_TOOL="zenity"
+			fi
+		fi
+
 		if [[ -n "$GUI_TOOL" ]]; then
 			if [[ "$GUI_TOOL" == "kdialog" ]]; then
 				# Fedora 44+ ships qdbus-qt6; older releases use qdbus-qt5 or qdbus.
@@ -382,10 +395,12 @@ setup_ui_mode() {
 			fi
 			GUI_MODE=1
 			GUI_FULL_MODE=1
+			GUI_SINGLE_WINDOW_MODE=1
 			info "Full GUI frontend enabled using $GUI_TOOL."
 		else
 			GUI_MODE=0
 			GUI_FULL_MODE=0
+			GUI_SINGLE_WINDOW_MODE=0
 			warn "--gui-full requested, but no supported GUI dialog tool was found. Falling back to terminal output."
 			warn "Install 'kdialog' or 'zenity' and rerun with --gui-full."
 		fi
@@ -411,6 +426,19 @@ calc_section_total() {
 gui_alert() {
 	local level="$1" message="$2"
 	((GUI_MODE)) || return 0
+
+	# In full GUI mode, keep status inside a single progress window.
+	if ((GUI_FULL_MODE && GUI_SINGLE_WINDOW_MODE)); then
+		local one_line="$message"
+		one_line="${one_line//$'\n'/ | }"
+		case "$level" in
+		info) gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$one_line" ;;
+		warning) gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "Warning: $one_line" ;;
+		error) gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "Error: $one_line" ;;
+		esac
+		return 0
+	fi
+
 	case "$GUI_TOOL" in
 	kdialog)
 		case "$level" in
@@ -541,6 +569,8 @@ gui_progress_close() {
 gui_status_event() {
 	local level="$1" message="$2"
 	((GUI_FULL_MODE)) || return 0
+	local popup_ok=1
+	((GUI_SINGLE_WINDOW_MODE)) && popup_ok=0
 
 	case "$level" in
 	info | ok)
@@ -548,11 +578,11 @@ gui_status_event() {
 		;;
 	warning)
 		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-		gui_alert warning "$message"
+		((popup_ok)) && gui_alert warning "$message"
 		;;
 	error)
 		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-		gui_alert error "$message"
+		((popup_ok)) && gui_alert error "$message"
 		;;
 	esac
 }

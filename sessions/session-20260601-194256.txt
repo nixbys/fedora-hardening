@@ -1,0 +1,68 @@
+=== Fedora Hardening Session Report ===
+Session:   20260601-194256
+Status:    running
+Host:      bluebox
+Kernel:    7.0.10-201.fc44.x86_64
+Platform:  rpm-ostree (immutable)
+Started:   2026-06-01T19:42:56-0700
+Log:       /var/log/fedora-harden/harden-20260601-194256.log
+Backups:   /root/harden-backups-20260601-194256
+
+=== Change Summary (19 total) ===
+  File backups created:    7
+  Packages installed:      6
+  Services enabled:        6
+  Services disabled:       0
+  Flatpak apps installed:  0
+
+=== Detailed Changes ===
+  [2026-06-01 19:43:11] PKG_INSTALL        yubico-piv-tool yubikey-manager
+  [2026-06-01 19:43:11] SERVICE_ENABLE     pcscd.socket
+  [2026-06-01 19:43:14] PKG_INSTALL        pam-u2f
+  [2026-06-01 19:43:14] FILE_BACKUP        /etc/rpm-ostreed.conf
+  [2026-06-01 19:43:14] SERVICE_ENABLE     rpm-ostreed-automatic.timer
+  [2026-06-01 19:43:23] PKG_INSTALL        firejail
+  [2026-06-01 19:43:23] SERVICE_ENABLE     firewalld
+  [2026-06-01 19:43:33] FILE_BACKUP        /etc/ssh/sshd_config
+  [2026-06-01 19:43:33] FILE_BACKUP        /etc/security/pwquality.conf
+  [2026-06-01 19:43:33] FILE_BACKUP        /etc/security/faillock.conf
+  [2026-06-01 19:43:33] FILE_BACKUP        /etc/login.defs
+  [2026-06-01 19:43:34] SERVICE_ENABLE     auditd
+  [2026-06-01 19:43:35] FILE_BACKUP        /etc/systemd/resolved.conf.d/99-hardening.conf
+  [2026-06-01 19:43:50] SERVICE_ENABLE     clamav-freshclam
+  [2026-06-01 19:43:51] SERVICE_ENABLE     clamd@scan
+  [2026-06-01 19:43:51] FILE_BACKUP        /etc/clamd.d/scan.conf
+  [2026-06-01 19:43:51] PKG_INSTALL        openscap-scanner scap-security-guide
+  [2026-06-01 19:44:03] PKG_INSTALL        rkhunter
+  [2026-06-01 19:44:08] PKG_INSTALL        usbguard usbguard-tools
+
+=== Actionable Items (16) ===
+  [ 1] [MEDIUM][S2] pam-u2f was installed. Configure PAM (/etc/pam.d/sudo, /etc/pam.d/system-auth) to require your hardware key for authentication. See: https://developers.yubico.com/pam-u2f/
+  [ 2] [HIGH][S2] Hardware security key detected: ensure it is plugged in BEFORE section 8 (USBGuard) runs so it is added to the allowlist. If missed, run: sudo usbguard generate-policy >> /etc/usbguard/rules.conf
+  [ 3] [MEDIUM][S13] Review Flatpak app permissions with Flatseal (com.github.tchx84.Flatseal). Apps may have overly broad filesystem/network access by default — restrict each app to only what it needs.
+  [ 4] [HIGH][S7] Install public SSH key to ~/.ssh/authorized_keys before testing remote login.
+  [ 5] [HIGH][S18] Reboot to activate staged fail2ban packages, then re-run section 18.
+  [ 6] [MEDIUM][S17] Configure WireGuard tunnel: install provider config to /etc/wireguard/wg0.conf (chmod 600) then run: sudo systemctl enable --now wg-quick@wg0
+  [ 7] [MEDIUM][S21] clamd@scan is not running — run: sudo systemctl start clamd@scan
+  [ 8] [MEDIUM][S21] Run initial ClamAV home-directory scan (handled automatically in remediation step).
+  [ 9] [LOW][S21] Review ClamAV status: /var/home/nixbys/Downloads/fedora-hardening/results/section-21-clamav-20260601-194256.txt
+  [10] [MEDIUM][S23] Adopt a containerized mindset: use 'toolbox create && toolbox enter' for development, IDEs, compilers, and scripts (isolated from host). For services: 'podman run --read-only --security-opt no-new-privileges:true --cap-drop ALL --cap-add <only_what_is_needed>'.
+  [11] [LOW][S23] Review Podman network isolation: run 'podman network ls' and use 'podman network create --internal' for workloads that must not reach the internet. Verify inter-container traffic is explicitly controlled.
+  [12] [MEDIUM][S12] rkhunter staged but not active — reboot then run: sudo rkhunter --propupd && sudo rkhunter --check --sk --rwo
+  [13] [MEDIUM][S12] aide staged but not active — reboot then run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+  [14] [LOW][S12] Re-initialize AIDE after any future package updates (command in section-12 report).
+  [15] [LOW][S20] Consider a non-identifying system username instead of 'nixbys' (privacyguides.org recommendation)
+  [16] [HIGH][S8] USBGuard policy not generated — reboot, plug in all USB devices, then run: sudo usbguard generate-policy > /etc/usbguard/rules.conf && sudo systemctl enable --now usbguard
+
+=== Remediated Items (0) ===
+  None.
+
+=== Rollback Instructions ===
+  To undo all changes from this session:
+    sudo fedora-harden.sh --rollback 20260601-194256
+
+  To undo ALL changes from every session (full reset):
+    sudo fedora-harden.sh --rollback all
+
+  Manual restore of config files from:
+    /root/harden-backups-20260601-194256
