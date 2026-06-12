@@ -1,0 +1,92 @@
+# Pre-commit hooks for local validation before commits
+# Install: pip install pre-commit && pre-commit install
+# Run: pre-commit run --all-files
+
+repos:
+  # Shell script linting with shellcheck
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        name: shellcheck - Shell script linter
+        args: ['--severity=warning']
+        exclude: '^(Dockerfile|sessions/)'
+        stages: [commit]
+
+  # Shell script formatting with shfmt
+  - repo: https://github.com/scop/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: shfmt
+        name: shfmt - Shell script formatter
+        args: ['-i', '4', '-bn', '-ci', '-sr']
+        types: [shell]
+        exclude: '^(Dockerfile|sessions/)'
+
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+        exclude: '^(sessions/|\.md$)'
+      - id: end-of-file-fixer
+        name: Fix end of file
+        exclude: '^sessions/'
+      - id: check-yaml
+        name: Check YAML syntax
+      - id: check-json
+        name: Check JSON syntax
+      - id: check-merge-conflict
+        name: Check for merge conflicts
+      - id: detect-private-key
+        name: Detect private keys
+      - id: check-executable-make-git-hooks
+        name: Check executability of git hooks
+
+  # Git commit message linting (conventional commits)
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: 3.13.0
+    hooks:
+      - id: commitizen
+        name: commitizen - Validate commit message format
+        stages: [commit-msg]
+
+  # Security scanning for secrets
+  - repo: https://github.com/trufflesecurity/trufflehog
+    rev: v3.63.0
+    hooks:
+      - id: trufflehog
+        name: trufflehog - Scan for leaked secrets
+        args: ['filesystem', '--only-verified']
+        exclude: '^(sessions/|\.git/)'
+        stages: [commit]
+
+  # Markdown linting
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.38.0
+    hooks:
+      - id: markdownlint
+        name: markdownlint - Validate markdown
+        exclude: '^sessions/'
+
+  # YAML linting
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.33.0
+    hooks:
+      - id: yamllint
+        name: yamllint - Validate YAML
+        args: ['--strict', '--config-data', '{extends: default, rules: {line-length: {max: 120}, comments-indentation: disable}}']
+
+  # Dockerfile linting
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint-docker
+        name: hadolint - Lint Dockerfile
+        exclude: '^sessions/'
+
+# Configuration
+default_stages: [commit]
+fail_fast: false
+minimum_pre_commit_version: '2.15.0'
