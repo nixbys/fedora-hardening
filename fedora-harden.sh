@@ -364,6 +364,7 @@ setup_ui_mode() {
 
 	if ((FORCE_GUI_FULL)); then
 		FORCE_GUI=1
+		GUI_TOOL=""  # Reset to force zenity preference for --gui-full
 
 		# Prefer zenity for --gui-full to avoid kdialog progress startup hangs on some stacks.
 		if ((has_display)); then
@@ -372,6 +373,9 @@ setup_ui_mode() {
 			fi
 			if cmd_exists zenity; then
 				GUI_TOOL="zenity"
+			elif cmd_exists kdialog; then
+				# Fallback to kdialog if zenity unavailable
+				GUI_TOOL="kdialog"
 			fi
 		fi
 
@@ -396,7 +400,7 @@ setup_ui_mode() {
 			GUI_MODE=1
 			GUI_FULL_MODE=1
 			GUI_SINGLE_WINDOW_MODE=1
-			info "Full GUI frontend enabled using $GUI_TOOL."
+			info "Full GUI frontend enabled using $GUI_TOOL (single-window mode)."
 		else
 			GUI_MODE=0
 			GUI_FULL_MODE=0
@@ -2480,10 +2484,27 @@ generate_audit_pdf() {
 	chown "${user}:${user}" "$bundle_path" 2>/dev/null || true
 	chmod 640 "$bundle_path" 2>/dev/null || true
 
-	ensure_command_dep enscript "audit PDF generation" enscript || true
-	ensure_command_dep ps2pdf "audit PDF generation" ghostscript || true
-	if ! cmd_exists enscript || ! cmd_exists ps2pdf; then
-		warn "PDF generation dependencies are unavailable; could not create $pdf_path"
+	# Attempt to install PDF generation tools (best-effort)
+	local has_enscript=0 has_ps2pdf=0
+	if cmd_exists enscript; then
+		has_enscript=1
+	else
+		ensure_command_dep enscript "audit PDF generation" enscript || true
+		cmd_exists enscript && has_enscript=1
+	fi
+
+	if cmd_exists ps2pdf; then
+		has_ps2pdf=1
+	else
+		ensure_command_dep ps2pdf "audit PDF generation" ghostscript || true
+		cmd_exists ps2pdf && has_ps2pdf=1
+	fi
+
+	if ! ((has_enscript && has_ps2pdf)); then
+		warn "PDF generation dependencies unavailable (enscript: $(cmd_exists enscript && echo 'yes' || echo 'no'), ghostscript/ps2pdf: $(cmd_exists ps2pdf && echo 'yes' || echo 'no'))"
+		warn "Audit TXT bundle saved: $bundle_path"
+		warn "To generate PDF later, install 'enscript' and 'ghostscript' packages, then manually convert:"
+		warn "  enscript -B -q -f Courier8 '$txt_path' -o - | ps2pdf - '$pdf_path'"
 		return 1
 	fi
 
