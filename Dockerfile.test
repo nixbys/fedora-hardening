@@ -1,0 +1,128 @@
+# Multi-stage Fedora hardening test container - optimized for minimal size and resource usage
+# Build: podman build -f Dockerfile.test -t fedora-harden:test .
+# Run: podman run --rm --memory 512m --cpus 2 --volume ./fedora-harden.sh:/root/fedora-harden.sh:ro fedora-harden:test
+
+FROM fedora:44-minimal as base
+LABEL description="Fedora hardening script testing container - minimal footprint"
+LABEL maintainer="fedora-hardening-project"
+
+# Reduce layers and minimize intermediate artifacts
+RUN set -e && \
+    # Disable documentation and locale to reduce image size
+    echo "nodocs" >> /etc/dnf/dnf.conf && \
+    echo "install_weak_deps=False" >> /etc/dnf/dnf.conf && \
+    # Install only minimal required dependencies for testing
+    dnf install -y \
+        bash \
+        coreutils \
+        findutils \
+        grep \
+        sed \
+        gawk \
+        systemd \
+        sudo \
+        curl \
+        wget \
+        git \
+        diffutils \
+        e2fsprogs-libs \
+        shadow-utils \
+        util-linux \
+        openssl \
+        rpm \
+        rpm-ostree \
+        dnf5 \
+        firewalld \
+        selinux-policy \
+        audit \
+        audit-libs \
+        aide \
+        rkhunter \
+        openssh \
+        openssh-server \
+        openssh-clients \
+        cronie \
+        flatpak \
+        fail2ban \
+        usbguard \
+        kernel \
+        policycoreutils \
+        psmisc \
+        which \
+        file \
+        less \
+        nano \
+        && \
+    # Clean package manager cache to reduce image size
+    dnf clean all && \
+    rm -rf /var/cache/dnf/* && \
+    rm -rf /var/lib/dnf/* && \
+    # Create non-root user for safer testing
+    useradd -m -s /bin/bash testuser && \
+    mkdir -p /var/log/fedora-harden && \
+    # Pre-create directories that script expects
+    mkdir -p /root/harden-backups && \
+    mkdir -p /root/.sessions
+
+# Set up minimal test environment
+WORKDIR /root
+ENV SCRIPT_NAME="fedora-harden.sh" \
+    PATH="/root:${PATH}" \
+    DEBIAN_FRONTEND=noninteractive
+
+# Copy script (will be mounted at runtime, but provide default)
+COPY --chown=root:root fedora-harden.sh /root/fedora-harden.sh
+RUN chmod 755 /root/fedora-harden.sh
+
+# Health check: verify script can be parsed
+RUN bash -n /root/fedora-harden.sh && echo "✓ Script syntax valid"
+
+# Use systemd as init for realistic testing
+ENTRYPOINT ["/usr/sbin/init"]
+CMD ["--unit=multi-user.target"]
+
+# ============================================================================
+# Minimal non-systemd variant for testing just the script logic (faster startup)
+# Build: podman build --target test-only -f Dockerfile.test -t fedora-harden:test-only .
+# Run: podman run --rm -it fedora-harden:test-only /bin/bash
+# ============================================================================
+
+FROM fedora:44-minimal as test-only
+LABEL description="Fedora hardening script logic testing - ultra-minimal, no systemd"
+
+RUN set -e && \
+    echo "nodocs" >> /etc/dnf/dnf.conf && \
+    echo "install_weak_deps=False" >> /etc/dnf/dnf.conf && \
+    # Minimal dependencies for script testing only (no systemd services)
+    dnf install -y \
+        bash \
+        coreutils \
+        findutils \
+        grep \
+        sed \
+        gawk \
+        sudo \
+        curl \
+        wget \
+        git \
+        shadow-utils \
+        util-linux \
+        openssl \
+        rpm \
+        dnf5 \
+        which \
+        less \
+        nano \
+        && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf/* /var/lib/dnf/* && \
+    useradd -m -s /bin/bash testuser && \
+    mkdir -p /var/log/fedora-harden
+
+WORKDIR /root
+ENV PATH="/root:${PATH}"
+
+COPY --chown=root:root fedora-harden.sh /root/fedora-harden.sh
+RUN chmod 755 /root/fedora-harden.sh && bash -n /root/fedora-harden.sh
+
+ENTRYPOINT ["/bin/bash"]
