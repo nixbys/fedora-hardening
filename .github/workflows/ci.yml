@@ -26,9 +26,10 @@ jobs:
     name: Lint & Format Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install shellcheck
         run: sudo apt-get install -y shellcheck
@@ -37,7 +38,7 @@ jobs:
         run: shellcheck --severity=warning fedora-harden.sh || true
 
       - name: Lint Dockerfile
-        uses: hadolint/hadolint-action@v3.5.0
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
         with:
           dockerfile: Dockerfile.test
 
@@ -45,7 +46,9 @@ jobs:
     name: Syntax & Validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Validate shell script syntax
         run: bash -n fedora-harden.sh
@@ -59,13 +62,10 @@ jobs:
         run: |
           find . -name '*.json' -not -path './node_modules/*' -exec python3 -m json.tool {} + >/dev/null
 
-      - name: Check for secrets
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
-          extra_args: --only-verified
+      # Secret scanning lives in the dedicated secret-scan.yml workflow
+      # (gitleaks, full git history, blocking) — see that file for why.
+      # This job no longer duplicates it with a second, differently
+      # configured tool.
 
   test:
     name: Test Suite
@@ -77,7 +77,9 @@ jobs:
           - test_mode: full
             skip: false
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install podman
         run: |
@@ -110,11 +112,18 @@ jobs:
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required by the upload-sarif step below to publish Trivy's findings
+      # to the repository's Security tab.
+      security-events: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -123,22 +132,26 @@ jobs:
         continue-on-error: true
 
       - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           sarif_file: 'trivy-results.sarif'
         continue-on-error: true
 
-      - name: Check for hardcoded secrets
-        uses: gitleaks/gitleaks-action@v3
-        continue-on-error: true
+      # Secret scanning lives in the dedicated secret-scan.yml workflow
+      # (gitleaks, full git history, blocking) — see that file for why. This
+      # step used to run gitleaks-action a second time with
+      # continue-on-error: true, which meant a real finding here never
+      # blocked anything; removed rather than fixed in place to avoid two
+      # differently configured gitleaks runs disagreeing with each other.
 
   quality:
     name: Code Quality
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Count functions and complexity metrics
         run: |
@@ -166,7 +179,9 @@ jobs:
     name: Docker Image Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build test image
         run: |
