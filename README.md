@@ -201,6 +201,12 @@ sudo ./fedora-harden.sh --import-audit ./sessions/audit-20260601-143022.txt
 | Shell syntax | `bash -n` | [![CI](https://github.com/nixbys/fedora-hardening/actions/workflows/actions.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/actions.yml) |
 | Static analysis | ShellCheck 0.11.0 (`--enable=all`) | ↑ same |
 | Formatting | shfmt v3.6.0 | ↑ same |
+| Secret scanning | gitleaks (full history) | [![Secret scan](https://github.com/nixbys/fedora-hardening/actions/workflows/secret-scan.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/secret-scan.yml) |
+| Workflow security | actionlint + zizmor | [![Workflow security](https://github.com/nixbys/fedora-hardening/actions/workflows/workflow-security.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/workflow-security.yml) |
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability and
+[THREAT_MODEL.md](THREAT_MODEL.md) for the trust assumptions behind running
+this script as root.
 
 ---
 
