@@ -1,6 +1,39 @@
+# Dependabot keeps the pinned action versions (and the test container's base
+# image) current.
+#
+# Why this matters for security: every workflow in this repo pins its GitHub
+# Actions to an exact commit (a SHA), which is safe but freezes them in time.
+# Dependabot opens a small, reviewable pull request whenever a newer version
+# exists, so staying patched does not require manual work. Updates are
+# grouped so a week's bumps arrive as one PR per ecosystem, not a flood of
+# separate ones (this repo previously got a separate PR per action per bump —
+# see the closed dependabot PR history).
+#
+# This repo has no application dependency manifest (no requirements.txt,
+# package.json, or go.mod — fedora-harden.sh is a single dependency-free Bash
+# script, and mcp_server_fedora_harden.py's only third-party import, `mcp`,
+# has no pinned-version manifest for Dependabot to track), so only the
+# ecosystems that actually apply are listed below.
+
 version: 2
 updates:
+  # The pinned action SHAs used across .github/workflows.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The fedora:44-minimal base image in Dockerfile.test (the isolated
+  # podman test container, not a production artifact — see TESTING.md).
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      docker:
+        patterns: ["*"]

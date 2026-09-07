@@ -10,15 +10,21 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: actions-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@master
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
         with:
           additional_files: "fedora-harden.sh"
           severity: error
@@ -33,12 +39,21 @@ jobs:
     name: shfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Install shfmt
+      - name: Install shfmt (pinned, checksum-verified)
+        env:
+          SHFMT_VERSION: 3.6.0
+          SHFMT_SHA256: 5741a02a641de7e56b8da170e71a97e58050d66a3cf485fb268d6a5a8bb74afb
         run: |
-          curl -sSfL https://github.com/mvdan/sh/releases/download/v3.6.0/shfmt_v3.6.0_linux_amd64 \
-            -o /usr/local/bin/shfmt && chmod +x /usr/local/bin/shfmt
+          set -euo pipefail
+          curl -sSfL -o shfmt \
+            "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
+          echo "${SHFMT_SHA256}  shfmt" | sha256sum -c -
+          chmod +x shfmt
+          sudo mv shfmt /usr/local/bin/shfmt
 
       - name: Check formatting with shfmt
         run: shfmt -d fedora-harden.sh
