@@ -11,6 +11,8 @@
 
 Every change is journaled for full rollback support. The script is safe to run multiple times — all operations are idempotent.
 
+This is a personal hardening script that has grown a substantial feature set and a real CI pipeline, not a vendor-supported product — it runs as root and touches SSH, PAM, the kernel, and your firewall, so read `--dry-run` output before trusting it on a machine you can't easily reinstall.
+
 ---
 
 ## Features
@@ -191,6 +193,31 @@ You can export the audit to PDF/TXT for later review:
 # Re-import them later:
 sudo ./fedora-harden.sh --import-audit ./sessions/audit-20260601-143022.txt
 ```
+
+---
+
+## Repository Layout
+
+```
+fedora-harden.sh              # the tool: 23 hardening sections, ~5,600 lines
+test-in-podman.sh             # containerized test harness (see TESTING.md)
+Dockerfile.test                # image used by test-in-podman.sh
+mcp_server_fedora_harden.py    # optional, contributor-only: exposes lint/test/
+                               # release workflows as MCP tools for use from
+                               # Claude while developing the script itself —
+                               # not used by fedora-harden.sh at runtime and
+                               # not needed to just run the hardening script
+.pre-commit-config.yaml        # local lint/format/secret-scan hooks
+.github/workflows/             # CI: shellcheck/shfmt, secret scanning,
+                               # workflow-security (actionlint + zizmor)
+SECURITY.md / THREAT_MODEL.md  # responsible-use policy and trust boundary
+DEVELOPMENT.md / TOOLCHAIN.md  # contributor setup and the dev-tooling pipeline
+TESTING.md / QUICKSTART-TESTING.md  # how to exercise the script in Podman
+```
+
+If you're only here to harden a machine, `fedora-harden.sh` is the only file
+you need — everything above the pre-commit config is for people modifying
+the script itself.
 
 ---
 
