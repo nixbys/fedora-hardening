@@ -258,8 +258,8 @@ tier_static() {
 
     if need_tool shellcheck "static: shellcheck"; then
         check "static: shellcheck --severity=warning" shellcheck --severity=warning "${scripts[@]}"
-        check "static: shellcheck strict (.trunk rcfile, all checks)" \
-            shellcheck --rcfile "$ROOT/.trunk/configs/.shellcheckrc" "${scripts[@]}"
+        check "static: shellcheck strict (.shellcheckrc, all checks)" \
+            shellcheck --rcfile "$ROOT/.shellcheckrc" "${scripts[@]}"
     fi
 
     # Style comes from .editorconfig (tabs for the main script, 4 spaces elsewhere).
@@ -279,7 +279,7 @@ tier_static() {
     check "static: python compiles" python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' \
         "$ROOT/mcp_server_fedora_harden.py" "$ROOT/tests/mcp_smoke.py"
     if need_tool ruff "static: ruff"; then
-        check "static: ruff check" ruff check --no-cache "$ROOT/mcp_server_fedora_harden.py" "$ROOT/tests/mcp_smoke.py"
+        check "static: ruff check" ruff check --no-cache "$ROOT/mcp_server_fedora_harden.py" "$ROOT/tests/mcp_smoke.py" "$ROOT/tests/check-references.py"
     fi
 
     if python3 -c 'import mcp' 2>/dev/null; then
@@ -287,6 +287,17 @@ tier_static() {
             python3 -I "$ROOT/tests/mcp_smoke.py" "$ROOT/mcp_server_fedora_harden.py"
     else
         record FAIL "static: MCP server smoke test" "python3-mcp not installed"
+    fi
+
+    # The pinned arkenfox release must still match its checksum (catches re-tagging).
+    local ark_ver ark_sum
+    ark_ver="$(sed -n 's/^ARKENFOX_VERSION="\(.*\)"$/\1/p' "$SCRIPT")"
+    ark_sum="$(sed -n 's/^ARKENFOX_SHA256="\(.*\)"$/\1/p' "$SCRIPT")"
+    if have curl; then
+        check "static: pinned arkenfox $ark_ver matches its checksum" bash -c \
+            'curl -fsSL "https://raw.githubusercontent.com/arkenfox/user.js/$1/user.js" | sha256sum | grep -q "^$2 "' _ "$ark_ver" "$ark_sum"
+    else
+        record SKIP "static: pinned arkenfox checksum" "curl not installed"
     fi
 
     # Regression guard: under `set -e` a post-increment of a zero counter inside (( ))
@@ -344,6 +355,26 @@ tier_quick() {
         record PASS "quick: --only 5,10 runs exactly those sections"
     else
         record FAIL "quick: --only 5,10 runs exactly those sections" "exit $rc (see $log)"
+    fi
+
+    # Universal Blue (Bazzite, Bluefin, Aurora) updates through uupd; section 3 must
+    # not enable rpm-ostreed's automatic updates as a second, competing updater.
+    # Simulated: /run/ostree-booted, the image-info file, and a systemctl stub that
+    # reports uupd.timer as installed and enabled.
+    local log="$ARTIFACTS/quick_ublue_updates.log" rc=0
+    podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" --entrypoint /bin/bash "$IMG_QUICK" -c '
+        set -e
+        touch /run/ostree-booted
+        mkdir -p /usr/share/ublue-os /etc
+        echo "{\"image-name\": \"bazzite\"}" >/usr/share/ublue-os/image-info.json
+        printf "[Daemon]\nAutomaticUpdatePolicy=none\n" >/etc/rpm-ostreed.conf
+        mkdir -p /stub && printf "%s\n" "#!/bin/sh" "exit 0" >/stub/systemctl && chmod +x /stub/systemctl
+        PATH="/stub:$PATH" /root/fedora-harden.sh --yes --only 3
+        grep -qx "AutomaticUpdatePolicy=none" /etc/rpm-ostreed.conf' >"$log" 2>&1 || rc=$?
+    if ((rc == 0)) && grep -q "handled by uupd.timer" "$log" && ! grep -q "rpm-ostreed-automatic" "$log"; then
+        record PASS "quick: Universal Blue keeps uupd as the only updater (section 3)"
+    else
+        record FAIL "quick: Universal Blue keeps uupd as the only updater (section 3)" "exit $rc (see $log)"
     fi
 
     # Desktop settings must really persist for the user (gsettings/xfconf need a D-Bus session)
@@ -506,6 +537,12 @@ tier_full() {
     check "full: systemd-resolved installed + enabled with DNS-over-TLS drop-in" fx bash -c \
         'rpm -q systemd-resolved >/dev/null && systemctl is-enabled --quiet systemd-resolved &&
          grep -qx "DNSOverTLS=yes" /etc/systemd/resolved.conf.d/99-hardening.conf'
+    # Current guidance (privacyguides.org / inteltechniques.com), see docs/REFERENCES.md
+    check "full: --yes does not install Firejail (opt-in only)" \
+        bash -c '! podman exec "$1" rpm -q firejail >/dev/null 2>&1' _ "$FULL_CT"
+    check "full: mat2 installed" fx rpm -q mat2
+    check "full: Flatpak apps blocked from host filesystem" \
+        fx grep -q '!host;' /var/lib/flatpak/overrides/global
     check "full: /etc/shadow mode 000" bash -c '[[ "$(podman exec "$1" stat -c %a /etc/shadow)" == 0 ]]' _ "$FULL_CT"
 
     # --- the user-facing verifier agrees ------------------------------------------
@@ -516,7 +553,7 @@ tier_full() {
     podman cp "$ROOT/tests/verify-host.sh" "$FULL_CT:/root/verify-host.sh" >/dev/null 2>&1
     fx /root/verify-host.sh >"$log" 2>&1 || true
     local id missing=""
-    for id in AUTO-1 AUTO-2 FW-1 FW-2 SSH-1 SSH-2 PAM-1 PAM-2 PAM-3 PERM-1 PERM-2 CLAM-1 ROLL-1; do
+    for id in AUTO-1 AUTO-2 FW-1 FW-2 SSH-1 SSH-2 PAM-1 PAM-2 PAM-3 FLAT-1 FLAT-2 PERM-1 PERM-2 CLAM-1 ROLL-1; do
         grep -qE "^[[:space:]]+${id}[[:space:]]+PASS" "$log" || missing+="$id "
     done
     if [[ -z "$missing" ]]; then
@@ -567,7 +604,8 @@ tier_full() {
     printf '%s\n' "$changed" >"$ARTIFACTS/full_rollback.residual"
     local hardened_left=0 f
     for f in /etc/sysctl.d/99-hardening.conf /etc/audit/rules.d/hardening.rules /etc/ssh/sshd_config.d/10-hardening.conf \
-        /etc/profile.d/99-umask.sh /etc/security/limits.d/99-coredump.conf; do
+        /etc/profile.d/99-umask.sh /etc/security/limits.d/99-coredump.conf \
+        /var/lib/flatpak/overrides/global; do
         fx test -e "$f" && ((++hardened_left))
     done
     if ((hardened_left == 0)) && cmp -s <(grep pwquality.conf "$ARTIFACTS/etc.0") \
