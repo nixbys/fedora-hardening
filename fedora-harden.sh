@@ -77,7 +77,8 @@
 #    10  Kernel sysctl hardening (network, VM, filesystem, IPv6 privacy extensions)
 #    11  auditd rules (identity, privilege escalation, module tracking,
 #        time/network-config/mount/delete syscall coverage)
-#    12  rkhunter + AIDE (rootkit detection + file integrity monitoring)
+#    12  rkhunter + AIDE (rootkit detection + file integrity monitoring);
+#        image-based: image signature status + weekly /etc change report
 #    13  Flatpak / Flathub + global Flatpak filesystem restrictions + mat2
 #        (Firejail opt-in only)
 #    14  DNS over TLS (systemd-resolved with Quad9 + Cloudflare)
@@ -100,11 +101,18 @@
 #    19  Disable unnecessary services (avahi, cups, bluetooth, modemmanager)
 #    20  File permission hardening (shadow files, /tmp, compiler access,
 #        umask 077, core dump limits, hostname privacy check)
-#    21  ClamAV install + freshclam + on-access scanning for /home
-#    22  OpenSCAP scanner install + initial scan (compliance framework)
-#    23  Container security — rootless Podman + Toolbox (containerized-mindset setup:
-#        image policy hardening, no-new-privileges, seccomp, subuid/subgid,
-#        unqualified-registry block, optional buildah/skopeo/podman-compose)
+#    21  ClamAV install + freshclam + on-access scanning for /home;
+#        image-based: weekly scan in a locked-down container (Podman quadlet)
+#    22  OpenSCAP compliance scan (image-based: from a throwaway container)
+#    23  Container security — rootless Podman + toolbox/distrobox (containerized-mindset
+#        setup: image policy hardening, no-new-privileges, seccomp, subuid/subgid,
+#        unqualified-registry block, optional buildah/skopeo/podman-compose; on
+#        image-based systems those go in a tools box instead of the image)
+#
+#  IMAGE-BASED SYSTEMS (Silverblue, Kinoite, Bazzite, Aurora, ...): tools are kept
+#  out of the image — Flatpaks, containers and a tools box instead of layered
+#  packages. Toolbox and distrobox are not a security boundary (shared home,
+#  host access, no SELinux separation); they keep the host clean.
 #
 #  SECTIONS NOT AUTOMATED (by design):
 #     1  LUKS — must be chosen during Anaconda install
@@ -165,6 +173,13 @@ SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 PROJECT_NAME="$(basename "$SCRIPT_DIR")"
 RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
+# Session IDs have one-second resolution. A run started in the same second as the
+# previous one would share its backup directory and truncate its rollback journal,
+# so wait for an unused second.
+while [[ -e "/root/harden-backups-${RUN_STAMP}" || -e "/var/log/fedora-harden/harden-${RUN_STAMP}.log" ]]; do
+	sleep 1
+	RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
+done
 RUN_DATE_YMD="${RUN_STAMP%%-*}"
 RUN_STAMP_HUMAN="${RUN_STAMP/-/ }"
 RUN_STAMP_ISO=""
@@ -173,6 +188,13 @@ KERNEL_LABEL=""
 LOG_DIR="/var/log/fedora-harden"
 LOG_FILE="${LOG_DIR}/harden-${RUN_STAMP}.log"
 BACKUP_DIR="/root/harden-backups-${RUN_STAMP}"
+# On image-based systems these tools live in a box instead of the image (section 23).
+TOOLS_BOX="fedora-harden-tools"
+TOOLS_BOX_PKGS="openscap-scanner scap-security-guide setools-console buildah skopeo podman-compose"
+# ClamAV image for the scheduled scan on image-based systems (section 21). The
+# signatures ship in the image; minor version pinned, patch releases follow.
+CLAMAV_IMAGE="docker.io/clamav/clamav:1.5"
+
 # arkenfox user.js release installed by section 16 (pinned + checksum-verified).
 ARKENFOX_VERSION="144.0"
 ARKENFOX_SHA256="e4ab33c6914899175cf7035e0e57a2d7f08ac887d8f957f1199e7e49bbe7e33e"
@@ -220,6 +242,7 @@ EXPECTED_ABORT=0  # Set to 1 if clean exit expected (--list, --rollback)
 
 # ---------- Platform/variant detection flags --------------------------------
 IS_OSTREE=0              # Set to 1 if system uses immutable rpm-ostree
+ETC_BASELINE_PENDING=0   # Section 12 (image-based): record the /etc baseline after the last section
 IS_KINOITE=0             # Set to 1 if Fedora Kinoite (immutable + KDE)
 IS_SILVERBLUE=0          # Set to 1 if Fedora Silverblue (immutable + GNOME)
 IS_ONYX=0                # Set to 1 if Fedora Onyx (immutable + GNOME, Atomic)
@@ -1450,15 +1473,26 @@ pkg_install() {
 		# Capture output and exit code without triggering set -e abort on failure
 		out="$(rpm-ostree install "${needed[@]}" 2>&1)" || rc=$?
 		rc=${rc:-0}
-		[[ -n "${out}" ]] && printf '%s\n' "$out" >>"$LOG_FILE"
+		# Logging must never abort the run (set -e), even if the log is unwritable.
+		if [[ -n "${out}" ]]; then
+			printf '%s\n' "$out" >>"$LOG_FILE" 2>/dev/null || true
+		fi
 
 		if ((rc != 0)); then
 			# Idempotent rpm-ostree no-op cases should not abort under strict mode.
 			if [[ "$out" =~ already[[:space:]]requested|already[[:space:]]provided|No[[:space:]]packages[[:space:]]in[[:space:]]transaction|is[[:space:]]already[[:space:]]provided ]]; then
 				warn "rpm-ostree reports package(s) already queued/provided; treating as up-to-date."
 			else
+				# As with dnf: a package that cannot be layered (not in the image's
+				# repositories — Bazzite ships without Fedora's — or no network) must
+				# not abort the remaining sections; callers check for what they need.
 				capture_error_context "${BASH_LINENO[0]:-?}" "rpm-ostree install ${needed[*]}" "$rc" "/dev/null" || true
-				return "$rc"
+				local reason
+				reason="$(grep -m1 -iE 'error|not found' <<<"$out" || true)"
+				warn "rpm-ostree could not layer: ${needed[*]}${reason:+ — $reason}"
+				add_action_item "${CURRENT_SECTION:-0}" MEDIUM "PKG_INSTALL_FAILED_${needed[0]//[^a-zA-Z0-9]/_}" \
+					"Package layering failed${reason:+ ($reason)}: sudo rpm-ostree install ${needed[*]} — if the image does not carry the package, use a Flatpak or a toolbox/distrobox instead."
+				return 0
 			fi
 		fi
 
@@ -1629,6 +1663,45 @@ user_home() {
 	home="$(cut -d: -f6 <<<"$entry")"
 	_USER_HOME_CACHE[$user]="$home"
 	echo "$home"
+}
+
+# image_box_tool() - The pet-container tool to use on this system: distrobox on
+# Universal Blue images (they ship distrobox, not toolbox), toolbox elsewhere.
+image_box_tool() {
+	if [[ -r /usr/share/ublue-os/image-info.json ]] && cmd_exists distrobox; then
+		echo distrobox
+	elif cmd_exists toolbox || ! cmd_exists distrobox; then
+		echo toolbox
+	else
+		echo distrobox
+	fi
+}
+
+# write_new_file() - Write stdin to <path> with <mode>, journaling it for --rollback.
+# Usage: write_new_file <path> <mode> <<'EOF' ... EOF
+write_new_file() {
+	local f="$1" mode="$2"
+	if ((DRY_RUN)); then
+		info "Would write $f"
+		cat >/dev/null
+		return 0
+	fi
+	backup_file "$f"
+	install -d -m 755 "$(dirname "$f")" 2>/dev/null || true
+	if ! cat >"$f"; then
+		warn "Failed to write $f"
+		return 1
+	fi
+	chmod "$mode" "$f" 2>/dev/null || true
+}
+
+# enable_timer() - daemon-reload and enable a timer, journaling the enable symlink
+# so --rollback removes it together with the unit files.
+enable_timer() {
+	local timer="$1"
+	backup_file "/etc/systemd/system/timers.target.wants/$timer"
+	run "systemctl daemon-reload" || true
+	run "systemctl enable --now $timer"
 }
 
 # confirm() - Prompt user for yes/no confirmation (respects --yes flag).
@@ -3302,7 +3375,7 @@ list_sections() {
   9  PAM/password policy
  10  Kernel sysctl (incl. IPv6 privacy extensions)
  11  auditd (incl. time/network/mount/delete rules)
- 12  rkhunter + AIDE
+ 12  rkhunter + AIDE (image-based: image signature + /etc change report)
  13  Flatpak / Flathub, global Flatpak restrictions, mat2 (Firejail opt-in)
  14  DNS over TLS (14b: NetworkManager MAC address randomization)
  15  Desktop environment settings (auto-dispatches by detected DE):
@@ -3321,9 +3394,9 @@ list_sections() {
  18  Fail2Ban
  19  Service trim
  20  File permissions (incl. umask 077, core dump limits, hostname privacy)
- 21  ClamAV (incl. on-access scanning for /home)
- 22  OpenSCAP
- 23  Container security (Podman + Toolbox / containerized-mindset setup)
+ 21  ClamAV (incl. on-access scanning for /home; image-based: container scan)
+ 22  OpenSCAP (image-based: from a container)
+ 23  Container security (Podman + toolbox/distrobox / containerized-mindset setup)
 
  Optimized execution order (guide section numbers):
     2,3,6,13,4,5,7,9,10,11,14,18,15,16,17,21,22,23,12,19,20,8
@@ -3596,7 +3669,18 @@ sec_02_updates() {
 	# is unplugged at that point would need to be explicitly allowed afterwards.
 	if confirm "Do you use a hardware security key (YubiKey, FIDO2 token, PIV smart card)?"; then
 		info "Installing hardware security key support packages..."
-		pkg_install pcsc-lite pcsc-lite-libs opensc libfido2 yubico-piv-tool yubikey-manager
+		if ((IS_OSTREE)); then
+			# Image-based: layer only what must be on the host (smart-card daemon and
+			# drivers, FIDO2 library); the management app is a Flatpak that updates
+			# on its own instead of a layer re-applied to every image.
+			pkg_install pcsc-lite pcsc-lite-libs opensc libfido2
+			if cmd_exists flatpak; then
+				run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" || true
+				flatpak_install_or_update flathub com.yubico.yubioath
+			fi
+		else
+			pkg_install pcsc-lite pcsc-lite-libs opensc libfido2 yubico-piv-tool yubikey-manager
+		fi
 		run "systemctl enable --now pcscd.socket || true"
 		ok "Hardware key support packages installed and pcscd.socket enabled."
 		if confirm "Install pam_u2f for PAM/sudo authentication via FIDO2/U2F key?"; then
@@ -3836,7 +3920,12 @@ sec_04_selinux() {
 		warn "Could not determine the SELinux mode (getenforce unavailable)."
 		;;
 	esac
-	pkg_install setools-console setroubleshoot-server
+	if ((IS_OSTREE)); then
+		pkg_install setroubleshoot-server
+		info "seinfo/sesearch (setools) are in the $TOOLS_BOX box on image-based systems (section 23)."
+	else
+		pkg_install setools-console setroubleshoot-server
+	fi
 	info "Use 'sudo ausearch -m avc -ts recent | audit2why' to diagnose denials."
 }
 
@@ -4564,6 +4653,105 @@ EOF
 		warn "auditd restart failed — rules load on next boot (see 'journalctl -u auditd')."
 }
 
+# _ostree_integrity() - Section 12 on image-based systems. /usr comes from the image
+# and is read-only, so AIDE and rkhunter would mostly re-check what the image
+# already guarantees. What matters is that the booted image is signature-verified
+# and what changed in /etc, the only mutable system configuration. Uses only tools
+# already in the image (rpm-ostree, ostree); layers nothing.
+_ostree_integrity() {
+	section 12 "File integrity (image signature + /etc changes)"
+	local booted
+	booted="$(rpm-ostree status --booted 2>/dev/null | awk '$1 == "●" {print $2; exit}' || true)"
+	case "$booted" in
+	ostree-image-signed:*)
+		ok "Booted image is signature-verified: ${booted#ostree-image-signed:}"
+		;;
+	ostree-remote-image:* | ostree-remote-registry:*)
+		# Verified with the signature policy of the named OSTree remote.
+		ok "Booted image is verified through its OSTree remote: ${booted#*:}"
+		;;
+	ostree-unverified-*)
+		warn "Booted image is not signature-verified: $booted"
+		add_action_item 12 HIGH "IMAGE_UNSIGNED" \
+			"The booted image ($booted) is not signature-verified. Rebase to its ostree-image-signed: reference as documented by the image (rpm-ostree rebase ostree-image-signed:docker://...)."
+		;;
+	"")
+		info "Could not read the booted deployment (rpm-ostree status)."
+		;;
+	*)
+		info "Booted deployment: $booted (OSTree commit, verified by the remote's GPG configuration)."
+		;;
+	esac
+
+	local checker="/usr/local/sbin/fedora-harden-etc-check"
+	info "Tracking /etc changes: a weekly check logs files changed since this run (tag fedora-harden-etc)."
+	write_new_file "$checker" 0755 <<'EOF' || return 0
+#!/bin/sh
+# Written by fedora-harden.sh (section 12): report /etc files changed since the
+# baseline recorded at the end of the hardening run. Exits 1 when there are
+# changes, so the unit shows as failed (systemctl --failed) until reviewed.
+# Accept the current state as the new baseline:
+#   sudo sh -c 'ostree admin config-diff | sort > /var/lib/fedora-harden/etc-baseline.txt'
+baseline=/var/lib/fedora-harden/etc-baseline.txt
+[ -r "$baseline" ] || { echo "No baseline at $baseline"; exit 0; }
+new=$(ostree admin config-diff 2>/dev/null | sort | comm -13 "$baseline" -)
+if [ -n "$new" ]; then
+	printf '%s\n' "$new" | logger -t fedora-harden-etc -p auth.warning
+	printf 'Changed in /etc since the baseline:\n%s\n' "$new"
+	exit 1
+fi
+echo "No /etc changes since the baseline."
+EOF
+	write_new_file /etc/systemd/system/fedora-harden-etc-check.service 0644 <<EOF || return 0
+[Unit]
+Description=Report /etc changes since the fedora-harden baseline
+
+[Service]
+Type=oneshot
+ExecStart=$checker
+EOF
+	write_new_file /etc/systemd/system/fedora-harden-etc-check.timer 0644 <<'EOF' || return 0
+[Unit]
+Description=Weekly report of /etc changes (fedora-harden)
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+	enable_timer fedora-harden-etc-check.timer ||
+		warn "Could not enable fedora-harden-etc-check.timer (journalctl -u fedora-harden-etc-check)."
+	ETC_BASELINE_PENDING=1
+	add_action_item 12 LOW "ETC_CHANGE_TRACKING" \
+		"Weekly /etc change report: journalctl -t fedora-harden-etc. After intended changes, accept them: sudo sh -c 'ostree admin config-diff | sort > /var/lib/fedora-harden/etc-baseline.txt'"
+}
+
+# record_etc_baseline() - Record the /etc baseline once every section has run, so
+# the weekly check reports only changes made after hardening.
+record_etc_baseline() {
+	((ETC_BASELINE_PENDING)) || return 0
+	local baseline="/var/lib/fedora-harden/etc-baseline.txt"
+	if ((DRY_RUN)); then
+		info "Would record the /etc baseline in $baseline"
+		return 0
+	fi
+	if [[ -s "$baseline" ]]; then
+		info "Keeping the existing /etc baseline ($baseline)."
+		return 0
+	fi
+	install -d -m 700 /var/lib/fedora-harden 2>/dev/null || true
+	backup_file "$baseline"
+	if ostree admin config-diff 2>/dev/null | sort >"$baseline"; then
+		chmod 600 "$baseline" 2>/dev/null || true
+		ok "Recorded the /etc baseline ($(wc -l <"$baseline") changed files relative to the image)."
+	else
+		warn "Could not record the /etc baseline (ostree admin config-diff failed)."
+	fi
+}
+
 # ============================================================================
 #  SECTION 12 — rkhunter + AIDE
 # ============================================================================
@@ -4571,6 +4759,10 @@ EOF
 # Installs rkhunter for rootkit detection and AIDE for file integrity monitoring.
 sec_12_ids() {
 	should_run 12 || return 0
+	if ((IS_OSTREE)); then
+		_ostree_integrity
+		return 0
+	fi
 	section 12 "rkhunter + AIDE"
 
 	pkg_install rkhunter aide
@@ -4741,7 +4933,12 @@ sec_13_flatpak() {
 
 	# Metadata removal for files you share (photos, PDFs, documents).
 	# Source: inteltechniques.com — Extreme Privacy (mat2).
-	if confirm "Install mat2 (remove metadata such as GPS location from files before sharing)?"; then
+	# Image-based systems get the Flatpak (it uses mat2) instead of a layered package.
+	if ((IS_OSTREE)); then
+		if cmd_exists flatpak && confirm "Install Metadata Cleaner (Flatpak; removes metadata such as GPS location from files before sharing)?"; then
+			flatpak_install_or_update flathub io.gitlab.metadatacleaner.metadatacleaner
+		fi
+	elif confirm "Install mat2 (remove metadata such as GPS location from files before sharing)?"; then
 		pkg_install mat2
 	fi
 
@@ -5852,6 +6049,10 @@ EOF
 # in /etc/clamd.d/scan.conf per inteltechniques.com recommendation.
 sec_21_clamav() {
 	should_run 21 || return 0
+	if ((IS_OSTREE)); then
+		_clamav_container
+		return 0
+	fi
 	section 21 "ClamAV antivirus"
 	pkg_install clamav clamd clamav-update clamav-scanner-systemd
 	info "Updating ClamAV signatures (freshclam)..."
@@ -5934,6 +6135,76 @@ sec_21_clamav() {
 	fi
 }
 
+# _clamav_container() - Section 21 on image-based systems: a weekly scan of /home in
+# a throwaway container (Podman quadlet) instead of layering ClamAV into the image.
+# The signatures ship in the image, refreshed before each scan (Pull=newer). The
+# container sees /home read-only, has no network and a read-only root, and keeps a
+# single capability: reading any file (DAC_READ_SEARCH). SELinux labelling is off
+# for it because relabelling /home for a container would change every file's label.
+_clamav_container() {
+	section 21 "ClamAV scan (container, image-based system)"
+	if ! cmd_exists podman; then
+		warn "podman is not available — scheduled ClamAV container scan not set up."
+		add_action_item 21 MEDIUM "CLAMAV_NO_PODMAN" "Install podman (it ships in Fedora Atomic images), then re-run section 21."
+		return 0
+	fi
+	local home_dir quadlet="/etc/containers/systemd/fedora-harden-clamscan.container"
+	home_dir="$(readlink -f /home 2>/dev/null || echo /home)"
+	write_new_file "$quadlet" 0644 <<EOF || return 0
+# Written by fedora-harden.sh (section 21): weekly ClamAV scan of $home_dir in a
+# throwaway container. Results: journalctl -u fedora-harden-clamscan
+[Unit]
+Description=ClamAV scan of home directories in a container (fedora-harden)
+
+[Container]
+Image=$CLAMAV_IMAGE
+Pull=newer
+Entrypoint=clamscan
+Exec=--recursive --infected /scan
+Volume=$home_dir:/scan:ro
+ReadOnly=true
+Network=none
+DropCapability=all
+AddCapability=DAC_READ_SEARCH
+NoNewPrivileges=true
+SecurityLabelDisable=true
+
+[Service]
+Type=oneshot
+TimeoutStartSec=6h
+EOF
+	write_new_file /etc/systemd/system/fedora-harden-clamscan.timer 0644 <<'EOF' || return 0
+[Unit]
+Description=Weekly ClamAV container scan (fedora-harden)
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=2h
+
+[Install]
+WantedBy=timers.target
+EOF
+	# Check the quadlet before enabling: a typo would otherwise only show in the journal.
+	if ((!DRY_RUN)) && [[ -x /usr/libexec/podman/quadlet ]] &&
+		! QUADLET_UNIT_DIRS=/etc/containers/systemd /usr/libexec/podman/quadlet -dryrun >/dev/null 2>&1; then
+		warn "Podman rejected $quadlet — run: /usr/libexec/podman/quadlet -dryrun"
+		add_action_item 21 MEDIUM "CLAMAV_QUADLET_INVALID" "Podman rejected $quadlet — check: QUADLET_UNIT_DIRS=/etc/containers/systemd /usr/libexec/podman/quadlet -dryrun"
+		return 0
+	fi
+	if enable_timer fedora-harden-clamscan.timer; then
+		ok "Weekly ClamAV container scan scheduled (fedora-harden-clamscan.timer)."
+	else
+		warn "Could not enable fedora-harden-clamscan.timer."
+	fi
+	add_action_item 21 MEDIUM "CLAMAV_FIRST_SCAN" \
+		"Run the first ClamAV scan (pulls $CLAMAV_IMAGE): sudo systemctl start fedora-harden-clamscan — results: journalctl -u fedora-harden-clamscan (the unit fails when a file is FOUND)."
+	if rpm -q clamav >/dev/null 2>&1; then
+		add_action_item 21 LOW "CLAMAV_LAYERED" \
+			"ClamAV is layered into this image. Once the container scan works, the layer can go: rpm-ostree uninstall clamav clamd clamav-update (plus clamtk if installed), then reboot."
+	fi
+}
+
 # ============================================================================
 #  SECTION 22 — OpenSCAP
 # ============================================================================
@@ -5942,13 +6213,40 @@ sec_21_clamav() {
 sec_22_openscap() {
 	should_run 22 || return 0
 	section 22 "OpenSCAP compliance scanner"
+	if ((IS_OSTREE)); then
+		_oscap_in_container
+	else
+		_oscap_on_host || return 0
+	fi
+	_oscap_report
+}
+
+# _oscap_in_container() - Image-based systems: scan the host read-only from a
+# throwaway Fedora container (oscap-chroot) instead of layering OpenSCAP.
+_oscap_in_container() {
+	local release="${FEDORA_MAJOR:-0}"
+	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo 44)"
+	local image="registry.fedoraproject.org/fedora:${release}"
+	if ! cmd_exists podman; then
+		warn "podman is not available — OpenSCAP scan skipped."
+		return 0
+	fi
+	info "Image-based system: OpenSCAP runs in a throwaway $image container and reads the host read-only (nothing is layered)."
+	if confirm "Run a baseline scan now (results in /root/scap-report.html)?"; then
+		run "podman run --rm --security-opt label=disable -v /:/host:ro -v /root:/out '$image' sh -c 'dnf -y -q install openscap-scanner scap-security-guide >/dev/null && oscap-chroot /host xccdf eval --profile xccdf_org.ssgproject.content_profile_standard --results /out/scap-results.xml --report /out/scap-report.html /usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml' || true"
+		ok "Report: /root/scap-report.html"
+	fi
+}
+
+# _oscap_on_host() - Package-based systems: install OpenSCAP and scan. Returns 1 to skip.
+_oscap_on_host() {
 	pkg_install openscap-scanner scap-security-guide
 	# On rpm-ostree, packages are staged — oscap may not be available until reboot.
 	# Use cmd_exists check only; do not hard-fail if missing.
 	ensure_command_dep oscap "OpenSCAP compliance scan" openscap-scanner || true
 	if ! cmd_exists oscap; then
 		warn "oscap command is unavailable after dependency checks — skipping section 22."
-		return 0
+		return 1
 	fi
 	local content="/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml"
 	if [[ ! -f "$content" ]]; then
@@ -5967,7 +6265,7 @@ sec_22_openscap() {
 				info "Using alternate SSG content path: $content"
 			else
 				warn "No Fedora SSG datastream found; skipping OpenSCAP scan."
-				return 0
+				return 1
 			fi
 		fi
 	fi
@@ -5981,20 +6279,38 @@ sec_22_openscap() {
             '$content' || true"
 		ok "Report: /root/scap-report.html"
 	fi
+}
 
-	# Copy results to user Downloads/<project>/results/ and generate text summary
+# scap_results() - Parse an XCCDF results file. Prints "<pass> <fail> <notchecked>",
+# or with "failing" the IDs of failed rules. Each result is a <rule-result idref=...>
+# element with a nested <result>fail</result>, not a result="..." attribute.
+# Usage: scap_results <results.xml> [counts|failing]
+scap_results() {
+	awk -v want="${2:-counts}" '
+		/<rule-result[ >]/ {
+			id = ""
+			if (match($0, /idref="[^"]*"/)) id = substr($0, RSTART + 7, RLENGTH - 8)
+		}
+		/<result>[a-z]+<\/result>/ {
+			r = $0
+			sub(/.*<result>/, "", r)
+			sub(/<\/result>.*/, "", r)
+			n[r]++
+			if (want == "failing" && r == "fail" && id != "") print id
+		}
+		END { if (want == "counts") print n["pass"] + 0, n["fail"] + 0, n["notchecked"] + 0 }
+	' "$1"
+}
+
+# _oscap_report() - Copy results to the user's results folder and summarise them.
+_oscap_report() {
 	if ((!DRY_RUN)); then
 		copy_to_user_results /root/scap-report.html "section-22-openscap-${REPORT_DATE}.html"
 		copy_to_user_results /root/scap-results.xml "section-22-openscap-results-${REPORT_DATE}.xml"
 		local pass_count="?" fail_count="?" notchecked_count="?"
 		if [[ -f /root/scap-results.xml ]]; then
 			read -r pass_count fail_count notchecked_count < <(
-				awk '
-                    /result="pass"/ {pass++}
-                    /result="fail"/ {fail++}
-                    /result="notchecked"/ {notchecked++}
-                    END {print pass+0, fail+0, notchecked+0}
-                ' /root/scap-results.xml 2>/dev/null || printf '? ? ?\n'
+				scap_results /root/scap-results.xml 2>/dev/null || printf '? ? ?\n'
 			)
 			info "OpenSCAP results — pass: $pass_count  fail: $fail_count  not-checked: $notchecked_count"
 			{
@@ -6006,8 +6322,7 @@ sec_22_openscap() {
 				printf 'Fail:         %s\n' "$fail_count"
 				printf 'Not checked:  %s\n\n' "$notchecked_count"
 				printf '--- Top 25 failing rules ---\n'
-				awk -F'"' '/result="fail"/{for(i=1;i<NF;i++) if($i=="idref") print $(i+1)}' \
-					/root/scap-results.xml 2>/dev/null |
+				scap_results /root/scap-results.xml failing 2>/dev/null |
 					head -25 ||
 					printf '(no failures found or XML parse error)\n'
 			} | write_user_report "section-22-openscap-summary-${REPORT_DATE}.txt" || true
@@ -6039,19 +6354,31 @@ sec_23_containers() {
 	should_run 23 || return 0
 	section 23 "Container security (Podman + Toolbox — containerized mindset)"
 
-	pkg_install podman toolbox
+	local box_tool
+	box_tool="$(image_box_tool)"
+	if ((IS_OSTREE)); then
+		# Atomic images ship podman and their box tool; layer toolbox only where it
+		# is the platform's tool and missing (Universal Blue uses distrobox).
+		pkg_install podman
+		[[ "$box_tool" == toolbox ]] && pkg_install toolbox
+	else
+		pkg_install podman toolbox
+	fi
 	ensure_command_dep podman "rootless container engine" podman || true
 	if ! cmd_exists podman; then
 		warn "podman not available after install attempt — skipping section 23."
 		return 0
 	fi
 
-	if confirm "Install buildah (OCI image builder) and skopeo (image inspection/transfer)?"; then
-		pkg_install buildah skopeo
-	fi
-
-	if confirm "Install podman-compose (docker-compose compatibility layer)?"; then
-		pkg_install podman-compose
+	if ((IS_OSTREE)); then
+		_tools_box_setup "$box_tool"
+	else
+		if confirm "Install buildah (OCI image builder) and skopeo (image inspection/transfer)?"; then
+			pkg_install buildah skopeo
+		fi
+		if confirm "Install podman-compose (docker-compose compatibility layer)?"; then
+			pkg_install podman-compose
+		fi
 	fi
 
 	# ── Rootless Podman: subuid/subgid ───────────────────────────────────────
@@ -6200,30 +6527,71 @@ EOF
 		ok "Registry conf.d override already present at $reg_conf."
 	fi
 
-	# ── Toolbox availability check ────────────────────────────────────────────
-	if ! cmd_exists toolbox; then
-		warn "toolbox command not found after install. On rpm-ostree systems a reboot may be required."
-		if ((IS_OSTREE)); then
-			info "After reboot, run: toolbox create && toolbox enter"
-		fi
+	# ── Box tool availability check ───────────────────────────────────────────
+	if ! cmd_exists "$box_tool"; then
+		warn "$box_tool command not found after install. On rpm-ostree systems a reboot may be required."
 	else
-		ok "Toolbox is available — run 'toolbox create && toolbox enter' to start a containerized workspace."
+		ok "$box_tool is available for development and command-line tools."
 	fi
 
-	# ── Immutable-system guidance ─────────────────────────────────────────────
-	if ((IS_OSTREE)); then
-		info "Immutable system detected: Toolbox/Distrobox containers are the recommended"
-		info "  way to install developer packages without mutating the read-only host OS."
-		info "  Example: toolbox create --image registry.fedoraproject.org/fedora-toolbox:$(rpm -E %fedora 2>/dev/null || echo 42)"
-	fi
+	# ── What a box is (and is not) ────────────────────────────────────────────
+	# toolbox and distrobox containers are privileged (rootless), run without SELinux
+	# separation, share your home directory and mount the host's / at /run/host. They
+	# keep the host clean; they do not contain what runs inside them.
+	warn "Toolbox and distrobox are not a security boundary: their containers share your home, see the host at /run/host and run without SELinux separation. Use them to keep the host clean, not to run untrusted software."
 
 	# ── Post-run guidance action items ────────────────────────────────────────
 	add_action_item 23 MEDIUM "CONTAINER_WORKFLOW" \
-		"Adopt a containerized mindset: use 'toolbox create && toolbox enter' for development, IDEs, compilers, and scripts (isolated from host). For services: 'podman run --read-only --security-opt no-new-privileges:true --cap-drop ALL --cap-add <only_what_is_needed>'."
+		"Use $box_tool for development and command-line tools so the host stays clean — it does not isolate them (shared home, host access). For untrusted software use a Flatpak with tight permissions, or: podman run --rm --read-only --cap-drop all --security-opt no-new-privileges --network none -v ./dir:/work:ro,Z IMAGE"
 	add_action_item 23 LOW "CONTAINER_NETWORK_AUDIT" \
 		"Review Podman network isolation: run 'podman network ls' and use 'podman network create --internal' for workloads that must not reach the internet. Verify inter-container traffic is explicitly controlled."
 
-	ok "Section 23 complete — rootless Podman hardened, image policy set, Toolbox ready."
+	ok "Section 23 complete — rootless Podman hardened, image policy set, $box_tool ready."
+}
+
+# _tools_box_setup() - Image-based systems: keep build and audit tools out of the
+# image. Writes a distrobox manifest (distrobox) or prints the toolbox commands.
+_tools_box_setup() {
+	local box_tool="$1" run_user="${TARGET_USER:-${SUDO_USER:-}}"
+	local release="${FEDORA_MAJOR:-0}"
+	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo 44)"
+	info "Image-based system: build and audit tools ($TOOLS_BOX_PKGS) go in the '$TOOLS_BOX' $box_tool box, not the image."
+	if [[ "$box_tool" != distrobox ]]; then
+		add_action_item 23 LOW "TOOLS_BOX" \
+			"Create the tools box: toolbox create --release $release $TOOLS_BOX && toolbox run -c $TOOLS_BOX sudo dnf install -y $TOOLS_BOX_PKGS"
+		return 0
+	fi
+	if [[ -z "$run_user" || "$run_user" == root ]]; then
+		info "No desktop user (run with sudo or --user NAME) — distrobox manifest not written."
+		return 0
+	fi
+	local home ini
+	home="$(user_home "$run_user")"
+	[[ -n "$home" && -d "$home" ]] || return 0
+	ini="$home/.config/distrobox/$TOOLS_BOX.ini"
+	if [[ -f "$ini" ]]; then
+		ok "Distrobox manifest already present: $ini"
+	else
+		write_new_file "$ini" 0644 <<EOF || return 0
+# Build and audit tools kept out of the host image — written by fedora-harden.sh.
+# Create or recreate the box:
+#   distrobox assemble create --file $ini
+#   ujust distrobox-assemble CONTAINER=$TOOLS_BOX FILE=$ini   (Universal Blue)
+# Scan the host from inside it:  sudo oscap-chroot /run/host xccdf eval ...
+# Like every distrobox, it shares your home and sees the host: it keeps the host
+# clean, it does not isolate what runs inside it.
+[$TOOLS_BOX]
+image=registry.fedoraproject.org/fedora-toolbox:$release
+additional_packages="$TOOLS_BOX_PKGS"
+pull=true
+EOF
+		if ((!DRY_RUN)); then
+			chown -R "$run_user:" "$home/.config/distrobox" 2>/dev/null || true
+			ok "Wrote distrobox manifest $ini"
+		fi
+	fi
+	add_action_item 23 LOW "TOOLS_BOX" \
+		"Create the tools box (as $run_user): distrobox assemble create --file $ini — on Universal Blue also: ujust distrobox-assemble CONTAINER=$TOOLS_BOX FILE=$ini"
 }
 
 # ---------- Actionable-items display + remediation --------------------------
@@ -6618,6 +6986,7 @@ main() {
 	sec_19_services
 	sec_20_perms
 	sec_08_usbguard
+	record_etc_baseline
 
 	gui_progress_close
 	final_summary
