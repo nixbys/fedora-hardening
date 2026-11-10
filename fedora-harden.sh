@@ -6233,8 +6233,22 @@ _oscap_in_container() {
 	fi
 	info "Image-based system: OpenSCAP runs in a throwaway $image container and reads the host read-only (nothing is layered)."
 	if confirm "Run a baseline scan now (results in /root/scap-report.html)?"; then
-		run "podman run --rm --security-opt label=disable -v /:/host:ro -v /root:/out '$image' sh -c 'dnf -y -q install openscap-scanner scap-security-guide >/dev/null && oscap-chroot /host xccdf eval --profile xccdf_org.ssgproject.content_profile_standard --results /out/scap-results.xml --report /out/scap-report.html /usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml' || true"
-		ok "Report: /root/scap-report.html"
+		# Host networking: the container only downloads the scanner, and this avoids
+		# depending on the container network stack (nested setups, unusual firewalls).
+		# oscap exits 2 when rules fail, so success is judged by the results file.
+		((DRY_RUN)) || rm -f /root/scap-results.xml /root/scap-report.html
+		run "podman run --rm --network host --security-opt label=disable -v /:/host:ro -v /root:/out '$image' sh -c 'dnf -y -q install openscap-scanner scap-security-guide >/dev/null && oscap-chroot /host xccdf eval --profile xccdf_org.ssgproject.content_profile_standard --results /out/scap-results.xml --report /out/scap-report.html /usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml' || true"
+		if ((DRY_RUN)); then
+			return 0
+		elif [[ -s /root/scap-results.xml ]]; then
+			ok "Report: /root/scap-report.html"
+		else
+			local why=""
+			[[ -s "${ERROR_CAPTURE_FILE:-}" ]] && why="$(tail -n 3 "$ERROR_CAPTURE_FILE" | tr '\n' ' ')"
+			warn "The OpenSCAP container produced no results${why:+: $why}"
+			add_action_item 22 MEDIUM "SCAP_CONTAINER_FAILED" \
+				"The OpenSCAP scan container did not produce results${why:+ ($why)}. Check network access to registry.fedoraproject.org and re-run section 22."
+		fi
 	fi
 }
 
