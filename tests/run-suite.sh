@@ -11,6 +11,7 @@
 #           Blue), booted with systemd in privileged containers
 #   vm      installs those images on a virtual disk (bootc, in a Fedora CoreOS VM)
 #           and boots them with KVM
+#   fault   runs in the quick and full images of release N
 #
 # Tiers (run in order; each includes only its own tests):
 #   static  - syntax, shellcheck, shfmt, yamllint, ruff, hadolint, MCP server smoke
@@ -28,6 +29,11 @@
 #   vm      - the same on an installed, booted system, plus what needs an OSTree
 #             sysroot: image-signature finding, /etc baseline and weekly report
 #             (tests/atomic-vm.sh). Not in "all": needs /dev/kvm, ~15 min per image.
+#   fault   - fault injection (tests/fault-matrix.sh): bad arguments, odd locales and
+#             paths, no network, dead DNS, broken repositories, RPM lock held,
+#             missing tools, read-only and full filesystems, malformed configs,
+#             SIGINT/SIGTERM/SIGKILL mid-run, concurrent runs, idempotency, and
+#             rollback restoring /etc. Not in "all": about an hour.
 #
 # Usage:
 #   tests/run-suite.sh                      # "all": static, quick, full, gui
@@ -36,6 +42,7 @@
 #   tests/run-suite.sh --no-build           # reuse existing images
 #   tests/run-suite.sh --native             # run static tier on this host as-is
 #   tests/run-suite.sh --fedora 45          # test on another Fedora release (default 44)
+#   tests/run-suite.sh --tier fault         # fault injection (about an hour)
 #   tests/run-suite.sh --tier atomic --image quay.io/fedora/fedora-kinoite:45
 #                                           # atomic/vm tiers on other images (repeatable)
 #
@@ -73,8 +80,8 @@ usage() {
 while (($# > 0)); do
     case "$1" in
         --tier)
-            [[ "${2:-}" =~ ^(static|quick|full|gui|atomic|vm|all)$ ]] || {
-                echo "--tier needs static|quick|full|gui|atomic|vm|all" >&2
+            [[ "${2:-}" =~ ^(static|quick|full|gui|atomic|vm|fault|all)$ ]] || {
+                echo "--tier needs static|quick|full|gui|atomic|vm|fault|all" >&2
                 exit 2
             }
             TIERS+=("$2")
@@ -738,6 +745,33 @@ tier_vm() {
     for img in "${ATOMIC_IMAGES[@]}"; do
         run_image_test vm atomic-vm.sh "$img" "$TARGET_FEDORA"
     done
+}
+
+# ---------------------------------------------------------------------------
+# Tier: fault (fault injection)
+# ---------------------------------------------------------------------------
+tier_fault() {
+    tier_header "fault (fault injection, Fedora $TARGET_FEDORA)"
+    if ! have podman; then
+        record SKIP "fault tier" "podman not installed"
+        return 0
+    fi
+    # The fault scenarios run in the quick and full images.
+    if ! build_image test-only "$IMG_QUICK" >"$ARTIFACTS/build-quick.log" 2>&1 ||
+        ! build_image base "$IMG_FULL" >"$ARTIFACTS/build-full.log" 2>&1; then
+        record FAIL "fault: build images" "see $ARTIFACTS/build-*.log"
+        return 0
+    fi
+    local out="$ARTIFACTS/fault" line
+    mkdir -p "$out"
+    "$ROOT/tests/fault-matrix.sh" "$TARGET_FEDORA" "$out" >"$out/results.txt" 2>&1 || true
+    while IFS= read -r line; do
+        case "$line" in
+            "PASS: "*) record PASS "fault ${line#PASS: }" ;;
+            "FAIL: "*) record FAIL "fault ${line#FAIL: }" "logs in $out" ;;
+        esac
+    done <"$out/results.txt"
+    grep -qE '^(PASS|FAIL):' "$out/results.txt" || record FAIL "fault: matrix ran" "no results, see $out/results.txt"
 }
 
 # ---------------------------------------------------------------------------
