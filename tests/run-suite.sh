@@ -500,6 +500,23 @@ tier_full() {
          grep -qx "DNSOverTLS=yes" /etc/systemd/resolved.conf.d/99-hardening.conf'
     check "full: /etc/shadow mode 000" bash -c '[[ "$(podman exec "$1" stat -c %a /etc/shadow)" == 0 ]]' _ "$FULL_CT"
 
+    # --- the user-facing verifier agrees ------------------------------------------
+    # tests/verify-host.sh is what users run on real machines; check it reports PASS
+    # for everything a container can provide. SEL/AUD/DNS/CLAM-2/SYS need the host
+    # kernel (SELinux, audit, resolved's capabilities, fanotify, writable sysctls).
+    log="$ARTIFACTS/full_verify_host.log"
+    podman cp "$ROOT/tests/verify-host.sh" "$FULL_CT:/root/verify-host.sh" >/dev/null 2>&1
+    fx /root/verify-host.sh >"$log" 2>&1 || true
+    local id missing=""
+    for id in AUTO-1 AUTO-2 FW-1 FW-2 SSH-1 SSH-2 PAM-1 PAM-2 PAM-3 PERM-1 PERM-2 CLAM-1 ROLL-1; do
+        grep -qE "^[[:space:]]+${id}[[:space:]]+PASS" "$log" || missing+="$id "
+    done
+    if [[ -z "$missing" ]]; then
+        record PASS "full: verify-host.sh reports PASS for all container-checkable items"
+    else
+        record FAIL "full: verify-host.sh reports PASS for all container-checkable items" "not passing: $missing(see $log)"
+    fi
+
     # --- idempotency ------------------------------------------------------------
     log="$ARTIFACTS/full_real2.log"
     rc=0
