@@ -28,7 +28,7 @@ This is a personal hardening script that has grown a substantial feature set and
 - **Full rollback** — per-session change journal; `--rollback` or `--rollback all` to undo any or every run
 - **Audit export** — PDF/TXT audit report for deferred remediation via `--import-audit`
 - **Dry-run mode** — preview all changes without touching the system
-- **GUI frontend** — optional kdialog/zenity prompts and progress window via `--gui` / `--gui-full`
+- **GUI frontend** — optional dialogs and progress window via `--gui` / `--gui-full`, in a Material Design dark theme (see [GUI](#gui))
 - **4-layer caching** — memoized command checks, package status, user home dirs, and rpm-ostree pending layers
 
 ---
@@ -39,25 +39,25 @@ This is a personal hardening script that has grown a substantial feature set and
 |---|---------|-------|
 | 2 | System updates | `dnf upgrade` + fwupd firmware/microcode + optional HW security key |
 | 3 | Automatic updates | `dnf5-plugin-automatic` (security-only) or `rpm-ostreed` |
-| 4 | SELinux | Verification + tools |
+| 4 | SELinux | Enforcing; a disabled system goes permissive + full relabel first (safe path) |
 | 5 | firewalld | Drop-default zone policy |
 | 6 | Secure Boot | Verification (GRUB password is manual — printed as an action item) |
-| 7 | SSH hardening | Key-based auth, hardened cipher suite |
+| 7 | SSH hardening | Key-based auth, hardened ciphers via `sshd_config.d/10-hardening.conf` (takes precedence over Fedora's defaults); never restarts sshd on an invalid config |
 | 8 | USBGuard | Interactive — plug in devices before this section runs |
-| 9 | Password & PAM | pwquality, faillock, account aging |
+| 9 | Password & PAM | pwquality (min length 14, 3 classes), faillock (5 tries, 15 min), account aging |
 | 10 | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941) |
 | 11 | auditd | Identity, privilege escalation, module, time/network/mount/delete syscalls |
 | 12 | rkhunter + AIDE | Rootkit detection + file integrity monitoring |
 | 13 | Flatpak / Flathub | App sandboxing + optional Firejail |
-| 14 | DNS over TLS | systemd-resolved with Quad9 + Cloudflare |
+| 14 | DNS over TLS | systemd-resolved with Quad9 + Cloudflare (installed if missing; warns if DNS bypasses it) |
 | 14b | MAC randomization | NetworkManager network-layer privacy |
-| 15 | Desktop settings | Screen lock, recent docs, Bluetooth, location, mic — per DE |
+| 15 | Desktop settings | Screen lock, recent docs, Bluetooth, location, mic — per DE, verified after applying |
 | 16 | Firefox | Flatpak + arkenfox + extensions + VPN detection |
 | 17 | WireGuard | Tool install (tunnel config is manual) |
 | 18 | Fail2Ban | Intrusion detection + auto-ban |
 | 19 | Service cleanup | Disable avahi, cups, bluetooth, modemmanager |
 | 20 | File permissions | shadow, /tmp, compilers, umask 077, core dumps, hostname privacy |
-| 21 | ClamAV | Install + freshclam + on-access scanning for /home |
+| 21 | ClamAV | clamd + freshclam + on-access scanning of /home (clamonacc) |
 | 22 | OpenSCAP | Scanner install + initial compliance scan |
 | 23 | Container security | Rootless Podman + Toolbox, image policy, seccomp, registry hardening |
 
@@ -67,7 +67,7 @@ This is a personal hardening script that has grown a substantial feature set and
 
 ## Requirements
 
-- **Fedora 44+** (or a compatible Atomic/Universal Blue variant)
+- **Fedora 44+** (or a compatible Atomic/Universal Blue variant) — every change is tested on Fedora 44 (see [Testing](#testing))
 - `bash` 5.x
 - `sudo` / root access
 - Internet connection (for package installs and firmware updates)
@@ -97,6 +97,11 @@ sudo ./fedora-harden.sh --only 5,7,10
 sudo ./fedora-harden.sh --skip 8,21
 ```
 
+> **Non-interactive runs (`--yes`)** accept every recommendation, with one safety
+> exception: SSH hardening is skipped (and reported as a HIGH follow-up item) when
+> the target user has no public key in `~/.ssh/authorized_keys`, because disabling
+> password logins would lock you out.
+
 ---
 
 ## All Options
@@ -107,7 +112,7 @@ sudo ./fedora-harden.sh [options]
   -u, --user <name>       Target username for SSH/chage/home-dir hardening
   -y, --yes               Assume "yes" to all prompts (non-interactive)
   -n, --dry-run           Print what would run; make no changes
-      --gui               Enable graphical prompts (kdialog/zenity) when available
+      --gui               Enable graphical prompts (zenity, kdialog fallback) when available
       --gui-full          Full windowed frontend: GUI progress + GUI status output
       --import-audit <p>  Import a generated audit PDF/TXT and choose items later
       --skip <list>       Comma-separated sections to skip  (e.g. 7,8,17)
@@ -118,6 +123,41 @@ sudo ./fedora-harden.sh [options]
                           Use 'all' for a full-reset rollback of every session
   -h, --help              Show this help and exit
 ```
+
+---
+
+## GUI
+
+```bash
+sudo ./fedora-harden.sh --gui          # questions as dialogs, output in the terminal
+sudo ./fedora-harden.sh --gui-full     # progress window + dialogs, no terminal output
+```
+
+- **Theme:** dialogs use a Material Design 3 dark theme (surfaces, pill buttons,
+  linear progress indicator), titlebar included. The theme is private to the
+  script's own dialogs (written to `/run/fedora-harden/gui-theme`) and does not
+  change your desktop or user settings.
+- **Toolkit:** zenity is preferred on every desktop, because it draws its own
+  titlebar and the theme can cover the whole window. kdialog is the fallback; it
+  gets Material-dark colours, but its titlebar is drawn by KWin and follows your
+  Plasma window decoration.
+- **Progress window (`--gui-full`):** shows the current section and status;
+  **Cancel** stops the run (exit code 130). At the end, a single window shows the
+  summary and follow-up items grouped by priority, as selectable text so commands
+  can be copied. It does not block the script from exiting.
+- Works under `sudo` (Fedora keeps `DISPLAY`/`XAUTHORITY`). If no dialog can be
+  shown (no usable display), the script falls back to terminal prompts instead
+  of treating every question as "No".
+
+| Progress window (`--gui-full`) | Question |
+|---|---|
+| ![Progress window](docs/screenshots/progress.png) | ![Yes/No question](docs/screenshots/question.png) |
+| **Text input** | **End-of-run summary** |
+| ![Text input](docs/screenshots/entry.png) | ![Summary with follow-up items](docs/screenshots/summary.png) |
+
+Screenshots are generated from the theme embedded in `fedora-harden.sh` by
+`tests/gui-screenshots.sh` (Fedora 44, virtual display, so the rounded window
+corners a compositor draws on a real desktop are not shown).
 
 ---
 
@@ -144,7 +184,7 @@ Auto-detection reads `/etc/os-release` + `/run/ostree-booted`. Desktop detection
 
 ## Rollback
 
-Every file the script modifies is backed up before the change. A session journal is written to `/root/harden-backups-<timestamp>/`.
+Every file the script modifies is backed up before the change, and every file it creates is journaled, so a rollback restores modified files **and removes created ones** (drop-ins, rules, cron jobs). A session journal is written to `/root/harden-backups-<timestamp>/`.
 
 ```bash
 # Undo the most recent run
@@ -196,6 +236,26 @@ sudo ./fedora-harden.sh --import-audit ./sessions/audit-20260601-143022.txt
 
 ---
 
+## Testing
+
+All tests run on **Fedora 44** in throwaway rootless podman containers — the host
+is never modified:
+
+```bash
+./tests/run-suite.sh                  # everything
+./tests/run-suite.sh --tier static    # shellcheck, shfmt, yamllint, hadolint, ruff
+./tests/run-suite.sh --tier quick     # CLI, dry-run makes no changes, desktop settings
+./tests/run-suite.sh --tier full      # real run under systemd, idempotency, rollback
+./tests/run-suite.sh --tier gui       # --gui-full on a virtual display, theme, Cancel
+```
+
+The full tier checks the hardening is really in effect (e.g. the effective sshd
+configuration via `sshd -T`, the password policy files), that a second run
+changes nothing, and that `--rollback all` restores the system. See
+[TESTING.md](TESTING.md); setup is `./setup-dev.sh` (Fedora 44 RPM toolchain).
+
+---
+
 ## Repository Layout
 
 ```
@@ -227,7 +287,7 @@ you need — everything else is for people modifying the script itself.
 | Shell syntax | `bash -n` | [![CI](https://github.com/nixbys/fedora-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/ci.yml) |
 | Static analysis | ShellCheck 0.11.0 (`--enable=all`) | ↑ same |
 | Formatting | shfmt v3.12.0 (style from `.editorconfig`) | ↑ same |
-| Container tests | `tests/run-suite.sh --tier quick` (podman) | ↑ same |
+| Container tests | `tests/run-suite.sh` quick, full and gui tiers (Fedora 44, podman) | ↑ same |
 | Secret scanning | gitleaks (full history, blocking) | ↑ same |
 | Vulnerabilities | Trivy (results in the Security tab) | ↑ same |
 | Workflow security | actionlint + zizmor | [![Workflow security](https://github.com/nixbys/fedora-hardening/actions/workflows/workflow-security.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/workflow-security.yml) |
@@ -235,6 +295,12 @@ you need — everything else is for people modifying the script itself.
 See [SECURITY.md](SECURITY.md) for how to report a vulnerability and
 [THREAT_MODEL.md](THREAT_MODEL.md) for the trust assumptions behind running
 this script as root.
+
+---
+
+## Changes
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed and why.
 
 ---
 
