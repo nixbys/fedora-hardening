@@ -69,6 +69,9 @@ profile), `shfmt -d` (style from `.editorconfig`), `yamllint --strict`, `hadolin
 6. `--rollback all` exits 0, removes the drop-ins the script created and restores
    `pwquality.conf`
 
+The full tier's container gets 3 GB of memory (`FULL_MEMORY` to override) because it
+does a real run, and ClamAV loads its signature database into memory.
+
 The systemd container gets `--cap-add NET_ADMIN,NET_RAW` so firewalld can manage
 nftables. Under rootless podman this applies only to the container's own network
 namespace.
@@ -104,7 +107,7 @@ systemd variant, `journal.log` and `failed-units.txt`.
 
 | Option | Default |
 |--------|---------|
-| `--memory` | 1g (systemd), 256m (`--quick`) |
+| `--memory` | 1g (systemd), 256m (`--quick`) — enough for dry runs; use `--memory 3g` for real runs (ClamAV loads its signatures into memory) |
 | `--cpus` | 2 (systemd), 1 (`--quick`) |
 | PID limit | 2048 |
 
