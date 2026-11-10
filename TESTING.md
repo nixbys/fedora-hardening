@@ -40,7 +40,7 @@ Results are written to `<artifacts>/results.txt`, with one log per check.
 
 ### static
 
-`bash -n`, ShellCheck (warning level and the strict `.trunk/configs/.shellcheckrc`
+`bash -n`, ShellCheck (warning level and the strict `.shellcheckrc`
 profile), `shfmt -d` (style from `.editorconfig`), `yamllint --strict`, `hadolint`,
 `ruff`, an MCP server smoke test over stdio, and a regression guard against
 `((x++))`-style increments that abort under `set -e` when `x` is 0.

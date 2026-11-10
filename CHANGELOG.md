@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — current guidance (Privacy Guides, IntelTechniques)
+
+Reviewed against Privacy Guides (Linux Overview updated October 2026, Desktop,
+Linux Application Sandboxing) and IntelTechniques (Extreme Privacy 5th ed., 2026
+OS Telemetry Guide):
+
+- **Firejail is no longer installed by `--yes`.** Privacy Guides cautions that it is
+  a large setuid binary with a large attack surface; it stays available as opt-in.
+- **Flatpak apps are blocked from the host filesystem** (`host`, `host-os`,
+  `host-etc`) with a global override; home-directory access can be blocked too
+  (opt-in). Apps use file portals. `--rollback` restores the previous overrides.
+- **Firefox:** arkenfox is pinned to a release (144.0) and checksum-verified instead
+  of following its `master` branch; your previous `user.js` is backed up. Adds
+  Global Privacy Control, Do Not Track and DNS-over-HTTPS (Quad9, with fallback) so
+  Encrypted Client Hello can work.
+- **New checks:** unencrypted disk swap (prefer ZRAM) and X11 sessions (prefer
+  Wayland) are reported with follow-up items. `mat2` is offered for removing file
+  metadata. OpenSnitch is suggested for outbound connection control.
+- **Universal Blue (Bazzite, Bluefin, Aurora):** section 3 no longer enables
+  rpm-ostreed's automatic updates next to `uupd`, which already updates the image,
+  Flatpaks and distroboxes; it confirms `uupd.timer` is on and points to `ujust update`.
+- **Fixed:** the countme opt-out never ran on rpm-ostree systems (section 3 returned
+  before reaching it).
+- **Housekeeping:** `TOOLCHAIN.md` merged into an up-to-date `DEVELOPMENT.md`; the
+  unused Trunk configuration removed (its `.shellcheckrc` now lives at the repository
+  root, where shellcheck finds it); dead reference links replaced.
+- **Automation:** `docs/references.json` + `tests/check-references.py` + a weekly
+  **Reference watch** workflow open an issue when a source changes or arkenfox
+  releases a new version. The static tests also verify the pinned arkenfox checksum.
+
 ## Unreleased — Fedora 45
 
 - Tested on **Fedora 45** alongside 44: every test tier runs on both releases in CI.
