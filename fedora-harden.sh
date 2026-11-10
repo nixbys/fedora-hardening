@@ -5758,8 +5758,11 @@ sec_20_perms() {
 		[[ -z "$swap_dev" || "$swap_dev" == Filename || "$swap_dev" == /dev/zram* ]] && continue
 		backing="$swap_dev"
 		if [[ "$swap_type" == file ]]; then
-			backing="$(findmnt -no SOURCE -T "$swap_dev" 2>/dev/null)"
+			# findmnt fails when the file's mount is not visible (containers, CI runners);
+			# without "|| true" the ERR trap would abort the whole run.
+			backing="$(findmnt -no SOURCE -T "$swap_dev" 2>/dev/null || true)"
 			backing="${backing%%[*}"
+			[[ -n "$backing" ]] || backing="$swap_dev"
 		fi
 		lsblk -s -no TYPE "$backing" 2>/dev/null | grep -qx crypt || plain_swaps+="$swap_dev "
 	done </proc/swaps

@@ -377,6 +377,19 @@ tier_quick() {
         record FAIL "quick: Universal Blue keeps uupd as the only updater (section 3)" "exit $rc (see $log)"
     fi
 
+    # A swap file whose mount is not visible (CI runners, containers) must be
+    # reported, not abort the run: findmnt fails for it under the ERR trap.
+    local swaps="$ARTIFACTS/fake-proc-swaps"
+    log="$ARTIFACTS/quick_swap_report.log" rc=0
+    printf 'Filename\tType\tSize\tUsed\tPriority\n/mnt/swapfile file 4194300 0 -2\n' >"$swaps"
+    podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" -v "$swaps:/proc/swaps:ro,z" --entrypoint /root/fedora-harden.sh \
+        "$IMG_QUICK" --dry-run --yes --only 20 >"$log" 2>&1 || rc=$?
+    if ((rc == 0)) && grep -q "Unencrypted swap in use: /mnt/swapfile" "$log"; then
+        record PASS "quick: unencrypted swap file is reported without aborting (section 20)"
+    else
+        record FAIL "quick: unencrypted swap file is reported without aborting (section 20)" "exit $rc (see $log)"
+    fi
+
     # Desktop settings must really persist for the user (gsettings/xfconf need a D-Bus session)
     check "quick: GNOME + XFCE settings persist for the user (section 15)" \
         podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" \
