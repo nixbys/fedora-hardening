@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Excerpt of real `oscap xccdf eval` results (Fedora 45, openscap 1.4.6): one pass, one fail, one notapplicable. Used by tests/run-suite.sh to check scap_results(). -->
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="xccdf_org.ssgproject.content_benchmark_FEDORA" resolved="1" xml:lang="en-US" style="SCAP_1.2">
+  <TestResult id="xccdf_org.open-scap_testresult_xccdf_org.ssgproject.content_profile_standard" version="0.1.82" test-system="cpe:/a:redhat:openscap:1.4.6">
+    <rule-result idref="xccdf_org.ssgproject.content_rule_configure_crypto_policy" role="full" time="2026-11-10T17:47:17+00:00" severity="high" weight="1.000000">
+      <result>pass</result>
+      <check system="http://oval.mitre.org/XMLSchema/oval-definitions-5">
+        <check-export export-name="oval:ssg-var_system_crypto_policy:var:1" value-id="xccdf_org.ssgproject.content_value_var_system_crypto_policy"/>
+        <check-content-ref name="oval:ssg-configure_crypto_policy:def:1" href="ssg-fedora-oval.xml"/>
+      </check>
+    </rule-result>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_aide_build_database" role="full" time="2026-11-10T17:47:17+00:00" severity="medium" weight="1.000000">
+      <result>fail</result>
+      <check system="http://oval.mitre.org/XMLSchema/oval-definitions-5">
+        <check-content-ref name="oval:ssg-aide_build_database:def:1" href="ssg-fedora-oval.xml"/>
+      </check>
+    </rule-result>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_rpm_verify_hashes" role="full" time="2026-11-10T17:47:17+00:00" severity="high" weight="1.000000">
+      <result>notapplicable</result>
+    </rule-result>
+  </TestResult>
+</Benchmark>

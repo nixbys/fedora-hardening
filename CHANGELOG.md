@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — image-based systems keep tools out of the image
+
+On Silverblue, Kinoite, Bazzite, Aurora and other Atomic variants the script no
+longer layers tools into the image; package-based Fedora behaves as before.
+
+- **Flatpaks instead of layers:** Yubico Authenticator replaces `yubikey-manager`
+  and `yubico-piv-tool` (only the smart-card drivers and `pam-u2f` stay on the host);
+  Metadata Cleaner replaces `mat2`.
+- **ClamAV in a container:** a weekly Podman quadlet scans `/home` read-only, with no
+  network, a read-only root and one capability (reading files). The signatures ship
+  in the official image, refreshed before each scan. If ClamAV is already layered,
+  a follow-up item explains how to remove it.
+- **OpenSCAP from a throwaway container** that scans the host read-only with
+  `oscap-chroot`.
+- **File integrity:** instead of AIDE and rkhunter (the image already guarantees
+  `/usr`), section 12 checks that the booted image is signature-verified and adds a
+  weekly report of `/etc` changes since the end of the hardening run.
+- **Tools box:** `buildah`, `skopeo`, `podman-compose`, `setools` and OpenSCAP go in a
+  `fedora-harden-tools` box; with distrobox (Universal Blue) the script writes a
+  manifest usable with `distrobox assemble` and `ujust distrobox-assemble`. Toolbox
+  is no longer layered on Universal Blue.
+- **Docs:** section 23 and the README say plainly that toolbox and distrobox are not
+  a security boundary. The README no longer claims the image policy requires
+  signature verification (it rejects unknown registries).
+- **Fixed:** the OpenSCAP summary always reported 0 passed / 0 failed and never
+  listed failing rules (it looked for an attribute oscap does not write), so the
+  failed-rules follow-up item never appeared.
+- **Fixed:** two runs started in the same second shared a session, and the second
+  truncated the first one's rollback journal.
+- **Fixed:** a failed write to the run log could abort the run (rpm-ostree output).
+  Section 12 recognises images verified through an OSTree remote (Fedora CoreOS).
+- **Tested on the real images:** new `atomic` tier (real Silverblue and Universal Blue
+  desktop images booted with systemd: real rpm-ostree, Flathub installs, quadlets, a
+  real ClamAV scan of a test file) and `vm` tier (the images installed with
+  `bootc install to-disk` and booted with KVM: image signature, `/etc` baseline and
+  weekly report on a real OSTree sysroot). They replace a simulation with stub
+  commands. Both run in CI for Fedora 44 and 45.
+
 ## Unreleased — current guidance (Privacy Guides, IntelTechniques)
 
 Reviewed against Privacy Guides (Linux Overview updated October 2026, Desktop,
