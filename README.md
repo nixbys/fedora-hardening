@@ -36,7 +36,7 @@ Every change is journaled for full rollback support. The script is safe to run m
 | # | Section | Notes |
 |---|---------|-------|
 | 2 | System updates | `dnf upgrade` + fwupd firmware/microcode + optional HW security key |
-| 3 | Automatic updates | `dnf5-automatic` or `rpm-ostreed` |
+| 3 | Automatic updates | `dnf5-plugin-automatic` (security-only) or `rpm-ostreed` |
 | 4 | SELinux | Verification + tools |
 | 5 | firewalld | Drop-default zone policy |
 | 6 | Secure Boot | Verification (GRUB password is manual — printed as an action item) |
@@ -198,9 +198,11 @@ sudo ./fedora-harden.sh --import-audit ./sessions/audit-20260601-143022.txt
 
 | Check | Tool | Status |
 |-------|------|--------|
-| Shell syntax | `bash -n` | [![CI](https://github.com/nixbys/fedora-hardening/actions/workflows/actions.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/actions.yml) |
+| Shell syntax | `bash -n` | [![CI](https://github.com/nixbys/fedora-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/ci.yml) |
 | Static analysis | ShellCheck 0.11.0 (`--enable=all`) | ↑ same |
-| Formatting | shfmt v3.6.0 | ↑ same |
+| Formatting | shfmt v3.12.0 (style from `.editorconfig`) | ↑ same |
+| Container tests | `tests/run-suite.sh --tier quick` (podman) | ↑ same |
+| Secrets / vulns | TruffleHog, Gitleaks, Trivy | ↑ same |
 
 ---
 
