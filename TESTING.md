@@ -1,336 +1,152 @@
-# Fedora Hardening Script - Testing Guide
+# Testing fedora-harden.sh
 
-## Quick Container Testing (Recommended)
+## Platform policy
 
-The easiest way to test `fedora-harden.sh` safely in an isolated environment is using the provided podman test script.
+`fedora-harden.sh` targets **Fedora 44**, so every test and check runs on Fedora 44:
 
-### Prerequisites
+| What | Runs on |
+|------|---------|
+| Static tier (lint, formatting, MCP smoke test) | `registry.fedoraproject.org/fedora:44` — the `lint` image from `Dockerfile.test`, or natively when the host is Fedora 44 |
+| Quick tier | `registry.fedoraproject.org/fedora-minimal:44` (`test-only` image, no systemd) |
+| Full tier | `registry.fedoraproject.org/fedora-minimal:44` with systemd as PID 1 (`base` image) |
+| GUI tier | `registry.fedoraproject.org/fedora:44` + Xvfb, zenity, kdialog (`gui` image) |
+| CI (`.github/workflows/ci.yml`) | every job runs in a `fedora:44` job container; tools are Fedora 44 RPMs |
+| Developer tooling (`setup-dev.sh`, pre-commit) | Fedora 44 RPMs (`ShellCheck shfmt yamllint ruff hadolint gitleaks pre-commit python3-mcp`) |
 
-```bash
-# Install podman (replaces docker for most use cases)
-sudo dnf install podman
-
-# Optional: Install podman-compose for multi-container testing
-sudo dnf install podman-compose
-```
-
-### Quick Start - Fast Testing Mode (Recommended for CI)
-
-```bash
-# Fastest test: ultra-minimal container without systemd (~1-2 minutes)
-./test-in-podman.sh --quick --dry-run
-
-# Test with auto-cleanup and interactive output
-./test-in-podman.sh --quick -it
-```
-
-### Full System Testing
+On an rpm-ostree host (Silverblue, Kinoite, Bazzite, …) do development inside a
+Fedora 44 toolbox:
 
 ```bash
-# Full test with systemd (more realistic, slower, ~3-5 minutes)
-./test-in-podman.sh --dry-run
-
-# Run only specific hardening section (e.g., section 5 = firewalld)
-./test-in-podman.sh --quick --only 5
-
-# Skip specific sections
-./test-in-podman.sh --quick --skip 12,19 --dry-run
+toolbox create --image registry.fedoraproject.org/fedora-toolbox:44 fh-dev
+toolbox enter fh-dev
+./setup-dev.sh
 ```
 
-### Resource-Constrained Testing
+All tests that change system state run in throwaway **rootless** podman containers;
+the host is never modified.
 
-Useful for testing on minimal systems or CI with limited resources:
+## Test suite
 
 ```bash
-# Ultra-minimal: 256 MB memory, 1 CPU
-./test-in-podman.sh --quick --memory 256m --cpus 1 --dry-run
-
-# Standard: 512 MB memory, 2 CPUs (default)
-./test-in-podman.sh --quick --dry-run
-
-# Generous: 1 GB memory, 4 CPUs
-./test-in-podman.sh --memory 1g --cpus 4 --dry-run
+./tests/run-suite.sh                    # all tiers
+./tests/run-suite.sh --tier static      # one tier (repeatable)
+./tests/run-suite.sh --artifacts ./out  # keep logs somewhere specific
+./tests/run-suite.sh --no-build         # reuse already-built images
 ```
 
-### Interactive Container Shell
+Results are written to `<artifacts>/results.txt`, with one log per check.
 
-For manual testing or debugging:
+### static
+
+`bash -n`, ShellCheck (warning level and the strict `.trunk/configs/.shellcheckrc`
+profile), `shfmt -d` (style from `.editorconfig`), `yamllint --strict`, `hadolint`,
+`ruff`, an MCP server smoke test over stdio, and a regression guard against
+`((x++))`-style increments that abort under `set -e` when `x` is 0.
+
+### quick (no systemd)
+
+- CLI contract: `--help`/`--list` exit 0; unknown options and missing option values exit 2
+- non-root invocation is refused
+- `--only 5,10` runs exactly those sections
+- running from a read-only directory (no writable `sessions/`) still exits 0
+- section 15 end-to-end (`tests/desktop-settings.sh`): GNOME (gsettings/dconf) and XFCE
+  (xfconf) settings are read back as the user to prove they persisted
+- a full `--dry-run --yes` exits 0 with no `[FAIL]` lines
+- **dry-run changes nothing**: `podman diff` of the container may only show package
+  metadata caches and the script's own logs
+
+### full (systemd)
+
+1. `--dry-run` under systemd leaves `/etc` byte-for-byte unchanged
+2. a **real run** (`--yes --user testuser`) exits 0 with no `[FAIL]` lines
+3. hardening is actually applied: sysctl drop-in, firewalld default zone `drop`,
+   pwquality (`minlen=14`, `minclass=3`), faillock, `login.defs` ageing, audit rules,
+   umask profile, core-dump limits, clamd running, systemd-resolved with DNS-over-TLS,
+   valid `sshd -t` **and** the effective sshd config (`sshd -T`: X11 forwarding off,
+   password auth off, hardened ciphers), `/etc/shadow` mode 000
+4. a second real run is **idempotent** (no file under `/etc` changes)
+5. `--list-sessions` lists both sessions
+6. `--rollback all` exits 0, removes the drop-ins the script created and restores
+   `pwquality.conf`
+
+The full tier's container gets 3 GB of memory (`FULL_MEMORY` to override) because it
+does a real run, and ClamAV loads its signature database into memory.
+
+The systemd container gets `--cap-add NET_ADMIN,NET_RAW` so firewalld can manage
+nftables. Under rootless podman this applies only to the container's own network
+namespace.
+
+### gui
+
+Runs `tests/gui-test.sh` on a virtual X display, as root with no UTF-8 locale (as
+under `sudo -i`/`pkexec`):
+
+- `--gui-full --dry-run --yes` exits 0 and never waits on a dialog
+- the progress window is closed, not orphaned, when the script exits
+- exactly one end-of-run window remains, and a sampled pixel proves the
+  Material-dark theme was applied (`#2B2930` surface)
+- killing the progress window (= the user pressing Cancel) stops a real run with
+  exit 130, and the cancellation is logged
+
+Screenshots (`gui-summary.png`, `gui-progress.png`) are saved in `<artifacts>/gui/`.
+
+## Ad-hoc runs with test-in-podman.sh
 
 ```bash
-# Open interactive shell in quick test container
-./test-in-podman.sh --quick -it
-
-# Inside container, run the script manually
-root@container:/root# bash -n fedora-harden.sh  # Syntax check
-root@container:/root# ./fedora-harden.sh --list  # Show sections
-root@container:/root# ./fedora-harden.sh --dry-run --only 5  # Test section 5
+./test-in-podman.sh --quick --dry-run          # no systemd, fastest
+./test-in-podman.sh --dry-run --only 5,7,10    # systemd, selected sections
+./test-in-podman.sh                            # REAL run inside the container
+./test-in-podman.sh --quick -it                # interactive shell
+./test-in-podman.sh --keep --artifacts ./out   # keep container + logs for inspection
 ```
 
-## Container Architecture
+Without `--dry-run` the script makes real changes, but only inside the throwaway
+container. Artifacts are kept after the run (the path is printed): `output.log`,
+`logs/harden-*.log`, `logs/*-errors.log`, `sessions/`, `fs-diff.txt` and, for the
+systemd variant, `journal.log` and `failed-units.txt`.
 
-### Two Testing Variants
+| Option | Default |
+|--------|---------|
+| `--memory` | 1g (systemd), 256m (`--quick`) — enough for dry runs; use `--memory 3g` for real runs (ClamAV loads its signatures into memory) |
+| `--cpus` | 2 (systemd), 1 (`--quick`) |
+| PID limit | 2048 |
 
-#### 1. **Quick Variant** (Recommended)
-- **Size**: ~150 MB
-- **Startup**: <5 seconds
-- **Memory**: 256 MB (configurable)
-- **CPU**: 1 core (configurable)
-- **Best for**: CI/CD, rapid iteration, syntax checking
+## Container images
+
+`Dockerfile.test` has three stages:
+
+| Target | Base | Purpose |
+|--------|------|---------|
+| `base` | `fedora-minimal:44` + systemd and the services the script manages | full tier |
+| `test-only` | `fedora-minimal:44`, no systemd | quick tier |
+| `lint` | `fedora:44` + the lint toolchain RPMs | static tier |
+| `gui` | `fedora:44` + Xvfb, zenity, kdialog, qdbus, xdotool, ImageMagick | gui tier |
 
 ```bash
-./test-in-podman.sh --quick --dry-run
+podman build -f Dockerfile.test --target base      -t localhost/fedora-harden:test .
+podman build -f Dockerfile.test --target test-only -t localhost/fedora-harden:test-only .
+podman build -f Dockerfile.test --target lint      -t localhost/fedora-harden:lint .
 ```
 
-Runs the script directly without systemd overhead.
+## CI
 
-#### 2. **Full Variant** (Realistic)
-- **Size**: ~400 MB
-- **Startup**: ~10 seconds
-- **Memory**: 512 MB (configurable)
-- **CPU**: 2 cores (configurable)
-- **Best for**: Integration testing, service behavior verification
+`.github/workflows/ci.yml` runs on push, pull request, nightly and on demand. Every
+job runs inside a `registry.fedoraproject.org/fedora:44` container:
 
-```bash
-./test-in-podman.sh --dry-run
-```
-
-Includes systemd for testing service installation/enabling.
-
-## Resource Optimization
-
-The test containers are optimized for minimal resource usage:
-
-### Memory Management
-- **Swap disabled**: Prevents thrashing, ensures predictable performance
-- **Memory limit**: Strictly enforced, container exits on OOM
-- **Default**: 256-512 MB (adjustable with `--memory` flag)
-
-### CPU Management
-- **CPU limit**: Prevents container from monopolizing host resources
-- **Default**: 1-2 cores (adjustable with `--cpus` flag)
-
-### Storage
-- **No persistent layers**: All test state in `/tmp`, auto-cleaned
-- **Size limit**: 5 GB per container to prevent disk exhaustion
-- **No swap**: Consistent performance across systems
-
-### Process Limits
-- **PID limit**: 1024 to prevent fork bomb attacks during testing
-
-## Usage Examples
-
-### Continuous Integration / GitLab CI
-
-```yaml
-test:fedora-harden:
-  image: fedora:44-minimal
-  before_script:
-    - dnf install -y podman
-  script:
-    - cd fedora-hardening
-    - ./test-in-podman.sh --quick --dry-run
-  artifacts:
-    paths:
-      - /tmp/fedora-harden-test-*.log
-    when: always
-```
-
-### GitHub Actions
-
-```yaml
-name: Test Fedora Hardening
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install podman
-        run: sudo apt-get install -y podman
-      - name: Run tests
-        run: cd fedora-hardening && ./test-in-podman.sh --quick --dry-run
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v3
-        with:
-          name: test-logs
-          path: /tmp/fedora-harden-test-*.log
-```
-
-### Local Development Workflow
-
-```bash
-# 1. Make changes to script
-nano fedora-harden.sh
-
-# 2. Quick syntax check
-bash -n fedora-harden.sh
-
-# 3. Fast container test
-./test-in-podman.sh --quick --dry-run
-
-# 4. Test specific section
-./test-in-podman.sh --quick --only 5 --dry-run
-
-# 5. Interactive debugging
-./test-in-podman.sh --quick -it
-# Inside: ./fedora-harden.sh --dry-run --only 5
-
-# 6. Full system test before commit
-./test-in-podman.sh --dry-run
-```
-
-## Advanced Testing
-
-### Manual Container Operations
-
-```bash
-# Build image manually
-podman build -f Dockerfile.test -t fedora-harden:test .
-
-# Build quick variant
-podman build --target test-only -f Dockerfile.test -t fedora-harden:test-only .
-
-# Run container directly with full control
-podman run -it --rm \
-  --memory 512m \
-  --cpus 2 \
-  --volume ./fedora-harden.sh:/root/fedora-harden.sh:ro \
-  fedora-harden:test /bin/bash
-
-# View container logs after test
-podman logs <container-name>
-
-# Inspect running container
-podman exec -it <container-name> /bin/bash
-
-# List all containers
-podman ps -a
-
-# Remove dangling images
-podman image prune -f
-```
-
-### Testing with Network Isolation
-
-```bash
-# Test without network access (safer, faster)
-./test-in-podman.sh --quick --dry-run
-
-# Or manually disable network
-podman run --rm --network none \
-  --volume ./fedora-harden.sh:/root/fedora-harden.sh:ro \
-  fedora-harden:test-only /root/fedora-harden.sh --dry-run --yes
-```
-
-### Testing with Volume Mounts
-
-```bash
-# Test with audit output saved to host
-podman run --rm \
-  --volume ./fedora-harden.sh:/root/fedora-harden.sh:ro \
-  --volume /tmp/fedora-harden-output:/var/log/fedora-harden:rw \
-  fedora-harden:test-only /root/fedora-harden.sh --dry-run --yes
-
-# View results on host
-ls -la /tmp/fedora-harden-output/
-cat /tmp/fedora-harden-output/harden-*.log
-```
+| Job | What it does |
+|-----|--------------|
+| static | static tier with Fedora 44 RPM tools |
+| secrets | `gitleaks git` over the full history (Fedora `gitleaks` RPM) |
+| vulnerabilities | `trivy fs` (Fedora `trivy` RPM), SARIF uploaded to code scanning |
+| container-tests | quick, full and gui tiers; podman runs nested in a privileged Fedora 44 job container |
 
 ## Troubleshooting
 
-### Container Won't Start
-
-```bash
-# Check if podman is running
-podman --version
-
-# Verify image exists
-podman image ls | grep fedora-harden
-
-# Rebuild from scratch
-rm -f ~/.local/share/containers/storage/images/*/fedora-harden*
-./test-in-podman.sh --quick --dry-run
-```
-
-### Out of Memory
-
-```bash
-# Increase memory limit
-./test-in-podman.sh --quick --memory 512m --dry-run
-
-# Check host memory
-free -h
-```
-
-### Slow Performance
-
-```bash
-# Check CPU allocation
-./test-in-podman.sh --quick --cpus 2 --dry-run
-
-# View system load
-top  # Or: htop
-
-# Use more CPUs if available
-./test-in-podman.sh --cpus 4 --dry-run
-```
-
-### Permission Denied Errors
-
-```bash
-# Ensure podman has proper permissions
-groups $USER | grep -q podman || usermod -aG podman $USER
-
-# Restart user session or use sudo temporarily
-newgrp podman
-
-# Or run with sudo (less ideal)
-sudo ./test-in-podman.sh --quick --dry-run
-```
-
-## Performance Benchmarks
-
-Typical execution times on modern hardware:
-
-| Test Type | Memory | CPUs | Time | Notes |
-|-----------|--------|------|------|-------|
-| Quick (no systemd) | 256 MB | 1 | 1-2 min | Best for CI |
-| Quick (full script) | 256 MB | 2 | 2-3 min | |
-| Full (with systemd) | 512 MB | 2 | 3-5 min | More realistic |
-| Full (verbose) | 512 MB | 4 | 2-3 min | Faster output |
-
-First run includes image build (~1-2 min). Subsequent runs use cached layer.
-
-## Image Size Optimization
-
-Current image sizes:
-
-```
-fedora-harden:test-only    ~150 MB (quick variant)
-fedora-harden:test         ~400 MB (full variant with systemd)
-```
-
-Optimizations applied:
-- Minimal base image (fedora:44-minimal)
-- Disabled documentation in DNF
-- Disabled weak dependencies
-- Removed package manager cache
-- Single RUN layer where possible
-
-## Security Considerations
-
-Testing containers are configured with:
-- **Dropped capabilities**: All except required ones
-- **Read-only mounts**: Script mounted as read-only
-- **Isolated network**: Optional network isolation
-- **Resource limits**: Prevent resource exhaustion attacks
-- **Non-root user**: Available for non-privileged testing
-
-## See Also
-
-- `fedora-harden.sh --help` - Script usage
-- `Dockerfile.test` - Container configuration
-- `test-in-podman.sh --help` - Test runner options
+- **`podman: command not found`** — `sudo dnf install podman` (or use the toolbox above).
+- **Static tier says the lint image failed to build** — see `<artifacts>/build-lint.log`.
+- **A full-tier check failed** — the container is removed afterwards, but every log
+  is in the artifacts directory: `full_real1.log`, `full-logs/*-errors.log`,
+  `full_journal.log`, `full_failed_units.txt`, and `etc.*` checksum snapshots.
+- **SELinux denials on bind mounts** — mounts use the shared `:z` label. Avoid
+  mounting the repository with `:Z` (private label) from other containers while
+  tests run: it relabels the files and locks running test containers out.
