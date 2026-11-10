@@ -2,7 +2,8 @@
 
 ## Platform policy
 
-`fedora-harden.sh` targets **Fedora 44**, so every test and check runs on Fedora 44:
+`fedora-harden.sh` targets **Fedora 44 and 45**. Every test runs on the release it
+tests (`--fedora 44` is the default, `--fedora 45` the other):
 
 | What | Runs on |
 |------|---------|
@@ -10,8 +11,8 @@
 | Quick tier | `registry.fedoraproject.org/fedora-minimal:44` (`test-only` image, no systemd) |
 | Full tier | `registry.fedoraproject.org/fedora-minimal:44` with systemd as PID 1 (`base` image) |
 | GUI tier | `registry.fedoraproject.org/fedora:44` + Xvfb, zenity, kdialog (`gui` image) |
-| CI (`.github/workflows/ci.yml`) | every job runs in a `fedora:44` job container; tools are Fedora 44 RPMs |
-| Developer tooling (`setup-dev.sh`, pre-commit) | Fedora 44 RPMs (`ShellCheck shfmt yamllint ruff hadolint gitleaks pre-commit python3-mcp`) |
+| CI (`.github/workflows/ci.yml`) | static and container jobs run as a 44/45 matrix in a container of that release; repository scans run on `fedora:44` |
+| Developer tooling (`setup-dev.sh`, pre-commit) | Fedora RPMs (`ShellCheck yamllint ruff hadolint gitleaks pre-commit python3-mcp`); shfmt is an RPM on 44 and built at the same pinned version with Fedora's Go on 45 (`tests/install-shfmt.sh`) |
 
 On an rpm-ostree host (Silverblue, Kinoite, Bazzite, …) do development inside a
 Fedora 44 toolbox:
@@ -32,6 +33,7 @@ the host is never modified.
 ./tests/run-suite.sh --tier static      # one tier (repeatable)
 ./tests/run-suite.sh --artifacts ./out  # keep logs somewhere specific
 ./tests/run-suite.sh --no-build         # reuse already-built images
+./tests/run-suite.sh --fedora 45        # run on Fedora 45 images
 ```
 
 Results are written to `<artifacts>/results.txt`, with one log per check.

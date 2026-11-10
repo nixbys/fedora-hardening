@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — Fedora 45
+
+- Tested on **Fedora 45** alongside 44: every test tier runs on both releases in CI.
+  The hardening needed no changes for 45; the effective SSH, password and firewall
+  settings match 44.
+- `tests/verify-host.sh`: a read-only check you run on a hardened machine. Each
+  result has an ID matching the Hardening Field Check page.
+- Fixed: packages the script knows by a provided name (`clamav-update`, `wget`,
+  `dnf-automatic`, `clamav-scanner-systemd`) were re-installed on every run.
+- Tooling: shfmt is no longer packaged in Fedora 45, so the same pinned version is
+  built with Fedora's Go; OpenSSH 10.5 prints `sshd -T` keywords in mixed case and
+  the tests now allow for it. Dependabot no longer tries to track the Fedora
+  images, which it cannot query.
+
 ## Unreleased — Fedora 44 test suite, hardening fixes, Material-dark GUI
 
 ### If you ran an earlier version: re-run these sections
