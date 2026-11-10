@@ -6235,9 +6235,10 @@ _oscap_in_container() {
 	if confirm "Run a baseline scan now (results in /root/scap-report.html)?"; then
 		# Host networking: the container only downloads the scanner, and this avoids
 		# depending on the container network stack (nested setups, unusual firewalls).
+		# Its package cache lives in memory: the container is thrown away anyway.
 		# oscap exits 2 when rules fail, so success is judged by the results file.
 		((DRY_RUN)) || rm -f /root/scap-results.xml /root/scap-report.html
-		run "podman run --rm --network host --security-opt label=disable -v /:/host:ro -v /root:/out '$image' sh -c 'dnf -y -q install openscap-scanner scap-security-guide >/dev/null && oscap-chroot /host xccdf eval --profile xccdf_org.ssgproject.content_profile_standard --results /out/scap-results.xml --report /out/scap-report.html /usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml' || true"
+		run "podman run --rm --network host --tmpfs /var/cache/libdnf5:rw,size=2g --tmpfs /tmp:rw,size=512m --security-opt label=disable -v /:/host:ro -v /root:/out '$image' sh -c 'dnf -y -q install openscap-scanner scap-security-guide >/dev/null && oscap-chroot /host xccdf eval --profile xccdf_org.ssgproject.content_profile_standard --results /out/scap-results.xml --report /out/scap-report.html /usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml' || true"
 		if ((DRY_RUN)); then
 			return 0
 		elif [[ -s /root/scap-results.xml ]]; then
