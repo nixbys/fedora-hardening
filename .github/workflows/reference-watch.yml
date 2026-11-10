@@ -1,0 +1,61 @@
+name: Reference watch
+
+# Weekly check of the guidance fedora-harden.sh follows (docs/references.json):
+# Privacy Guides and IntelTechniques pages, plus the pinned arkenfox release.
+# When a source changes, one tracking issue is opened (or updated) with what
+# changed; a human reviews it, updates the script, and refreshes the
+# fingerprints with: python3 tests/check-references.py --update
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: reference-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check references (Fedora 44)
+    runs-on: ubuntu-latest
+    container:
+      image: registry.fedoraproject.org/fedora:44
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Install tools
+        run: dnf install -y --setopt=install_weak_deps=False git python3 gh
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare sources with their last review
+        id: check
+        run: |
+          if python3 tests/check-references.py --markdown "$RUNNER_TEMP/report.md"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the tracking issue
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title="Hardening guidance changed: review references"
+          existing="$(gh issue list --state open --search "\"$title\" in:title" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/report.md"
+          else
+            gh issue create --title "$title" --body-file "$RUNNER_TEMP/report.md"
+          fi
