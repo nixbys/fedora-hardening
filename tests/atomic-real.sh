@@ -82,7 +82,9 @@ in_box bash -c '
         >/etc/systemd/resolved.conf.d/90-test-upstream.conf
     systemctl restart systemd-resolved
     id testuser >/dev/null 2>&1 || useradd -m testuser
-    rpm -qa --qf "%{NAME}\n" | sort -u >/tmp/rpm-before' >"$OUT/setup.log" 2>&1
+    rpm -qa --qf "%{NAME}\n" | sort -u >/tmp/rpm-before
+    podman info --format "podman storage: {{.Store.GraphDriverName}} at {{.Store.GraphRoot}}"
+    df -h /var/lib/containers /tmp' >"$OUT/setup.log" 2>&1
 check "container can resolve and reach Flathub" in_box curl -sfI -o /dev/null https://dl.flathub.org/repo/summary.idx
 
 ublue=0
