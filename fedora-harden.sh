@@ -2727,6 +2727,23 @@ _apply_rollback_journal() {
 			fi
 			;;
 
+		CHAGE)
+			# user:min:max:warn as they were before the run (empty = not set → -1)
+			local cu cmin cmax cwarn
+			IFS=: read -r cu cmin cmax cwarn <<<"$detail"
+			if ((DRY_RUN)); then
+				info "Would restore password ageing for $cu"
+			elif chage -m "${cmin:--1}" -M "${cmax:--1}" -W "${cwarn:--1}" "$cu" 2>/dev/null; then
+				ok "Restored password ageing for $cu"
+				_rjl "  [OK]   CHAGE  $cu"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not restore password ageing for $cu"
+				_rjl "  [WARN] CHAGE  $cu"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
 		FLATPAK_INSTALL)
 			if ((DRY_RUN)); then
 				info "Would run: flatpak uninstall -y $detail"
@@ -4649,7 +4666,15 @@ sec_09_pam() {
 		((DRY_RUN)) || ok "Set PASS_MAX_DAYS=90, PASS_MIN_DAYS=1, PASS_WARN_AGE=14 in $ld (applies to new accounts)"
 	fi
 	if [[ -n "$TARGET_USER" ]]; then
-		run "chage -M 90 -m 1 -W 14 '$TARGET_USER'" || warn "chage failed for $TARGET_USER"
+		# Journal the previous ageing values (not /etc/shadow itself: restoring the
+		# file would also undo password changes made after the run).
+		local old_age
+		old_age="$(getent shadow "$TARGET_USER" 2>/dev/null | cut -d: -f4-6)"
+		if run "chage -M 90 -m 1 -W 14 '$TARGET_USER'"; then
+			[[ -n "$old_age" ]] && record_change CHAGE "$TARGET_USER:$old_age"
+		else
+			warn "chage failed for $TARGET_USER"
+		fi
 		run "chage -l '$TARGET_USER'" || true
 	else
 		warn "No target user — skipping 'chage' password-aging apply."
