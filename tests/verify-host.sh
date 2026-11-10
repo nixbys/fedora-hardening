@@ -3,7 +3,7 @@
 #
 # Run on the real machine AFTER a hardening run (it changes nothing):
 #   sudo ./tests/verify-host.sh            # all checks
-#   sudo ./tests/verify-host.sh --only SSH # one group (AUTO SEL FW SSH PAM SYS AUD DNS CLAM DESK FLAT PERM ROLL)
+#   sudo ./tests/verify-host.sh --only SSH # one group (AUTO SEL FW SSH PAM SYS AUD DNS CLAM INT DESK FLAT PERM ROLL)
 #
 # Each line carries an ID (e.g. SSH-1) that matches the "Hardening Field Check"
 # page, so results can be ticked off there. Exit status: 0 when nothing failed,
@@ -74,7 +74,11 @@ printf '%sfedora-harden verification%s — %s, %s\n' "$B" "$N" \
 
 # --- Automatic updates (section 3) -----------------------------------------------
 group AUTO "Automatic security updates"
-if ((IS_OSTREE)); then
+if ((IS_OSTREE)) && [[ -r /usr/share/ublue-os/image-info.json ]]; then
+    # Universal Blue: uupd updates the image, Flatpaks and boxes; rpm-ostreed stays off.
+    check AUTO-1 "uupd updates the image automatically" "uupd.timer enabled" \
+        systemctl is-enabled --quiet uupd.timer
+elif ((IS_OSTREE)); then
     check AUTO-1 "rpm-ostreed stages updates automatically" "AutomaticUpdatePolicy=stage" \
         grep -qE '^\s*AutomaticUpdatePolicy\s*=\s*stage' /etc/rpm-ostreed.conf
 else
@@ -177,9 +181,28 @@ fi
 
 # --- ClamAV (21) ------------------------------------------------------------------
 group CLAM "Antivirus"
-check CLAM-1 "ClamAV scanner daemon is running" "clamd@scan active" systemctl is-active --quiet clamd@scan
-check CLAM-2 "on-access scanning of /home is running" "clamav-clamonacc active" \
-    systemctl is-active --quiet clamav-clamonacc
+if ((IS_OSTREE)); then
+    # Image-based: a weekly scan in a locked-down container instead of layered ClamAV.
+    clam_q=/etc/containers/systemd/fedora-harden-clamscan.container
+    check CLAM-1 "weekly ClamAV container scan is scheduled" "fedora-harden-clamscan.timer enabled" \
+        systemctl is-enabled --quiet fedora-harden-clamscan.timer
+    check CLAM-2 "the scan container is read-only and offline" "ReadOnly=true, Network=none in $clam_q" \
+        bash -c "grep -qx ReadOnly=true '$clam_q' && grep -qx Network=none '$clam_q'"
+else
+    check CLAM-1 "ClamAV scanner daemon is running" "clamd@scan active" systemctl is-active --quiet clamd@scan
+    check CLAM-2 "on-access scanning of /home is running" "clamav-clamonacc active" \
+        systemctl is-active --quiet clamav-clamonacc
+fi
+
+# --- File integrity (12) ------------------------------------------------------------
+group INT "File integrity"
+if ((IS_OSTREE)); then
+    check INT-1 "weekly /etc change report is scheduled" "fedora-harden-etc-check.timer enabled" \
+        systemctl is-enabled --quiet fedora-harden-etc-check.timer
+else
+    check INT-1 "AIDE database is initialised" "/var/lib/aide/aide.db.gz" \
+        test -s /var/lib/aide/aide.db.gz
+fi
 
 # --- Desktop (15) -----------------------------------------------------------------
 group DESK "Desktop privacy"

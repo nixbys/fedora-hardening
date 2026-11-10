@@ -7,6 +7,10 @@
 #   quick   runs in the fedora-minimal:N "test-only" image
 #   full    runs in the fedora-minimal:N systemd "base" image
 #   gui     runs in the fedora:N "gui" image (Xvfb + zenity + kdialog)
+#   atomic  runs on real Fedora Atomic images of release N (Silverblue, Universal
+#           Blue), booted with systemd in privileged containers
+#   vm      installs those images on a virtual disk (bootc, in a Fedora CoreOS VM)
+#           and boots them with KVM
 #
 # Tiers (run in order; each includes only its own tests):
 #   static  - syntax, shellcheck, shfmt, yamllint, ruff, hadolint, MCP server smoke
@@ -17,14 +21,23 @@
 #             applied hardening, idempotent re-run, --list-sessions, --rollback all
 #   gui     - --gui-full on a virtual display: no hang, progress window closed,
 #             one Material-dark end-of-run window, Cancel exits 130
+#   atomic  - image-based behaviour with the images' own rpm-ostree, Flatpak, Podman
+#             quadlets, distrobox/toolbox: nothing layered, real Flathub installs, a
+#             real ClamAV container scan, OpenSCAP from a container, rollback
+#             (tests/atomic-real.sh). Not in "all": pulls ~3 GB per image.
+#   vm      - the same on an installed, booted system, plus what needs an OSTree
+#             sysroot: image-signature finding, /etc baseline and weekly report
+#             (tests/atomic-vm.sh). Not in "all": needs /dev/kvm, ~15 min per image.
 #
 # Usage:
-#   tests/run-suite.sh                      # all tiers
+#   tests/run-suite.sh                      # "all": static, quick, full, gui
 #   tests/run-suite.sh --tier static        # one tier (repeatable: --tier static --tier quick)
 #   tests/run-suite.sh --artifacts DIR      # where logs go (default: mktemp)
 #   tests/run-suite.sh --no-build           # reuse existing images
 #   tests/run-suite.sh --native             # run static tier on this host as-is
 #   tests/run-suite.sh --fedora 45          # test on another Fedora release (default 44)
+#   tests/run-suite.sh --tier atomic --image quay.io/fedora/fedora-kinoite:45
+#                                           # atomic/vm tiers on other images (repeatable)
 #
 # Everything that changes system state happens inside throwaway rootless podman
 # containers; the host is never modified.
@@ -37,6 +50,7 @@ SCRIPT="$ROOT/fedora-harden.sh"
 TARGET_FEDORA="${TARGET_FEDORA:-44}"
 NATIVE=0
 TIERS=()
+ATOMIC_IMAGES=() # --image; default: Silverblue + Universal Blue base for the release
 ARTIFACTS=""
 NO_BUILD=0
 FULL_MEMORY="${FULL_MEMORY:-3g}"
@@ -52,18 +66,23 @@ else
 fi
 
 usage() {
-    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
 while (($# > 0)); do
     case "$1" in
         --tier)
-            [[ "${2:-}" =~ ^(static|quick|full|gui|all)$ ]] || {
-                echo "--tier needs static|quick|full|gui|all" >&2
+            [[ "${2:-}" =~ ^(static|quick|full|gui|atomic|vm|all)$ ]] || {
+                echo "--tier needs static|quick|full|gui|atomic|vm|all" >&2
                 exit 2
             }
             TIERS+=("$2")
+            shift 2
+            ;;
+        --image)
+            [[ -n "${2:-}" ]] || usage 2
+            ATOMIC_IMAGES+=("$2")
             shift 2
             ;;
         --artifacts)
@@ -99,6 +118,18 @@ IMG_QUICK="localhost/fedora-harden:test-only-f${TARGET_FEDORA}"
 IMG_FULL="localhost/fedora-harden:test-f${TARGET_FEDORA}"
 IMG_LINT="localhost/fedora-harden:lint-f${TARGET_FEDORA}"
 IMG_GUI="localhost/fedora-harden:gui-f${TARGET_FEDORA}"
+# Universal Blue desktop image (uupd, distrobox, image-info.json) for the release:
+# Bluefin and Aurora are on Fedora 44, Bazzite on 45. Override with --image.
+ublue_desktop_image() {
+    case "$1" in
+        44) echo "ghcr.io/ublue-os/bluefin:44" ;;
+        *) echo "ghcr.io/ublue-os/bazzite:stable" ;;
+    esac
+}
+((${#ATOMIC_IMAGES[@]})) || ATOMIC_IMAGES=(
+    "quay.io/fedora/fedora-silverblue:${TARGET_FEDORA}"
+    "$(ublue_desktop_image "$TARGET_FEDORA")"
+)
 ((${#TIERS[@]})) || TIERS=(all)
 [[ " ${TIERS[*]} " == *" all "* ]] && TIERS=(static quick full gui)
 
@@ -300,6 +331,14 @@ tier_static() {
         record SKIP "static: pinned arkenfox checksum" "curl not installed"
     fi
 
+    # Section 22 summary: real XCCDF results nest <result> inside <rule-result>; the
+    # old parser looked for a result="..." attribute and always reported 0 / 0.
+    check "static: OpenSCAP results parser reads real oscap output" bash -c '
+        source <(sed -n "/^scap_results() {/,/^}/p" "$1")
+        [[ "$(scap_results "$2")" == "1 1 0" ]] &&
+            [[ "$(scap_results "$2" failing)" == xccdf_org.ssgproject.content_rule_aide_build_database ]]' \
+        _ "$SCRIPT" "$ROOT/tests/fixtures/scap-results-sample.xml"
+
     # Regression guard: under `set -e` a post-increment of a zero counter inside (( ))
     # evaluates to 0, returns status 1 and aborts the script.
     check "static: no set -e unsafe post-increments" \
@@ -357,30 +396,9 @@ tier_quick() {
         record FAIL "quick: --only 5,10 runs exactly those sections" "exit $rc (see $log)"
     fi
 
-    # Universal Blue (Bazzite, Bluefin, Aurora) updates through uupd; section 3 must
-    # not enable rpm-ostreed's automatic updates as a second, competing updater.
-    # Simulated: /run/ostree-booted, the image-info file, and a systemctl stub that
-    # reports uupd.timer as installed and enabled.
-    local log="$ARTIFACTS/quick_ublue_updates.log" rc=0
-    podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" --entrypoint /bin/bash "$IMG_QUICK" -c '
-        set -e
-        touch /run/ostree-booted
-        mkdir -p /usr/share/ublue-os /etc
-        echo "{\"image-name\": \"bazzite\"}" >/usr/share/ublue-os/image-info.json
-        printf "[Daemon]\nAutomaticUpdatePolicy=none\n" >/etc/rpm-ostreed.conf
-        mkdir -p /stub && printf "%s\n" "#!/bin/sh" "exit 0" >/stub/systemctl && chmod +x /stub/systemctl
-        PATH="/stub:$PATH" /root/fedora-harden.sh --yes --only 3
-        grep -qx "AutomaticUpdatePolicy=none" /etc/rpm-ostreed.conf' >"$log" 2>&1 || rc=$?
-    if ((rc == 0)) && grep -q "handled by uupd.timer" "$log" && ! grep -q "rpm-ostreed-automatic" "$log"; then
-        record PASS "quick: Universal Blue keeps uupd as the only updater (section 3)"
-    else
-        record FAIL "quick: Universal Blue keeps uupd as the only updater (section 3)" "exit $rc (see $log)"
-    fi
-
     # A swap file whose mount is not visible (CI runners, containers) must be
     # reported, not abort the run: findmnt fails for it under the ERR trap.
-    local swaps="$ARTIFACTS/fake-proc-swaps"
-    log="$ARTIFACTS/quick_swap_report.log" rc=0
+    local swaps="$ARTIFACTS/fake-proc-swaps" log="$ARTIFACTS/quick_swap_report.log" rc=0
     printf 'Filename\tType\tSize\tUsed\tPriority\n/mnt/swapfile file 4194300 0 -2\n' >"$swaps"
     podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" -v "$swaps:/proc/swaps:ro,z" --entrypoint /root/fedora-harden.sh \
         "$IMG_QUICK" --dry-run --yes --only 20 >"$log" 2>&1 || rc=$?
@@ -389,6 +407,16 @@ tier_quick() {
     else
         record FAIL "quick: unencrypted swap file is reported without aborting (section 20)" "exit $rc (see $log)"
     fi
+
+    # Back-to-back runs must get separate sessions: the session ID has one-second
+    # resolution, and a shared one truncated the previous run's rollback journal.
+    check "quick: back-to-back runs get separate sessions" \
+        podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" --entrypoint /bin/bash "$IMG_QUICK" -c '
+            /root/fedora-harden.sh --yes --dry-run --only 19 >/dev/null 2>&1
+            /root/fedora-harden.sh --yes --dry-run --only 19 >/dev/null 2>&1
+            logs=(/var/log/fedora-harden/harden-????????-??????.log)
+            echo "${#logs[@]} session logs: ${logs[*]}"
+            ((${#logs[@]} == 2))'
 
     # Desktop settings must really persist for the user (gsettings/xfconf need a D-Bus session)
     check "quick: GNOME + XFCE settings persist for the user (section 15)" \
@@ -566,7 +594,7 @@ tier_full() {
     podman cp "$ROOT/tests/verify-host.sh" "$FULL_CT:/root/verify-host.sh" >/dev/null 2>&1
     fx /root/verify-host.sh >"$log" 2>&1 || true
     local id missing=""
-    for id in AUTO-1 AUTO-2 FW-1 FW-2 SSH-1 SSH-2 PAM-1 PAM-2 PAM-3 FLAT-1 FLAT-2 PERM-1 PERM-2 CLAM-1 ROLL-1; do
+    for id in AUTO-1 AUTO-2 FW-1 FW-2 SSH-1 SSH-2 PAM-1 PAM-2 PAM-3 FLAT-1 FLAT-2 PERM-1 PERM-2 CLAM-1 INT-1 ROLL-1; do
         grep -qE "^[[:space:]]+${id}[[:space:]]+PASS" "$log" || missing+="$id "
     done
     if [[ -z "$missing" ]]; then
@@ -660,6 +688,56 @@ tier_gui() {
         esac
     done <"$log"
     grep -qE '^(ok|FAIL):' "$log" || record FAIL "gui: test ran" "no results, see $log"
+}
+
+# ---------------------------------------------------------------------------
+# Tiers: atomic and vm (real Fedora Atomic images)
+# ---------------------------------------------------------------------------
+# run_image_test <tier> <driver> <image> [driver args...] — one suite result per
+# PASS:/FAIL: line the driver prints.
+run_image_test() {
+    local tier="$1" driver="$2" img="$3"
+    shift 3
+    local slug="${img##*/}" out line
+    slug="${slug//[^A-Za-z0-9_.-]/_}"
+    out="$ARTIFACTS/$tier/$slug"
+    mkdir -p "$out"
+    "$ROOT/tests/$driver" "$img" "$out" "$@" >"$out/results.txt" 2>&1 || true
+    while IFS= read -r line; do
+        case "$line" in
+            "PASS: "*) record PASS "$tier $slug: ${line#PASS: }" ;;
+            "FAIL: "*) record FAIL "$tier $slug: ${line#FAIL: }" "logs in $out" ;;
+        esac
+    done <"$out/results.txt"
+    grep -qE '^(PASS|FAIL):' "$out/results.txt" || record FAIL "$tier $slug: test ran" "no results, see $out/results.txt"
+}
+
+tier_atomic() {
+    tier_header "atomic (real Fedora Atomic images, Fedora $TARGET_FEDORA)"
+    if ! have podman; then
+        record SKIP "atomic tier" "podman not installed"
+        return 0
+    fi
+    local img
+    for img in "${ATOMIC_IMAGES[@]}"; do
+        run_image_test atomic atomic-real.sh "$img"
+    done
+}
+
+tier_vm() {
+    tier_header "vm (installed Fedora Atomic images, Fedora $TARGET_FEDORA)"
+    if ! have podman; then
+        record SKIP "vm tier" "podman not installed"
+        return 0
+    fi
+    if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+        record SKIP "vm tier" "/dev/kvm not available"
+        return 0
+    fi
+    local img
+    for img in "${ATOMIC_IMAGES[@]}"; do
+        run_image_test vm atomic-vm.sh "$img" "$TARGET_FEDORA"
+    done
 }
 
 # ---------------------------------------------------------------------------
