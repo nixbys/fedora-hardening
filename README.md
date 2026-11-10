@@ -11,6 +11,8 @@
 
 Every change is journaled for full rollback support. The script is safe to run multiple times — all operations are idempotent.
 
+This is a personal hardening script that has grown a substantial feature set and a real CI pipeline, not a vendor-supported product — it runs as root and touches SSH, PAM, the kernel, and your firewall, so read `--dry-run` output before trusting it on a machine you can't easily reinstall.
+
 ---
 
 ## Features
@@ -194,6 +196,30 @@ sudo ./fedora-harden.sh --import-audit ./sessions/audit-20260601-143022.txt
 
 ---
 
+## Repository Layout
+
+```
+fedora-harden.sh               # the tool: 23 hardening sections
+tests/run-suite.sh             # test suite: static, quick, full and gui tiers (see TESTING.md)
+tests/*.sh, tests/*.py         # in-container checks (desktop settings, GUI, MCP smoke test)
+test-in-podman.sh              # ad-hoc runs in a throwaway podman container
+Dockerfile.test                # Fedora 44 test images: base, test-only, lint, gui
+setup-dev.sh                   # contributor setup (Fedora 44 RPM toolchain + git hooks)
+mcp_server_fedora_harden.py    # optional, contributor-only: exposes lint/test workflows
+                               # as MCP tools — not used by fedora-harden.sh at runtime
+.pre-commit-config.yaml        # local lint/format/secret-scan hooks
+.github/workflows/             # CI (all jobs on Fedora 44): tests, gitleaks, trivy,
+                               # workflow-security (actionlint + zizmor)
+SECURITY.md / THREAT_MODEL.md  # responsible-use policy and trust boundary
+DEVELOPMENT.md / TOOLCHAIN.md  # contributor setup and the dev-tooling pipeline
+TESTING.md / QUICKSTART-TESTING.md  # how to exercise the script in Podman
+```
+
+If you're only here to harden a machine, `fedora-harden.sh` is the only file
+you need — everything else is for people modifying the script itself.
+
+---
+
 ## CI
 
 | Check | Tool | Status |
@@ -202,7 +228,13 @@ sudo ./fedora-harden.sh --import-audit ./sessions/audit-20260601-143022.txt
 | Static analysis | ShellCheck 0.11.0 (`--enable=all`) | ↑ same |
 | Formatting | shfmt v3.12.0 (style from `.editorconfig`) | ↑ same |
 | Container tests | `tests/run-suite.sh --tier quick` (podman) | ↑ same |
-| Secrets / vulns | TruffleHog, Gitleaks, Trivy | ↑ same |
+| Secret scanning | gitleaks (full history, blocking) | ↑ same |
+| Vulnerabilities | Trivy (results in the Security tab) | ↑ same |
+| Workflow security | actionlint + zizmor | [![Workflow security](https://github.com/nixbys/fedora-hardening/actions/workflows/workflow-security.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/workflow-security.yml) |
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability and
+[THREAT_MODEL.md](THREAT_MODEL.md) for the trust assumptions behind running
+this script as root.
 
 ---
 
