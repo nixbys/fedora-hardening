@@ -327,6 +327,382 @@ progress_bar() {
 	printf ']'
 }
 
+# ---------- GUI theme (Material Design 3, dark) -----------------------------
+# The script's dialogs use a private Material-dark theme without touching user or
+# system configuration: GTK4/libadwaita (zenity) loads $XDG_CONFIG_HOME/gtk-4.0/gtk.css
+# and KDE/Qt (kdialog) reads its palette from $XDG_CONFIG_HOME/kdeglobals.
+# zenity draws its own titlebar (client-side decorations), so the theme covers the
+# whole window. kdialog titlebars belong to the window manager (KWin) and follow
+# the desktop's decoration settings.
+GUI_THEME_DIR=""
+declare -ga GUI_ZENITY_ENV=()
+declare -ga GUI_KDIALOG_ENV=()
+
+# gui_theme_init() - Write the theme files and build the dialog environments.
+# Location: /run/fedora-harden/gui-theme (root-only tmpfs, kept for detached
+# end-of-run dialogs, cleared at reboot), falling back to a private /tmp dir.
+gui_theme_init() {
+	local dir="/run/fedora-harden/gui-theme"
+	if ! install -d -m 700 "$dir/gtk-4.0" "$dir/gtk-3.0" 2>/dev/null; then
+		dir="$(mktemp -d "/tmp/fedora-harden-gui.XXXXXX" 2>/dev/null)" || dir=""
+		[[ -n "$dir" ]] && install -d -m 700 "$dir/gtk-4.0" "$dir/gtk-3.0" 2>/dev/null
+	fi
+	if [[ -n "$dir" ]]; then
+		cat >"$dir/gtk-4.0/gtk.css" <<'GTKCSS'
+/* fedora-harden.sh — Material Design 3 dark theme for zenity (GTK4 / libadwaita).
+   Loaded via XDG_CONFIG_HOME for the script's own dialogs only. */
+
+/* M3 dark baseline tokens mapped onto libadwaita's palette (variables + legacy names) */
+:root {
+  --window-bg-color: #141218;
+  --window-fg-color: #E6E0E9;
+  --view-bg-color: #211F26;
+  --view-fg-color: #E6E0E9;
+  --headerbar-bg-color: #141218;
+  --headerbar-fg-color: #E6E0E9;
+  --headerbar-backdrop-color: #141218;
+  --headerbar-shade-color: transparent;
+  --dialog-bg-color: #2B2930;
+  --dialog-fg-color: #E6E0E9;
+  --card-bg-color: #211F26;
+  --popover-bg-color: #2B2930;
+  --accent-bg-color: #D0BCFF;
+  --accent-fg-color: #381E72;
+  --accent-color: #D0BCFF;
+  --destructive-bg-color: #F2B8B5;
+  --destructive-fg-color: #601410;
+  --destructive-color: #F2B8B5;
+  --warning-color: #FFB95C;
+  --error-color: #F2B8B5;
+}
+@define-color window_bg_color #141218;
+@define-color window_fg_color #E6E0E9;
+@define-color view_bg_color #211F26;
+@define-color view_fg_color #E6E0E9;
+@define-color headerbar_bg_color #141218;
+@define-color headerbar_fg_color #E6E0E9;
+@define-color dialog_bg_color #2B2930;
+@define-color dialog_fg_color #E6E0E9;
+@define-color accent_bg_color #D0BCFF;
+@define-color accent_fg_color #381E72;
+@define-color accent_color #D0BCFF;
+
+* {
+  font-family: "Roboto", "Noto Sans", "Cantarell", sans-serif;
+}
+
+/* Surfaces: dialogs sit on surface-container-high with a 28px M3 corner radius */
+window, window.background, window.dialog, .message-dialog, dialog-host > dialog {
+  background-color: #2B2930;
+  color: #E6E0E9;
+}
+window.csd, window.dialog.csd, window.message.csd {
+  border-radius: 28px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(147, 143, 153, 0.22);
+}
+
+/* Titlebar (client-side decoration drawn by the dialog itself) */
+headerbar, .titlebar, windowhandle {
+  background: #2B2930;
+  color: #E6E0E9;
+  box-shadow: none;
+  border: none;
+  min-height: 48px;
+}
+.title, headerbar .title, .message-dialog .heading, .title-2, .heading {
+  color: #E6E0E9;
+  font-weight: 500;
+  font-size: 1.35em;
+  letter-spacing: 0.01em;
+}
+windowcontrols button {
+  background: transparent;
+  color: #CAC4D0;
+  border-radius: 9999px;
+  min-width: 32px;
+  min-height: 32px;
+}
+windowcontrols button:hover {
+  background: rgba(230, 224, 233, 0.08);
+}
+
+/* Body text (buttons set their own on-colour; their labels inherit it) */
+label {
+  color: #E6E0E9;
+}
+button label, button image {
+  color: inherit;
+}
+.body, .message-dialog .body, label.dim-label {
+  color: #CAC4D0;
+  font-size: 1.0em;
+}
+
+/* Buttons: M3 pill shapes. Default = tonal; suggested/primary = filled. */
+button {
+  border-radius: 9999px;
+  min-height: 40px;
+  padding: 0 24px;
+  background: #4A4458;
+  color: #E8DEF8;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  box-shadow: none;
+  border: none;
+}
+button:hover {
+  background: #554F64;
+}
+button:active {
+  background: #605A70;
+}
+button:focus-visible {
+  outline: 2px solid #D0BCFF;
+  outline-offset: 2px;
+}
+button.suggested-action, button.suggested, .response-area button.suggested,
+.response-area button:last-child, button.default {
+  background: #D0BCFF;
+  color: #381E72;
+}
+button.suggested-action:hover, button.suggested:hover, .response-area button:last-child:hover {
+  background: #DCCBFF;
+}
+button.destructive-action, button.destructive {
+  background: #8C1D18;
+  color: #F9DEDC;
+}
+button:disabled {
+  background: rgba(230, 224, 233, 0.12);
+  color: rgba(230, 224, 233, 0.38);
+}
+button:disabled label {
+  background: none;
+  color: rgba(230, 224, 233, 0.38);
+}
+.response-area {
+  border-top: none;
+  padding: 8px 16px 16px 16px;
+}
+.response-area button {
+  margin: 0 4px;
+}
+
+/* Text entry: M3 filled text field */
+entry, text, textview {
+  background: #36343B;
+  color: #E6E0E9;
+  border-radius: 4px 4px 0 0;
+  border: none;
+  box-shadow: inset 0 -1px #CAC4D0;
+  min-height: 48px;
+  padding: 0 16px;
+  caret-color: #D0BCFF;
+}
+entry:focus-within {
+  box-shadow: inset 0 -2px #D0BCFF;
+  outline: none;
+}
+entry selection, text selection {
+  background: rgba(208, 188, 255, 0.35);
+  color: #E6E0E9;
+}
+
+/* Progress: M3 linear indicator */
+progressbar trough {
+  background: #4A4458;
+  border-radius: 9999px;
+  min-height: 6px;
+}
+progressbar progress {
+  background: #D0BCFF;
+  border-radius: 9999px;
+  min-height: 6px;
+}
+progressbar text {
+  color: #CAC4D0;
+}
+
+/* Icons in message dialogs follow the accent / status colours */
+image {
+  color: #D0BCFF;
+}
+.warning image, image.warning {
+  color: #FFB95C;
+}
+.error image, image.error {
+  color: #F2B8B5;
+}
+
+scrollbar slider {
+  background: #938F99;
+  border-radius: 9999px;
+}
+/* Disabled must win over the filled-primary rules above (same or higher specificity) */
+button:disabled, button.suggested-action:disabled, button.suggested:disabled,
+.response-area button:disabled, .response-area button:last-child:disabled {
+  background: rgba(230, 224, 233, 0.12);
+  color: rgba(230, 224, 233, 0.38);
+}
+
+/* Lists (end-of-run follow-up items): M3 surface-container with a tonal header */
+columnview, treeview, listview, .view {
+  background-color: #211F26;
+  color: #E6E0E9;
+  border-radius: 12px;
+}
+columnview > header, treeview > header, columnview > header > button,
+treeview header button {
+  background: #36343B;
+  color: #CAC4D0;
+  border-radius: 0;
+  min-height: 36px;
+  font-weight: 500;
+  padding: 0 12px;
+  box-shadow: none;
+}
+columnview > listview > row, treeview row, listview > row {
+  min-height: 40px;
+  padding: 0 4px;
+}
+columnview > listview > row:hover, listview > row:hover {
+  background: rgba(230, 224, 233, 0.08);
+}
+columnview > listview > row:selected, listview > row:selected, treeview:selected {
+  background: #4F378B;
+  color: #EADDFF;
+}
+columnview cell, columnview label {
+  padding: 4px 12px;
+}
+textview, textview text {
+  background-color: #211F26;
+  color: #E6E0E9;
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-family: "Roboto Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+  font-size: 0.95em;
+  box-shadow: none;
+  min-height: 0;
+}
+textview text selection {
+  background: #4F378B;
+  color: #EADDFF;
+}
+scrolledwindow, frame {
+  border-radius: 12px;
+  border: none;
+  background: transparent;
+}
+GTKCSS
+		cp -f "$dir/gtk-4.0/gtk.css" "$dir/gtk-3.0/gtk.css" 2>/dev/null || true
+		printf '[Settings]\ngtk-application-prefer-dark-theme=1\n' >"$dir/gtk-3.0/settings.ini"
+		cat >"$dir/kdeglobals" <<'KDEGLOBALS'
+[General]
+ColorScheme=FedoraHardenMaterialDark
+Name=Fedora Harden Material Dark
+font=Roboto,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+
+[KDE]
+widgetStyle=Fusion
+
+[Colors:Window]
+BackgroundNormal=43,41,48
+BackgroundAlternate=33,31,38
+ForegroundNormal=230,224,233
+ForegroundInactive=202,196,208
+ForegroundActive=208,188,255
+ForegroundLink=208,188,255
+ForegroundVisited=204,194,220
+ForegroundNegative=242,184,181
+ForegroundNeutral=255,185,92
+ForegroundPositive=166,218,166
+DecorationFocus=208,188,255
+DecorationHover=208,188,255
+
+[Colors:View]
+BackgroundNormal=54,52,59
+BackgroundAlternate=43,41,48
+ForegroundNormal=230,224,233
+ForegroundInactive=202,196,208
+ForegroundActive=208,188,255
+ForegroundLink=208,188,255
+ForegroundVisited=204,194,220
+ForegroundNegative=242,184,181
+ForegroundNeutral=255,185,92
+ForegroundPositive=166,218,166
+DecorationFocus=208,188,255
+DecorationHover=208,188,255
+
+[Colors:Button]
+BackgroundNormal=74,68,88
+BackgroundAlternate=85,79,100
+ForegroundNormal=232,222,248
+ForegroundInactive=202,196,208
+ForegroundActive=208,188,255
+ForegroundLink=208,188,255
+ForegroundVisited=204,194,220
+ForegroundNegative=242,184,181
+ForegroundNeutral=255,185,92
+ForegroundPositive=166,218,166
+DecorationFocus=208,188,255
+DecorationHover=208,188,255
+
+[Colors:Selection]
+BackgroundNormal=208,188,255
+BackgroundAlternate=79,55,139
+ForegroundNormal=56,30,114
+ForegroundInactive=56,30,114
+ForegroundActive=56,30,114
+ForegroundLink=56,30,114
+ForegroundVisited=56,30,114
+ForegroundNegative=96,20,16
+ForegroundNeutral=56,30,114
+ForegroundPositive=56,30,114
+DecorationFocus=208,188,255
+DecorationHover=208,188,255
+
+[Colors:Tooltip]
+BackgroundNormal=230,224,233
+ForegroundNormal=50,47,53
+
+[Colors:Header]
+BackgroundNormal=20,18,24
+ForegroundNormal=230,224,233
+
+[WM]
+activeBackground=20,18,24
+activeForeground=230,224,233
+inactiveBackground=20,18,24
+inactiveForeground=147,143,153
+activeBlend=20,18,24
+inactiveBlend=20,18,24
+KDEGLOBALS
+		GUI_THEME_DIR="$dir"
+	fi
+
+	# zenity silently shows NO dialog for non-ASCII text (this script uses — and →)
+	# under a non-UTF-8 locale, which root often has (sudo -i, pkexec, cron).
+	local -a locale_env=()
+	if [[ ! "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" =~ [Uu][Tt][Ff]-?8 ]]; then
+		locale_env=(LC_ALL=C.UTF-8)
+	fi
+	GUI_ZENITY_ENV=("${locale_env[@]}" ADW_DEBUG_COLOR_SCHEME=prefer-dark)
+	GUI_KDIALOG_ENV=("${locale_env[@]}")
+	if [[ -n "$GUI_THEME_DIR" ]]; then
+		GUI_ZENITY_ENV+=(XDG_CONFIG_HOME="$GUI_THEME_DIR")
+		GUI_KDIALOG_ENV+=(XDG_CONFIG_HOME="$GUI_THEME_DIR")
+	fi
+}
+
+# gui_zenity() / gui_kdialog() - Run a dialog with the theme and locale applied.
+gui_zenity() {
+	env "${GUI_ZENITY_ENV[@]}" zenity "$@"
+}
+gui_kdialog() {
+	env "${GUI_KDIALOG_ENV[@]}" kdialog "$@"
+}
+
 # setup_ui_mode() - Configure GUI prompt mode if requested and available.
 # Prefers kdialog on KDE systems, then zenity, otherwise falls back to TTY prompts.
 setup_ui_mode() {
@@ -337,49 +713,35 @@ setup_ui_mode() {
 	GUI_SINGLE_WINDOW_MODE=0
 
 	# If GUI mode is requested, try to satisfy missing GUI dialog dependencies.
+	# zenity is preferred on every desktop: it draws its own titlebar, so the
+	# Material-dark theme covers the whole window. kdialog is the fallback.
 	if ((has_display && (FORCE_GUI || FORCE_GUI_FULL))); then
-		if ((prefers_kde)); then
-			cmd_exists kdialog || ensure_command_dep kdialog "GUI dialog mode" kdialog
-		fi
-		if ! cmd_exists kdialog; then
-			cmd_exists zenity || ensure_command_dep zenity "GUI dialog fallback" zenity
+		if ! cmd_exists zenity && ! cmd_exists kdialog; then
+			ensure_command_dep zenity "GUI dialogs" zenity ||
+				{ ((prefers_kde)) && ensure_command_dep kdialog "GUI dialog fallback" kdialog; } || true
 		fi
 	fi
 
-	if ((has_display)) && cmd_exists kdialog; then
-		GUI_TOOL="kdialog"
-	elif ((has_display)) && cmd_exists zenity; then
+	if ((has_display)) && cmd_exists zenity; then
 		GUI_TOOL="zenity"
+	elif ((has_display)) && cmd_exists kdialog; then
+		GUI_TOOL="kdialog"
 	fi
 
 	if ((FORCE_GUI)); then
 		if [[ -n "$GUI_TOOL" ]]; then
 			GUI_MODE=1
-			info "GUI mode enabled using $GUI_TOOL dialogs."
+			gui_theme_init
+			info "GUI mode enabled using $GUI_TOOL dialogs (Material dark theme)."
 		else
 			GUI_MODE=0
 			warn "--gui requested, but no supported GUI dialog tool was found. Falling back to terminal prompts."
-			warn "Install 'kdialog' (KDE) or 'zenity' (GTK) to use GUI prompts."
+			warn "Install 'zenity' (recommended: fully themed) or 'kdialog' to use GUI prompts."
 		fi
 	fi
 
 	if ((FORCE_GUI_FULL)); then
 		FORCE_GUI=1
-		GUI_TOOL="" # Reset to force zenity preference for --gui-full
-
-		# Prefer zenity for --gui-full to avoid kdialog progress startup hangs on some stacks.
-		if ((has_display)); then
-			if ! cmd_exists zenity; then
-				ensure_command_dep zenity "full GUI frontend (--gui-full)" zenity || true
-			fi
-			if cmd_exists zenity; then
-				GUI_TOOL="zenity"
-			elif cmd_exists kdialog; then
-				# Fallback to kdialog if zenity unavailable
-				GUI_TOOL="kdialog"
-			fi
-		fi
-
 		if [[ -n "$GUI_TOOL" ]]; then
 			if [[ "$GUI_TOOL" == "kdialog" ]]; then
 				# Fedora 44+ ships qdbus-qt6; older releases use qdbus-qt5 or qdbus.
@@ -401,13 +763,14 @@ setup_ui_mode() {
 			GUI_MODE=1
 			GUI_FULL_MODE=1
 			GUI_SINGLE_WINDOW_MODE=1
+			[[ ${#GUI_ZENITY_ENV[@]} -gt 0 ]] || gui_theme_init
 			info "Full GUI frontend enabled using $GUI_TOOL (single-window mode)."
 		else
 			GUI_MODE=0
 			GUI_FULL_MODE=0
 			GUI_SINGLE_WINDOW_MODE=0
 			warn "--gui-full requested, but no supported GUI dialog tool was found. Falling back to terminal output."
-			warn "Install 'kdialog' or 'zenity' and rerun with --gui-full."
+			warn "Install 'zenity' (recommended) or 'kdialog' and rerun with --gui-full."
 		fi
 	fi
 }
@@ -426,16 +789,50 @@ calc_section_total() {
 	UI_SECTION_DONE=0
 }
 
+# gui_markup_escape() - Escape text for zenity, which renders dialog and progress text
+# as Pango markup: a bare '&', '<' or '>' makes GTK drop the whole message.
+# Usage: gui_markup_escape <text>
+gui_markup_escape() {
+	local t="${1//&/&amp;}"
+	t="${t//</&lt;}"
+	t="${t//>/&gt;}"
+	printf '%s' "$t"
+}
+
+# gui_progress_active() - True while the --gui-full progress window is open.
+gui_progress_active() {
+	case "$GUI_TOOL" in
+	zenity) [[ -n "$GUI_PROGRESS_PIPE_FD" ]] ;;
+	kdialog) [[ -n "$GUI_PROGRESS_REF" ]] ;;
+	*) return 1 ;;
+	esac
+}
+
+# gui_kdialog_dbus() - Call a method on the kdialog progress dialog over D-Bus.
+# kdialog --progressbar prints "<service> <object-path>"; qdbus needs them as two
+# separate arguments.
+# Usage: gui_kdialog_dbus <method> [args...]
+gui_kdialog_dbus() {
+	[[ -n "$GUI_PROGRESS_REF" && -n "${QDBUS_CMD:-}" ]] || return 1
+	local svc path
+	read -r svc path <<<"$GUI_PROGRESS_REF"
+	[[ -n "$svc" && -n "$path" ]] || return 1
+	"$QDBUS_CMD" "$svc" "$path" "$@" 2>/dev/null
+}
+
 # gui_alert() - Show concise GUI notifications for summary and fatal errors.
+# While the --gui-full progress window is open, messages go into that window.
+# Afterwards (end of run, aborts) they are shown as dialogs that do not block the
+# script, so it can finish and exit while the user reads them.
 # Usage: gui_alert <info|warning|error> <message>
 gui_alert() {
 	local level="$1" message="$2"
 	((GUI_MODE)) || return 0
 
-	# In full GUI mode, keep status inside a single progress window.
-	if ((GUI_FULL_MODE && GUI_SINGLE_WINDOW_MODE)); then
+	if ((GUI_FULL_MODE && GUI_SINGLE_WINDOW_MODE)) && gui_progress_active; then
 		local one_line="$message"
 		one_line="${one_line//$'\n'/ | }"
+		one_line="${one_line//\\n/ | }"
 		case "$level" in
 		info) gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$one_line" ;;
 		warning) gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "Warning: $one_line" ;;
@@ -444,22 +841,100 @@ gui_alert() {
 		return 0
 	fi
 
+	# Interactive --gui mode keeps modal dialogs; --gui-full end-of-run dialogs are detached.
+	local -a dlg=()
 	case "$GUI_TOOL" in
 	kdialog)
 		case "$level" in
-		info) kdialog --title "$SCRIPT_NAME" --msgbox "$message" ;;
-		warning) kdialog --title "$SCRIPT_NAME" --sorry "$message" ;;
-		error) kdialog --title "$SCRIPT_NAME" --error "$message" ;;
+		info) dlg=(gui_kdialog --title "$SCRIPT_NAME" --msgbox "$message") ;;
+		warning) dlg=(gui_kdialog --title "$SCRIPT_NAME" --sorry "$message") ;;
+		error) dlg=(gui_kdialog --title "$SCRIPT_NAME" --error "$message") ;;
 		esac
 		;;
 	zenity)
+		local text
+		text="$(gui_markup_escape "$message")"
 		case "$level" in
-		info) zenity --info --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
-		warning) zenity --warning --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
-		error) zenity --error --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
+		info) dlg=(gui_zenity --info --title="$SCRIPT_NAME" --text="$text" --width=460) ;;
+		warning) dlg=(gui_zenity --warning --title="$SCRIPT_NAME" --text="$text" --width=460) ;;
+		error) dlg=(gui_zenity --error --title="$SCRIPT_NAME" --text="$text" --width=460) ;;
 		esac
 		;;
 	esac
+	((${#dlg[@]})) || return 0
+	if ((GUI_FULL_MODE)); then
+		"${dlg[@]}" >/dev/null 2>&1 &
+		disown "$!" 2>/dev/null || true
+	else
+		"${dlg[@]}" >/dev/null 2>&1 || true
+	fi
+	return 0
+}
+
+# gui_final_summary() - One end-of-run window. With follow-up items (zenity) it is
+# a sortable list (HIGH first) with the summary as its header; otherwise a message.
+# Non-blocking in --gui-full so the script can exit while the user reads it.
+# Usage: gui_final_summary <headline> <details>
+GUI_SUMMARY_SHOWN=0
+gui_final_summary() {
+	local headline="$1" details="$2"
+	((GUI_MODE)) || return 0
+	GUI_SUMMARY_SHOWN=1
+	if ((${#ACTIONABLE_ITEMS[@]} == 0)) || [[ "$GUI_TOOL" != zenity ]]; then
+		local body="${headline}\n\n${details}"
+		if ((${#ACTIONABLE_ITEMS[@]} > 0)); then
+			local item section priority tag desc
+			body+="\n\nFollow-up items:"
+			for item in "${ACTIONABLE_ITEMS[@]}"; do
+				IFS='|' read -r section priority tag desc <<<"$item"
+				body+="\n• [${priority}] §${section}: ${desc}"
+			done
+		fi
+		gui_alert info "$body"
+		return 0
+	fi
+
+	# Text view (not a list): it wraps long items and lets the user select and copy
+	# the commands they contain.
+	local report="${GUI_THEME_DIR:-/tmp}/summary-${RUN_STAMP}.txt"
+	local line rank section priority tag desc current=""
+	{
+		printf '%s\n\n' "$headline"
+		printf '%b\n' "$details"
+		printf '\n──────────── Follow-up items ────────────\n'
+		for line in "${ACTIONABLE_ITEMS[@]}"; do
+			IFS='|' read -r section priority tag desc <<<"$line"
+			case "$priority" in HIGH) rank=1 ;; MEDIUM) rank=2 ;; *) rank=3 ;; esac
+			printf '%s|%s|%s|%s\n' "$rank" "${section#S}" "$priority" "$desc"
+		done | sort -t'|' -k1,1n -k2,2n | while IFS='|' read -r rank section priority desc; do
+			if [[ "$priority" != "$current" ]]; then
+				printf '\n%s\n' "$priority"
+				current="$priority"
+			fi
+			printf '  • §%-3s %s\n' "$section" "$desc"
+		done
+	} >"$report" 2>/dev/null || return 0
+	chmod 600 "$report" 2>/dev/null || true
+	local -a dlg=(gui_zenity --text-info --title="$SCRIPT_NAME" --filename="$report"
+		--width=900 --height=600 --ok-label=Done)
+	if ((GUI_FULL_MODE)); then
+		"${dlg[@]}" >/dev/null 2>&1 &
+		disown "$!" 2>/dev/null || true
+	else
+		"${dlg[@]}" >/dev/null 2>&1 || true
+	fi
+	return 0
+}
+
+# gui_dialog_failed() - Handle a dialog that exited with an error (not Yes/No/Cancel):
+# typically no usable display (missing XAUTHORITY, dead session). Treating that as
+# "No" would silently decline every prompt, so fall back to terminal prompts instead.
+# Usage: gui_dialog_failed <exit-code>
+gui_dialog_failed() {
+	warn "GUI dialog failed (exit $1, display unusable?) — falling back to terminal prompts."
+	GUI_MODE=0
+	GUI_FULL_MODE=0
+	GUI_SINGLE_WINDOW_MODE=0
 }
 
 # prompt_input() - Request free-form input from user in GUI or terminal mode.
@@ -467,50 +942,75 @@ gui_alert() {
 prompt_input() {
 	local prompt="$1" default_value="${2:-}" value=""
 
+	# --yes: take the default without prompting (consistent with confirm()).
+	if ((ASSUME_YES)); then
+		# stdout is the return value here (callers use $(...)), so log instead of info().
+		log "[INFO]  Auto-yes: $prompt → ${default_value:-<empty>}"
+		printf '%s' "$default_value"
+		return 0
+	fi
+
 	if ((GUI_MODE)); then
+		local rc=0
 		case "$GUI_TOOL" in
 		kdialog)
-			value="$(kdialog --title "$SCRIPT_NAME" --inputbox "$prompt" "$default_value" 2>/dev/null || true)"
+			value="$(gui_kdialog --title "$SCRIPT_NAME" --inputbox "$prompt" "$default_value" 2>/dev/null)" || rc=$?
 			;;
 		zenity)
-			value="$(zenity --entry --title="$SCRIPT_NAME" --text="$prompt" --entry-text="$default_value" --width=520 2>/dev/null || true)"
+			value="$(gui_zenity --entry --title="$SCRIPT_NAME" --text="$(gui_markup_escape "$prompt")" --entry-text="$default_value" --width=520 2>/dev/null)" || rc=$?
 			;;
 		esac
-	else
-		read -r -p "$(printf '%s[??]%s  %s ' "$C_YEL" "$C_RST" "$prompt")" value || true
+		if ((rc > 1)); then
+			gui_dialog_failed "$rc"
+			value=""
+		else
+			printf '%s' "$value"
+			return 0
+		fi
 	fi
+	read -r -p "$(printf '%s[??]%s  %s ' "$C_YEL" "$C_RST" "$prompt")" value || true
 
 	printf '%s' "$value"
 }
 
-# gui_progress_start() - Start full-GUI progress stream with minimal I/O overhead.
+# gui_progress_start() - Open the --gui-full progress window.
 gui_progress_start() {
 	((GUI_FULL_MODE)) || return 0
 
 	case "$GUI_TOOL" in
 	kdialog)
 		if [[ -n "${QDBUS_CMD:-}" ]]; then
-			GUI_PROGRESS_REF="$(kdialog --title "$SCRIPT_NAME" --progressbar "Initializing hardening..." "$UI_SECTION_TOTAL")"
+			# Read only the first line, with a timeout: $(...) waits for EOF and hangs if a
+			# helper process keeps kdialog's stdout open.
+			GUI_PROGRESS_REF=""
+			read -r -t 10 GUI_PROGRESS_REF < <(gui_kdialog --title "$SCRIPT_NAME" --progressbar "Initializing hardening..." "$UI_SECTION_TOTAL" 2>/dev/null) || true
+			[[ -n "$GUI_PROGRESS_REF" ]] || warn "kdialog progress window did not start — continuing without it."
 			if [[ -n "$GUI_PROGRESS_REF" ]]; then
-				"$QDBUS_CMD" "$GUI_PROGRESS_REF" showCancelButton true >/dev/null 2>&1 || true
-				"$QDBUS_CMD" "$GUI_PROGRESS_REF" setLabelText "Preparing section execution..." >/dev/null 2>&1 || true
-				"$QDBUS_CMD" "$GUI_PROGRESS_REF" Set "" value 0 >/dev/null 2>&1 || true
+				gui_kdialog_dbus showCancelButton true >/dev/null || true
+				gui_kdialog_dbus setLabelText "Preparing section execution..." >/dev/null || true
+				gui_kdialog_dbus Set "" value 0 >/dev/null || true
 			fi
 		else
 			warn "qdbus not found; kdialog progress updates are limited."
 		fi
 		;;
 	zenity)
+		# Writing to the window after it closed must not kill the script with SIGPIPE;
+		# a failed write is handled explicitly in gui_progress_update instead.
+		trap '' PIPE
+		# No --auto-close: the window closes when gui_progress_close says so, not when
+		# the bar first reaches 100% (later status writes would then fail).
+		# exec: the coproc PID must be zenity itself, or closing would orphan the window.
 		coproc GUI_ZENITY_PROGRESS {
-			zenity --progress \
+			exec env "${GUI_ZENITY_ENV[@]}" zenity --progress \
 				--title="$SCRIPT_NAME" \
 				--text="Preparing section execution..." \
 				--percentage=0 \
-				--auto-close \
-				--width=640
+				--width=640 2>/dev/null
 		}
 		GUI_PROGRESS_PIPE_FD="${GUI_ZENITY_PROGRESS[1]:-}"
-		GUI_PROGRESS_PID="$COPROC_PID"
+		# A named coproc stores its PID in <NAME>_PID (COPROC_PID is only for unnamed ones).
+		GUI_PROGRESS_PID="${GUI_ZENITY_PROGRESS_PID:-}"
 		;;
 	esac
 }
@@ -524,49 +1024,63 @@ gui_progress_update() {
 	((current < 0)) && current=0
 	((current > total)) && current=total
 	local pct=$((current * 100 / total))
+	# 100% is reserved for gui_progress_close: the run is not finished when the last
+	# section starts.
+	((pct >= 100)) && pct=99
 	GUI_LAST_STATUS="$message"
 
 	case "$GUI_TOOL" in
 	kdialog)
 		[[ -n "$GUI_PROGRESS_REF" ]] || return 0
-		if [[ -n "${QDBUS_CMD:-}" ]] && [[ "$(${QDBUS_CMD} "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
+		if [[ "$(gui_kdialog_dbus wasCancelled || echo false)" == "true" ]]; then
 			GUI_CANCEL_REQUESTED=1
 			return 0
 		fi
-		"${QDBUS_CMD:-qdbus}" "$GUI_PROGRESS_REF" Set "" value "$current" >/dev/null 2>&1 || true
-		"${QDBUS_CMD:-qdbus}" "$GUI_PROGRESS_REF" setLabelText "$message" >/dev/null 2>&1 || true
+		gui_kdialog_dbus Set "" value "$current" >/dev/null || true
+		gui_kdialog_dbus setLabelText "$message" >/dev/null || true
 		;;
 	zenity)
 		[[ -n "$GUI_PROGRESS_PIPE_FD" ]] || return 0
-		if ! printf '%s\n# %s\n' "$pct" "$message" 1>&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null; then
+		# zenity exits only when the user presses Cancel or closes the window.
+		if [[ -n "$GUI_PROGRESS_PID" ]] && ! kill -0 "$GUI_PROGRESS_PID" 2>/dev/null; then
 			GUI_CANCEL_REQUESTED=1
+			return 0
 		fi
+		printf '%s\n# %s\n' "$pct" "$(gui_markup_escape "$message")" 1>&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null || true
 		;;
 	esac
+	return 0
 }
 
-# gui_progress_close() - Gracefully close full-GUI progress resources.
+# gui_progress_close() - Finish and close the progress window (idempotent).
 gui_progress_close() {
 	((GUI_FULL_MODE)) || return 0
 
 	case "$GUI_TOOL" in
 	kdialog)
 		if [[ -n "$GUI_PROGRESS_REF" ]]; then
-			"${QDBUS_CMD:-qdbus}" "$GUI_PROGRESS_REF" close >/dev/null 2>&1 || true
+			gui_kdialog_dbus Set "" value "$UI_SECTION_TOTAL" >/dev/null || true
+			gui_kdialog_dbus close >/dev/null || true
 			GUI_PROGRESS_REF=""
 		fi
 		;;
 	zenity)
 		if [[ -n "$GUI_PROGRESS_PIPE_FD" ]]; then
-			exec {GUI_PROGRESS_PIPE_FD}>&- || true
+			printf '100\n# %s\n' "Finished." 1>&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null || true
+			exec {GUI_PROGRESS_PIPE_FD}>&- 2>/dev/null || true
 			GUI_PROGRESS_PIPE_FD=""
 		fi
 		if [[ -n "$GUI_PROGRESS_PID" ]]; then
+			# Without --auto-close zenity waits for "OK" at 100%; close it ourselves —
+			# the end-of-run summary is shown in its own dialog.
+			kill "$GUI_PROGRESS_PID" 2>/dev/null || true
 			wait "$GUI_PROGRESS_PID" 2>/dev/null || true
 			GUI_PROGRESS_PID=""
 		fi
+		trap - PIPE
 		;;
 	esac
+	return 0
 }
 
 # gui_status_event() - Route status messages to GUI widgets without file polling.
@@ -583,11 +1097,17 @@ gui_status_event() {
 		;;
 	warning)
 		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-		((popup_ok)) && gui_alert warning "$message"
+		# Must not end the function on a false test: callers (warn/err) run under set -e.
+		if ((popup_ok)); then
+			gui_alert warning "$message"
+		fi
 		;;
 	error)
 		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-		((popup_ok)) && gui_alert error "$message"
+		# Must not end the function on a false test: callers (warn/err) run under set -e.
+		if ((popup_ok)); then
+			gui_alert error "$message"
+		fi
 		;;
 	esac
 }
@@ -599,7 +1119,15 @@ gui_check_cancel() {
 
 	case "$GUI_TOOL" in
 	kdialog)
-		if [[ -n "${QDBUS_CMD:-}" ]] && [[ -n "$GUI_PROGRESS_REF" ]] && [[ "$(${QDBUS_CMD} "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
+		if [[ "$(gui_kdialog_dbus wasCancelled || echo false)" == "true" ]]; then
+			GUI_CANCEL_REQUESTED=1
+			return 0
+		fi
+		;;
+	zenity)
+		# The progress window only exits early when the user cancels or closes it.
+		if [[ -n "$GUI_PROGRESS_PIPE_FD" && -n "$GUI_PROGRESS_PID" ]] &&
+			! kill -0 "$GUI_PROGRESS_PID" 2>/dev/null; then
 			GUI_CANCEL_REQUESTED=1
 			return 0
 		fi
@@ -1111,16 +1639,18 @@ confirm() {
 	fi
 
 	if ((GUI_MODE)); then
+		local rc=0
 		case "$GUI_TOOL" in
 		kdialog)
-			kdialog --title "$SCRIPT_NAME" --yesno "$prompt"
-			return $?
+			gui_kdialog --title "$SCRIPT_NAME" --yesno "$prompt" 2>/dev/null || rc=$?
 			;;
 		zenity)
-			zenity --question --title="$SCRIPT_NAME" --text="$prompt" --width=480
-			return $?
+			gui_zenity --question --title="$SCRIPT_NAME" --text="$(gui_markup_escape "$prompt")" --width=480 2>/dev/null || rc=$?
 			;;
 		esac
+		# 0 = Yes, 1 = No/closed; anything else means the dialog itself failed.
+		((rc <= 1)) && return "$rc"
+		gui_dialog_failed "$rc"
 	fi
 
 	local reply
@@ -3601,7 +4131,8 @@ ${allow_users_line}"
 		backup_file "$drop"
 		if ! printf '%s\n' "$desired" >"$drop"; then
 			warn "Failed to write $drop (filesystem may be read-only or full)"
-			return 1
+			add_action_item 7 HIGH "SSHD_DROPIN_WRITE_FAILED" "Could not write $drop — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 7"
+			return 0
 		fi
 		chmod 644 "$drop" 2>/dev/null || true
 		changed=1
@@ -3782,6 +4313,7 @@ sec_10_sysctl() {
 	if ((DRY_RUN)); then
 		info "Would write $f with guide's full sysctl set"
 	else
+		install -d -m 755 /etc/sysctl.d 2>/dev/null || true
 		backup_file "$f"
 		if ! cat >"$f" <<'EOF'; then
 # /etc/sysctl.d/99-hardening.conf
@@ -3873,7 +4405,8 @@ net.ipv4.tcp_timestamps = 0
 kernel.core_pattern = |/bin/false
 EOF
 			err "Failed to write sysctl configuration"
-			return 1
+			add_action_item 10 HIGH "SYSCTL_WRITE_FAILED" "Could not write $f — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 10"
+			return 0
 		fi
 		chmod 644 "$f" 2>/dev/null || true
 		ok "Wrote $f"
@@ -3884,7 +4417,7 @@ EOF
 	if ! run "sysctl --system >/dev/null"; then
 		local rejected=""
 		[[ -s "$ERROR_CAPTURE_FILE" ]] &&
-			rejected="$(grep -oE 'key "[^"]+"' "$ERROR_CAPTURE_FILE" | tr -d '"' | sed 's/^key //' | sort -u | paste -sd, -)"
+			rejected="$(grep -oE 'key "[^"]+"' "$ERROR_CAPTURE_FILE" | tr -d '"' | sed 's/^key //' | sort -u | paste -sd, - | sed 's/,/, /g')"
 		warn "sysctl --system could not apply some keys${rejected:+: $rejected}"
 		add_action_item 10 MEDIUM "SYSCTL_APPLY_PARTIAL" \
 			"Some sysctl keys were rejected by the running kernel${rejected:+ ($rejected)}. Check with: sudo sysctl --system — unsupported keys can be removed from $f"
@@ -3973,7 +4506,8 @@ sec_11_auditd() {
 # -e 2
 EOF
 			warn "Failed to write $rules (filesystem may be read-only)"
-			return 1
+			add_action_item 11 HIGH "AUDIT_RULES_WRITE_FAILED" "Could not write $rules — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 11"
+			return 0
 		fi
 		chmod 640 "$rules" 2>/dev/null || true
 		ok "Wrote $rules"
@@ -4193,7 +4727,8 @@ DNSOverTLS=yes
 DNSSEC=yes
 EOF
 			err "Failed to write DNS-over-TLS configuration"
-			return 1
+			add_action_item 14 HIGH "DOT_WRITE_FAILED" "Could not write $dropin — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 14"
+			return 0
 		fi
 		ok "Wrote $dropin"
 		info "DNS-over-TLS: Quad9 (primary, malware-blocking) + Cloudflare (fallback)"
@@ -5590,7 +6125,7 @@ show_actionable_items() {
 			((++idx))
 		done
 		printf '%s════════════════════════════════════════════%s\n\n' "$C_YEL" "$C_RST"
-	else
+	elif ((!GUI_SUMMARY_SHOWN)); then
 		local msg="Actionable Items (${#ACTIONABLE_ITEMS[@]}):"$'\n'
 		for item in "${ACTIONABLE_ITEMS[@]}"; do
 			local section priority tag desc
@@ -5860,7 +6395,11 @@ EOF
 		((IS_OSTREE)) && log "Summary: reboot required on rpm-ostree for staged/layered changes"
 	fi
 
-	gui_alert info "Fedora hardening finished.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
+	local gui_headline="Fedora hardening finished."
+	((DRY_RUN)) && gui_headline="Dry run finished — no changes were made."
+	local gui_items="${#ACTIONABLE_ITEMS[@]} item(s) need follow-up (listed below)."
+	((${#ACTIONABLE_ITEMS[@]} == 0)) && gui_items="No follow-up items."
+	gui_final_summary "$gui_headline" "${gui_items}\nA reboot is recommended.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
 
 	# Display the actionable items from sections 12/18/21/22/23 and handle approval/selection.
 	handle_actionable_follow_up "$summary_path"

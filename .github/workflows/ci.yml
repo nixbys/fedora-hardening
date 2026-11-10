@@ -103,7 +103,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tier: [quick, full]
+        tier: [quick, full, gui]
     steps:
       - name: Install podman
         run: dnf install -y --setopt=install_weak_deps=False git podman fuse-overlayfs findutils diffutils
