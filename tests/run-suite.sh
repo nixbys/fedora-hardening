@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # tests/run-suite.sh - Full test suite for fedora-harden.sh
 #
-# Platform: every tier runs on Fedora 44, the release the script targets.
-#   static  runs natively when the host is Fedora 44 (e.g. the CI job container),
-#           otherwise inside the Fedora 44 "lint" image built from Dockerfile.test
-#   quick   runs in the fedora-minimal:44 "test-only" image
-#   full    runs in the fedora-minimal:44 systemd "base" image
-#   gui     runs in the fedora:44 "gui" image (Xvfb + zenity + kdialog)
+# Platform: every tier runs on the Fedora release under test (default 44, --fedora N).
+#   static  runs natively when the host is that release (e.g. the CI job container),
+#           otherwise inside the matching "lint" image built from Dockerfile.test
+#   quick   runs in the fedora-minimal:N "test-only" image
+#   full    runs in the fedora-minimal:N systemd "base" image
+#   gui     runs in the fedora:N "gui" image (Xvfb + zenity + kdialog)
 #
 # Tiers (run in order; each includes only its own tests):
 #   static  - syntax, shellcheck, shfmt, yamllint, ruff, hadolint, MCP server smoke
-#             test, regression greps (Fedora 44 RPM toolchain)
+#             test, regression greps (RPM toolchain of the release under test)
 #   quick   - CLI contract + full dry-run in the no-systemd container, with a check
 #             that dry-run left the container filesystem untouched
 #   full    - systemd container: dry-run no-change check, REAL run, verification of
@@ -24,6 +24,7 @@
 #   tests/run-suite.sh --artifacts DIR      # where logs go (default: mktemp)
 #   tests/run-suite.sh --no-build           # reuse existing images
 #   tests/run-suite.sh --native             # run static tier on this host as-is
+#   tests/run-suite.sh --fedora 45          # test on another Fedora release (default 44)
 #
 # Everything that changes system state happens inside throwaway rootless podman
 # containers; the host is never modified.
@@ -33,11 +34,7 @@ set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
 SCRIPT="$ROOT/fedora-harden.sh"
-IMG_QUICK="localhost/fedora-harden:test-only"
-IMG_FULL="localhost/fedora-harden:test"
-IMG_LINT="localhost/fedora-harden:lint"
-IMG_GUI="localhost/fedora-harden:gui"
-TARGET_FEDORA="44"
+TARGET_FEDORA="${TARGET_FEDORA:-44}"
 NATIVE=0
 TIERS=()
 ARTIFACTS=""
@@ -55,7 +52,7 @@ else
 fi
 
 usage() {
-    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -82,6 +79,14 @@ while (($# > 0)); do
             NATIVE=1
             shift
             ;;
+        --fedora)
+            [[ "${2:-}" =~ ^[0-9]+$ ]] || {
+                echo "--fedora needs a release number (e.g. 45)" >&2
+                exit 2
+            }
+            TARGET_FEDORA="$2"
+            shift 2
+            ;;
         -h | --help) usage 0 ;;
         *)
             echo "Unknown option: $1" >&2
@@ -89,6 +94,11 @@ while (($# > 0)); do
             ;;
     esac
 done
+# Per-release image tags, so 44 and 45 images can coexist
+IMG_QUICK="localhost/fedora-harden:test-only-f${TARGET_FEDORA}"
+IMG_FULL="localhost/fedora-harden:test-f${TARGET_FEDORA}"
+IMG_LINT="localhost/fedora-harden:lint-f${TARGET_FEDORA}"
+IMG_GUI="localhost/fedora-harden:gui-f${TARGET_FEDORA}"
 ((${#TIERS[@]})) || TIERS=(all)
 [[ " ${TIERS[*]} " == *" all "* ]] && TIERS=(static quick full gui)
 
@@ -160,7 +170,16 @@ tier_header() { printf '\n%s== Tier: %s ==%s\n' "$C_BLU" "$1" "$C_RST"; }
 # ---------------------------------------------------------------------------
 build_image() { # build_image <target> <tag>
     ((NO_BUILD)) && podman image exists "$2" && return 0
-    podman build -f "$ROOT/Dockerfile.test" --target "$1" -t "$2" "$ROOT"
+    # Buildah (Fedora 45+) overlays the build context from $TMPDIR (default /var/tmp).
+    # Inside a container /var/tmp is often overlayfs itself, and overlay-on-overlay
+    # fails ("invalid argument"); use a directory under the artifacts instead.
+    local tmp="${TMPDIR:-}"
+    if [[ -z "$tmp" && "$(stat -f -c %T /var/tmp 2>/dev/null)" == overlayfs ]]; then
+        tmp="$ARTIFACTS/.buildtmp"
+        mkdir -p "$tmp"
+    fi
+    TMPDIR="${tmp:-/var/tmp}" podman build -f "$ROOT/Dockerfile.test" \
+        --build-arg "FEDORA_VERSION=$TARGET_FEDORA" --target "$1" -t "$2" "$ROOT"
 }
 
 # Leaf entries of `podman diff` that are not expected side effects of a dry run.
@@ -212,7 +231,7 @@ tier_static() {
         fi
         mkdir -p "$ARTIFACTS/static"
         podman run --rm -v "$ROOT:/src:ro,z" -v "$ARTIFACTS/static:/artifacts:z" "$IMG_LINT" \
-            /src/tests/run-suite.sh --tier static --native --artifacts /artifacts || true
+            /src/tests/run-suite.sh --tier static --native --fedora "$TARGET_FEDORA" --artifacts /artifacts || true
         local line status name detail
         while IFS= read -r line; do
             IFS='|' read -r status name detail <<<"$line"
@@ -471,8 +490,9 @@ tier_full() {
     check "full: core dumps disabled" fx test -s /etc/security/limits.d/99-coredump.conf
     check "full: sshd config valid after hardening" fx sshd -t
     # sshd uses the first value it reads, so check the EFFECTIVE config (sshd -T), not the file.
+    # Keywords are lowercased: OpenSSH 10.5 (Fedora 45) prints them in config-file case.
     check "full: sshd effective config is hardened (sshd -T)" bash -c '
-        out="$(podman exec "$1" sshd -T)" &&
+        out="$(podman exec "$1" sshd -T | awk "{ \$1 = tolower(\$1); print }")" &&
         grep -qx "x11forwarding no" <<<"$out" &&
         grep -qx "passwordauthentication no" <<<"$out" &&
         grep -qx "permitrootlogin no" <<<"$out" &&
@@ -487,6 +507,23 @@ tier_full() {
         'rpm -q systemd-resolved >/dev/null && systemctl is-enabled --quiet systemd-resolved &&
          grep -qx "DNSOverTLS=yes" /etc/systemd/resolved.conf.d/99-hardening.conf'
     check "full: /etc/shadow mode 000" bash -c '[[ "$(podman exec "$1" stat -c %a /etc/shadow)" == 0 ]]' _ "$FULL_CT"
+
+    # --- the user-facing verifier agrees ------------------------------------------
+    # tests/verify-host.sh is what users run on real machines; check it reports PASS
+    # for everything a container can provide. SEL/AUD/DNS/CLAM-2/SYS need the host
+    # kernel (SELinux, audit, resolved's capabilities, fanotify, writable sysctls).
+    log="$ARTIFACTS/full_verify_host.log"
+    podman cp "$ROOT/tests/verify-host.sh" "$FULL_CT:/root/verify-host.sh" >/dev/null 2>&1
+    fx /root/verify-host.sh >"$log" 2>&1 || true
+    local id missing=""
+    for id in AUTO-1 AUTO-2 FW-1 FW-2 SSH-1 SSH-2 PAM-1 PAM-2 PAM-3 PERM-1 PERM-2 CLAM-1 ROLL-1; do
+        grep -qE "^[[:space:]]+${id}[[:space:]]+PASS" "$log" || missing+="$id "
+    done
+    if [[ -z "$missing" ]]; then
+        record PASS "full: verify-host.sh reports PASS for all container-checkable items"
+    else
+        record FAIL "full: verify-host.sh reports PASS for all container-checkable items" "not passing: $missing(see $log)"
+    fi
 
     # --- idempotency ------------------------------------------------------------
     log="$ARTIFACTS/full_real2.log"

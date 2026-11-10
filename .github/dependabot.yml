@@ -1,5 +1,4 @@
-# Dependabot keeps the pinned action versions (and the test container's base
-# image) current.
+# Dependabot keeps the pinned GitHub Action versions current.
 #
 # Why this matters for security: every workflow in this repo pins its GitHub
 # Actions to an exact commit (a SHA), which is safe but freezes them in time.
@@ -27,13 +26,9 @@ updates:
       actions:
         patterns: ["*"]
 
-  # The Fedora base images in Dockerfile.test (registry.fedoraproject.org; the isolated
-  # podman test container, not a production artifact — see TESTING.md).
-  - package-ecosystem: "docker"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      docker:
-        patterns: ["*"]
+  # The Fedora base images in Dockerfile.test are NOT tracked here: Dependabot
+  # cannot query registry.fedoraproject.org (it fails with
+  # private_source_authentication_failure), and the images are referenced by
+  # release number (:44, :45), so the nightly CI already pulls each release's
+  # latest build. Moving to a new release is a deliberate change to the CI
+  # matrix ("fedora" in ci.yml) and FEDORA_VERSION in Dockerfile.test.
