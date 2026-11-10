@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — production hardening from fault injection
+
+A new `fault` test tier breaks the script's surroundings one fault at a time. Every
+failure it found is fixed and covered by the tier.
+
+- **Safer changes:** a file that is read-only, immutable or cannot be backed up is
+  left unchanged and its section stops with a follow-up item (the rest of the run
+  continues). A run that cannot write its backup folder stops before changing
+  anything.
+- **Rollback restores /etc:** the countme setting, the countme timer mask, firewalld's
+  configuration and zones, and the audit rules are now backed up and restored;
+  everything a package install added (including dependencies) is recorded and
+  removed in one transaction; restored settings are reloaded (sysctl, audit,
+  firewalld, sshd, systemd). `--rollback` no longer picks the rollback run itself as
+  the session to undo, and an unknown session exits cleanly.
+- **No hangs:** repositories are checked once with a time limit, and package work is
+  skipped with one follow-up item when they do not answer (a repository that drops
+  packets stalled a run for over half an hour). Downloads, firmware and Flatpak
+  refreshes have time limits.
+- **One run at a time:** a second run while one is in progress is refused.
+- **Clear input errors:** invalid `--only`/`--skip` lists and a `--user` that does
+  not exist are refused (exit 2) instead of running nothing or everything.
+- **Robust output:** a closed stdout, a write error to the log, or a permissive
+  `umask` no longer break the run or leave world-writable files; `printf` format
+  strings starting with `---` no longer print bash errors in every run.
+- **Fixed:** with `set -E`, the error handler also ran in subshells and could clean
+  up (lock, temporary files, session report) in the middle of a run.
+- **Fixed:** duplicate keys in a config file collapse to one; section 11 says
+  plainly when the audit tools are missing; section 21 no longer tries to scan
+  without ClamAV; section 23 merges into an existing image policy instead of
+  replacing it, keeping signature rules such as Universal Blue's.
+
 ## Unreleased — image-based systems keep tools out of the image
 
 On Silverblue, Kinoite, Bazzite, Aurora and other Atomic variants the script no
