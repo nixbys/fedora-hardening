@@ -1787,7 +1787,11 @@ pkg_cached() {
 	if [[ -v _PKG_CACHE[$pkg] ]]; then
 		return "${_PKG_CACHE[$pkg]}"
 	fi
-	if rpm -q "$pkg" >/dev/null 2>&1; then
+	# Several names the script uses are only *provided* by another package on
+	# Fedora 44/45 (clamav-update → clamav-freshclam, wget → wget2-wget,
+	# dnf-automatic → dnf5-plugin-automatic). `rpm -q <name>` misses those, which
+	# made every run re-attempt the install; --whatprovides resolves them.
+	if rpm -q "$pkg" >/dev/null 2>&1 || rpm -q --whatprovides "$pkg" >/dev/null 2>&1; then
 		_PKG_CACHE[$pkg]=0
 		return 0
 	else
