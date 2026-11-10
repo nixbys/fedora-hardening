@@ -6,6 +6,7 @@
 #           otherwise inside the Fedora 44 "lint" image built from Dockerfile.test
 #   quick   runs in the fedora-minimal:44 "test-only" image
 #   full    runs in the fedora-minimal:44 systemd "base" image
+#   gui     runs in the fedora:44 "gui" image (Xvfb + zenity + kdialog)
 #
 # Tiers (run in order; each includes only its own tests):
 #   static  - syntax, shellcheck, shfmt, yamllint, ruff, hadolint, MCP server smoke
@@ -14,6 +15,8 @@
 #             that dry-run left the container filesystem untouched
 #   full    - systemd container: dry-run no-change check, REAL run, verification of
 #             applied hardening, idempotent re-run, --list-sessions, --rollback all
+#   gui     - --gui-full on a virtual display: no hang, progress window closed,
+#             one Material-dark end-of-run window, Cancel exits 130
 #
 # Usage:
 #   tests/run-suite.sh                      # all tiers
@@ -33,6 +36,7 @@ SCRIPT="$ROOT/fedora-harden.sh"
 IMG_QUICK="localhost/fedora-harden:test-only"
 IMG_FULL="localhost/fedora-harden:test"
 IMG_LINT="localhost/fedora-harden:lint"
+IMG_GUI="localhost/fedora-harden:gui"
 TARGET_FEDORA="44"
 NATIVE=0
 TIERS=()
@@ -58,8 +62,8 @@ usage() {
 while (($# > 0)); do
     case "$1" in
         --tier)
-            [[ "${2:-}" =~ ^(static|quick|full|all)$ ]] || {
-                echo "--tier needs static|quick|full|all" >&2
+            [[ "${2:-}" =~ ^(static|quick|full|gui|all)$ ]] || {
+                echo "--tier needs static|quick|full|gui|all" >&2
                 exit 2
             }
             TIERS+=("$2")
@@ -86,7 +90,7 @@ while (($# > 0)); do
     esac
 done
 ((${#TIERS[@]})) || TIERS=(all)
-[[ " ${TIERS[*]} " == *" all "* ]] && TIERS=(static quick full)
+[[ " ${TIERS[*]} " == *" all "* ]] && TIERS=(static quick full gui)
 
 [[ -n "$ARTIFACTS" ]] || ARTIFACTS="$(mktemp -d "${TMPDIR:-/tmp}/fedora-harden-suite.XXXXXX")"
 mkdir -p "$ARTIFACTS"
@@ -539,6 +543,35 @@ tier_full() {
 
     fx journalctl --no-pager -b >"$ARTIFACTS/full_journal.log" 2>&1 || true
     fx systemctl --failed --no-pager >"$ARTIFACTS/full_failed_units.txt" 2>&1 || true
+}
+
+# ---------------------------------------------------------------------------
+# Tier: gui (Xvfb + zenity)
+# ---------------------------------------------------------------------------
+tier_gui() {
+    tier_header gui
+    if ! have podman; then
+        record SKIP "gui tier" "podman not installed"
+        return 0
+    fi
+    if ! build_image gui "$IMG_GUI" >"$ARTIFACTS/build-gui.log" 2>&1; then
+        record FAIL "gui: build image" "see $ARTIFACTS/build-gui.log"
+        return 0
+    fi
+    record PASS "gui: build image"
+    mkdir -p "$ARTIFACTS/gui"
+    local log="$ARTIFACTS/gui/gui-test.out" line
+    podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" \
+        -v "$ROOT/tests/gui-test.sh:/root/gui-test.sh:ro,z" -v "$ARTIFACTS/gui:/out:z" \
+        --entrypoint /root/gui-test.sh "$IMG_GUI" >"$log" 2>&1 || true
+    # One suite result per check reported by the in-container test
+    while IFS= read -r line; do
+        case "$line" in
+            "ok:   "*) record PASS "gui: ${line#ok:   }" ;;
+            "FAIL: "*) record FAIL "gui: ${line#FAIL: }" "screenshots + logs in $ARTIFACTS/gui" ;;
+        esac
+    done <"$log"
+    grep -qE '^(ok|FAIL):' "$log" || record FAIL "gui: test ran" "no results, see $log"
 }
 
 # ---------------------------------------------------------------------------
