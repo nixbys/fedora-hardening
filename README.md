@@ -293,6 +293,7 @@ host is never modified:
 ./tests/run-suite.sh --tier gui       # --gui-full on a virtual display, theme, Cancel
 ./tests/run-suite.sh --tier atomic    # real Silverblue + Universal Blue images (systemd containers)
 ./tests/run-suite.sh --tier vm        # the same images installed and booted in a VM (KVM)
+./tests/run-suite.sh --tier fault     # fault injection: no network, full disks, kills, ...
 ./tests/run-suite.sh --fedora 45      # the same on Fedora 45 (default: 44)
 ```
 
