@@ -47,8 +47,8 @@ This is a personal hardening script that has grown a substantial feature set and
 | 9 | Password & PAM | pwquality (min length 14, 3 classes), faillock (5 tries, 15 min), account aging |
 | 10 | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941) |
 | 11 | auditd | Identity, privilege escalation, module, time/network/mount/delete syscalls |
-| 12 | rkhunter + AIDE | Rootkit detection + file integrity monitoring |
-| 13 | Flatpak / Flathub | Blocks Flatpak apps from the host filesystem; mat2; Firejail opt-in only |
+| 12 | File integrity | rkhunter + AIDE; image-based: image signature status + weekly report of `/etc` changes |
+| 13 | Flatpak / Flathub | Blocks Flatpak apps from the host filesystem; mat2 (image-based: Metadata Cleaner Flatpak); Firejail opt-in only |
 | 14 | DNS over TLS | systemd-resolved with Quad9 + Cloudflare (installed if missing; warns if DNS bypasses it) |
 | 14b | MAC randomization | NetworkManager network-layer privacy |
 | 15 | Desktop settings | Screen lock, recent docs, Bluetooth, location, mic — per DE, verified after applying |
@@ -57,9 +57,9 @@ This is a personal hardening script that has grown a substantial feature set and
 | 18 | Fail2Ban | Intrusion detection + auto-ban |
 | 19 | Service cleanup | Disable avahi, cups, bluetooth, modemmanager |
 | 20 | File permissions | shadow, /tmp, compilers, umask 077, core dumps, hostname privacy, unencrypted-swap check |
-| 21 | ClamAV | clamd + freshclam + on-access scanning of /home (clamonacc) |
-| 22 | OpenSCAP | Scanner install + initial compliance scan |
-| 23 | Container security | Rootless Podman + Toolbox, image policy, seccomp, registry hardening |
+| 21 | ClamAV | clamd + freshclam + on-access scanning of /home; image-based: weekly scan in a locked-down container |
+| 22 | OpenSCAP | Compliance scan (image-based: from a throwaway container, nothing layered) |
+| 23 | Container security | Rootless Podman, image policy, seccomp, registry hardening; toolbox or distrobox for tools |
 
 **Sections not automated by design:** LUKS (Anaconda install-time), GRUB password (interactive key derivation), WireGuard tunnel config (requires peer keys).
 
@@ -182,6 +182,41 @@ Auto-detection reads `/etc/os-release` + `/run/ostree-booted`. Desktop detection
 
 ---
 
+## Image-based systems
+
+On Silverblue, Kinoite, Bazzite, Aurora and the other Atomic variants, every
+layered package has to be re-applied to each new image, and it widens the image
+everyone else gets from the vendor. So the script keeps tools out of the image and
+puts each one where it belongs:
+
+| What | Package-based Fedora | Image-based Fedora |
+|------|----------------------|--------------------|
+| YubiKey manager (section 2) | `yubikey-manager`, `yubico-piv-tool` | Yubico Authenticator Flatpak (`com.yubico.yubioath`); only drivers and `pam-u2f` are layered |
+| SELinux tools `seinfo`, `sesearch` (4) | `setools-console` | in the tools box |
+| File integrity (12) | rkhunter + AIDE | image signature check + weekly report of `/etc` changes (`journalctl -t fedora-harden-etc`) |
+| Metadata removal (13) | `mat2` | Metadata Cleaner Flatpak |
+| ClamAV (21) | clamd, freshclam, on-access scanning | weekly `fedora-harden-clamscan` container: read-only view of `/home`, no network, signatures in the image |
+| OpenSCAP (22) | `openscap-scanner` | throwaway Fedora container scanning the host read-only (`oscap-chroot`) |
+| buildah, skopeo, podman-compose (23) | packages | in the tools box |
+
+The **tools box** (`fedora-harden-tools`) uses the platform's own tool: distrobox
+on Universal Blue (which ships it instead of toolbox), toolbox elsewhere. With
+distrobox, the script writes a manifest to `~/.config/distrobox/fedora-harden-tools.ini`:
+
+```bash
+distrobox assemble create --file ~/.config/distrobox/fedora-harden-tools.ini
+# Universal Blue:
+ujust distrobox-assemble CONTAINER=fedora-harden-tools FILE=$HOME/.config/distrobox/fedora-harden-tools.ini
+```
+
+> ⚠️ **Toolbox and distrobox are not a security boundary.** Their containers share
+> your home directory, see the host's filesystem at `/run/host` and run privileged
+> without SELinux separation. Use them to keep the host clean, not to run untrusted
+> software — for that, use a Flatpak with tight permissions or a locked-down
+> `podman run --read-only --cap-drop all --network none ...`.
+
+---
+
 ## Rollback
 
 Every file the script modifies is backed up before the change, and every file it creates is journaled, so a rollback restores modified files **and removes created ones** (drop-ins, rules, cron jobs). A session journal is written to `/root/harden-backups-<timestamp>/`.
@@ -202,7 +237,7 @@ sudo ./fedora-harden.sh --rollback all
 
 ## Hardware Security Keys
 
-During **Section 2**, the script will ask if you use a hardware security key (YubiKey, FIDO2, PIV, etc.). If yes, it installs `pcsc-lite`, `opensc`, `libfido2`, `yubico-piv-tool`, and `yubikey-manager`, and optionally sets up `pam-u2f`.
+During **Section 2**, the script will ask if you use a hardware security key (YubiKey, FIDO2, PIV, etc.). If yes, it installs `pcsc-lite`, `opensc`, `libfido2`, `yubico-piv-tool`, and `yubikey-manager`, and optionally sets up `pam-u2f`. On image-based systems it layers only the drivers (and `pam-u2f`) and installs the Yubico Authenticator Flatpak instead of the management tools.
 
 > ⚠️ **Important:** If you use a hardware key, plug it in **before Section 8 (USBGuard) runs** so it is automatically added to the allowlist. If you miss it, run:
 > ```bash
@@ -213,13 +248,15 @@ During **Section 2**, the script will ask if you use a hardware security key (Yu
 
 ## Container Security (Section 23)
 
-Section 23 sets up a **containerized-mindset** environment using rootless Podman and Toolbox:
+Section 23 sets up a **containerized-mindset** environment using rootless Podman and toolbox (distrobox on Universal Blue):
 
 - Configures `~/.config/containers/containers.conf` with `no-new-privileges`, hardened seccomp, and minimal capabilities
-- Writes `/etc/containers/policy.json` to require image signature verification (confirm-gated)
+- Writes `/etc/containers/policy.json` to reject images from registries other than Fedora, CentOS, Red Hat, quay.io and docker.io (confirm-gated)
 - Blocks unqualified image searches via `/etc/containers/registries.conf.d/99-hardening.conf`
 - Configures `subuid`/`subgid` for rootless container operation
-- Optionally installs `buildah`, `skopeo`, and `podman-compose`
+- Optionally installs `buildah`, `skopeo`, and `podman-compose` — on image-based systems they go in the tools box instead (see [Image-based systems](#image-based-systems))
+
+Toolbox and distrobox keep development tools off the host; they do not isolate them (see the warning above).
 
 ---
 
@@ -229,7 +266,7 @@ Check that the hardening is really in effect. This only reads state and changes 
 
 ```bash
 sudo ./tests/verify-host.sh            # every check, with PASS / FAIL / SKIP
-sudo ./tests/verify-host.sh --only SSH # one area: AUTO SEL FW SSH PAM SYS AUD DNS CLAM DESK FLAT PERM ROLL
+sudo ./tests/verify-host.sh --only SSH # one area: AUTO SEL FW SSH PAM SYS AUD DNS CLAM INT DESK FLAT PERM ROLL
 ```
 
 The script generates a session report in `./sessions/` and prints a prioritized **actionable items** list at the end (HIGH / MEDIUM / LOW). Items that require manual steps (GRUB password, WireGuard tunnel config, etc.) are called out explicitly with instructions.
@@ -254,8 +291,15 @@ host is never modified:
 ./tests/run-suite.sh --tier quick     # CLI, dry-run makes no changes, desktop settings
 ./tests/run-suite.sh --tier full      # real run under systemd, idempotency, rollback
 ./tests/run-suite.sh --tier gui       # --gui-full on a virtual display, theme, Cancel
+./tests/run-suite.sh --tier atomic    # real Silverblue + Universal Blue images (systemd containers)
+./tests/run-suite.sh --tier vm        # the same images installed and booted in a VM (KVM)
 ./tests/run-suite.sh --fedora 45      # the same on Fedora 45 (default: 44)
 ```
+
+Image-based behaviour is tested on the real images, not simulated: the atomic tier
+runs the images' own rpm-ostree, Flatpak, Podman quadlets and distrobox, and the vm
+tier installs each image with `bootc` and boots it, so the image-signature check and
+the `/etc` change report run against a real OSTree system.
 
 The full tier checks the hardening is really in effect (e.g. the effective sshd
 configuration via `sshd -T`, the password policy files), that a second run
@@ -269,7 +313,8 @@ changes nothing, and that `--rollback all` restores the system. See
 ```
 fedora-harden.sh               # the tool: 23 hardening sections
 tests/run-suite.sh             # test suite: static, quick, full and gui tiers (see TESTING.md)
-tests/*.sh, tests/*.py         # in-container checks (desktop settings, GUI, MCP smoke test)
+tests/*.sh, tests/*.py         # in-container checks (desktop settings, image-based simulation, GUI, MCP smoke test)
+tests/fixtures/                # sample tool output used by the tests (OpenSCAP results)
 test-in-podman.sh              # ad-hoc runs in a throwaway podman container
 Dockerfile.test                # test images (FEDORA_VERSION 44/45): base, test-only, lint, gui
 setup-dev.sh                   # contributor setup (Fedora RPM toolchain + git hooks)
