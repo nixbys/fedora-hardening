@@ -34,7 +34,7 @@ Automatically validates every commit before it happens.
 
 ```bash
 # Install (one-time)
-pip install pre-commit
+./setup-dev.sh   # Fedora 44: installs the toolchain RPMs + git hooks
 pre-commit install
 
 # Or use setup script
@@ -102,9 +102,7 @@ Interactive development assistant integrated with Claude.
 - check-security        # Security scanning
 - validate-docs         # Documentation verification
 - analyze-performance   # Complexity metrics
-- update-version        # Semantic versioning
 - generate-changelog    # Changelog from commits
-- create-release        # Automated release
 - quality-report        # Comprehensive metrics
 - setup-dev-environment # Dev tools setup
 ```
@@ -128,10 +126,13 @@ Interactive development assistant integrated with Claude.
 Isolated testing environment with minimal resource usage.
 
 ```bash
-# Quick test (1-2 min, 256 MB)
+# Full suite: static checks, quick tier, and a real run + rollback in a systemd container
+./tests/run-suite.sh
+
+# Quick test (no systemd, 256 MB)
 ./test-in-podman.sh --quick --dry-run
 
-# Full test (3-5 min, 512 MB)
+# Full test (systemd, 1 GB)
 ./test-in-podman.sh --dry-run
 
 # Specific section
@@ -237,17 +238,11 @@ git push origin feature-branch
 ### Release Management
 
 ```bash
-# 1. Create release with MCP
-/mcp fedora-harden update-version --bump minor
-→ Updates version in script
 
 # 2. Generate changelog
 /mcp fedora-harden generate-changelog
 → Creates changelog from commits
 
-# 3. Create release
-/mcp fedora-harden create-release --version 2.1.0
-→ Tags commit, creates GitHub release
 
 # 4. Publish
 git push origin --tags
@@ -306,7 +301,7 @@ Automated checks that must pass before code is merged:
 
 ### Resource Usage
 - Quick container: 256 MB memory, 1 CPU
-- Full container: 512 MB memory, 2 CPUs
+- Full container: 1 GB memory, 2 CPUs
 - Disk usage per container: ~5 GB max
 - No persistent overhead between runs
 
@@ -408,7 +403,7 @@ git commit -m "chore: update pre-commit hook versions"
 
 ### Update MCP Server
 ```bash
-pip install --upgrade mcp
+sudo dnf install python3-mcp
 ```
 
 ## Next Steps

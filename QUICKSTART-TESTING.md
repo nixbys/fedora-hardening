@@ -1,155 +1,50 @@
-# Quickstart: Testing fedora-harden.sh in Podman
+# Quickstart: Testing fedora-harden.sh
 
-## Installation (One-Time)
+All tests run on Fedora 44 images in rootless podman containers — the host is never
+modified. See [TESTING.md](TESTING.md) for details.
+
+## One-time setup (Fedora 44)
 
 ```bash
-# Install podman (container runtime)
-sudo dnf install podman
-
-# Make test script executable
-chmod +x test-in-podman.sh
+./setup-dev.sh          # installs podman + lint toolchain RPMs, git hooks
 ```
 
-## Run Tests
+On Silverblue/Kinoite/Bazzite, run it inside a Fedora 44 toolbox:
 
-### Fastest Option (Recommended for CI/Development)
 ```bash
-# Ultra-minimal test: 1-2 minutes, 256 MB memory, 1 CPU
-./test-in-podman.sh --quick --dry-run
+toolbox create --image registry.fedoraproject.org/fedora-toolbox:44 fh-dev
+toolbox enter fh-dev
 ```
 
-### Full System Test
+## Run the tests
+
 ```bash
-# Complete test with systemd: 3-5 minutes, 512 MB memory, 2 CPUs
-./test-in-podman.sh --dry-run
+./tests/run-suite.sh                   # everything (static, quick, full)
+./tests/run-suite.sh --tier static     # lint only (Fedora 44 lint image)
+./tests/run-suite.sh --tier quick      # CLI + dry-run, no systemd
 ```
 
-### Interactive Testing
+## Ad-hoc runs
+
 ```bash
-# Open shell in container for manual testing
-./test-in-podman.sh --quick -it
-
-# Inside container:
-root@container:/# ./fedora-harden.sh --help
-root@container:/# ./fedora-harden.sh --list
-root@container:/# ./fedora-harden.sh --dry-run --only 5
+./test-in-podman.sh --quick --dry-run         # fastest, no systemd (256 MB)
+./test-in-podman.sh --dry-run --only 5,10     # systemd container, selected sections
+./test-in-podman.sh                           # REAL run inside the throwaway container
+./test-in-podman.sh --quick -it               # interactive shell
 ```
 
-## Common Workflows
+| Flag | Effect |
+|------|--------|
+| `--quick` | no-systemd image (fastest) |
+| `--dry-run` | pass `--dry-run` to the script |
+| `--only` / `--skip` | select sections |
+| `--memory` / `--cpus` | resource limits (default 1g/2, quick 256m/1) |
+| `--artifacts DIR` | where logs go (kept after the run) |
+| `--keep` | keep the container for inspection |
+| `-it` | interactive shell |
 
-### Test Before Commit
-```bash
-# Quick syntax check + logic test
-./test-in-podman.sh --quick --dry-run
+## Results
 
-# Then test with real systemd
-./test-in-podman.sh --dry-run
-
-# If all pass, commit
-git add . && git commit -m "..."
-```
-
-### Test Specific Section
-```bash
-# Test firewalld section (section 5)
-./test-in-podman.sh --quick --only 5 --dry-run
-
-# Test multiple sections
-./test-in-podman.sh --quick --only 5,7,10 --dry-run
-```
-
-### Low-Resource Environments
-```bash
-# Minimal memory (256 MB), 1 CPU
-./test-in-podman.sh --quick --memory 256m --cpus 1 --dry-run
-```
-
-## What Each Flag Does
-
-| Flag | Effect | Best For |
-|------|--------|----------|
-| `--quick` | Skip systemd, ultra-minimal | CI, rapid iteration |
-| `--dry-run` | No changes made | Safe testing |
-| `-it` | Interactive shell | Debugging |
-| `--only 5` | Test section 5 only | Targeted testing |
-| `--memory 512m` | Set memory limit | Resource testing |
-| `--cpus 2` | Set CPU limit | Performance testing |
-
-## Understanding Results
-
-### Success
-```
-[ℹ] Using quick (no-systemd) variant for faster testing
-[ℹ] Building container image...
-[✓] Container image built successfully
-[ℹ] Starting container...
-[✓] Test completed successfully
-```
-
-### Dry-Run (No Changes)
-```
-[ℹ] Running fedora-harden.sh (--quick mode)
-Would run: systemctl enable firewalld
-Would run: sed -i ... /etc/ssh/sshd_config
-[✓] Test completed successfully  ← No actual changes made!
-```
-
-## Files Generated
-
-Test artifacts are automatically created and cleaned up:
-
-```
-/tmp/fedora-harden-test-PID.log       # Main test output
-/tmp/fedora-harden-test-PID/           # Test directory (auto-cleaned)
-  ├── harden-*.log                    # Hardening logs
-  └── sessions/session-*.txt          # Session reports
-```
-
-## Troubleshooting
-
-### "podman: command not found"
-```bash
-sudo dnf install podman
-```
-
-### "Cannot connect to Podman"
-```bash
-# On first run, podman initializes storage
-podman version
-./test-in-podman.sh --quick --dry-run
-```
-
-### "Out of memory"
-```bash
-# Increase memory limit
-./test-in-podman.sh --quick --memory 512m --dry-run
-```
-
-### "Permission denied"
-```bash
-# Add user to podman group
-usermod -aG podman $USER
-newgrp podman
-```
-
-## Performance
-
-Typical times on modern hardware (2 GHz+ CPU, 8 GB+ RAM):
-
-```
-Quick variant (no systemd):  1-2 minutes ✓ Fast
-Full variant (systemd):      3-5 minutes
-First run (build included):  Add 1-2 minutes
-Cached run:                  No build time
-```
-
-## Next Steps
-
-- Read [`TESTING.md`](TESTING.md) for advanced options
-- Check [`fedora-harden.sh --help`](fedora-harden.sh) for script options
-- View [`Dockerfile.test`](Dockerfile.test) for container configuration
-- See [CI/CD examples](TESTING.md#continuous-integration--gitlab-ci) for automation
-
----
-
-**Made for efficiency.** Quick testing, minimal resources, maximum safety. 🚀
+The artifact directory printed at the end contains `output.log`,
+`logs/harden-*.log`, `logs/*-errors.log`, `sessions/` and `fs-diff.txt`
+(files changed inside the container).
