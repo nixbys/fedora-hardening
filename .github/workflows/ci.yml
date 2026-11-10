@@ -103,7 +103,7 @@ jobs:
     name: Container tests (Fedora ${{ matrix.fedora }}, ${{ matrix.tier }})
     runs-on: ubuntu-latest
     needs: static
-    timeout-minutes: 45
+    timeout-minutes: 90  # the fault tier takes about an hour
     # Podman runs nested in a job container of the release under test; the test
     # images are built on that release too. --privileged is needed for nesting.
     container:
@@ -115,7 +115,7 @@ jobs:
       fail-fast: false
       matrix:
         fedora: ["44", "45"]
-        tier: [quick, full, gui]
+        tier: [quick, full, gui, fault]
     steps:
       - name: Install podman
         run: dnf install -y --setopt=install_weak_deps=False git podman fuse-overlayfs findutils diffutils
