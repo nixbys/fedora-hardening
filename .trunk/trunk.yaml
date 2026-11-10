@@ -19,5 +19,5 @@ lint:
   enabled:
     - git-diff-check
     - shellcheck@0.11.0
-    - shfmt@3.6.0
+    - shfmt@3.7.0
     - trufflehog@3.95.3

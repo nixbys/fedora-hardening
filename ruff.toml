@@ -1,0 +1,4 @@
+# Ruff configuration (Fedora 44 ships ruff via the "ruff" RPM)
+# 3.10 is the minimum Python supported by the MCP SDK.
+target-version = "py310"
+line-length = 100

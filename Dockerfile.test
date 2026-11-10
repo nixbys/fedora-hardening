@@ -1,18 +1,24 @@
 # Multi-stage Fedora hardening test container - optimized for minimal size and resource usage
-# Build: podman build -f Dockerfile.test -t fedora-harden:test .
-# Run: podman run --rm --memory 512m --cpus 2 --volume ./fedora-harden.sh:/root/fedora-harden.sh:ro fedora-harden:test
+# Build: podman build -f Dockerfile.test --target base -t fedora-harden:test .
+# Run:   ./test-in-podman.sh --dry-run          (systemd variant)
+#        ./test-in-podman.sh --quick --dry-run  (no-systemd variant)
+#
+# Version pinning (hadolint DL3041) is intentionally not used: these images track the
+# current Fedora 44 package set so the script is tested against what users will install.
+# hadolint global ignore=DL3041
 
-FROM fedora:44-minimal as base
+ARG FEDORA_IMAGE=registry.fedoraproject.org/fedora-minimal:44
+
+# ============================================================================
+# Full variant: systemd as PID 1 for realistic service/unit testing
+# ============================================================================
+FROM ${FEDORA_IMAGE} AS base
 LABEL description="Fedora hardening script testing container - minimal footprint"
 LABEL maintainer="fedora-hardening-project"
 
-# Reduce layers and minimize intermediate artifacts
+# fedora-minimal already sets tsflags=nodocs; weak deps are disabled per-transaction.
 RUN set -e && \
-    # Disable documentation and locale to reduce image size
-    echo "nodocs" >> /etc/dnf/dnf.conf && \
-    echo "install_weak_deps=False" >> /etc/dnf/dnf.conf && \
-    # Install only minimal required dependencies for testing
-    dnf install -y \
+    dnf install -y --setopt=install_weak_deps=False \
         bash \
         coreutils \
         findutils \
@@ -25,76 +31,54 @@ RUN set -e && \
         wget \
         git \
         diffutils \
-        e2fsprogs-libs \
         shadow-utils \
         util-linux \
         openssl \
         rpm \
-        rpm-ostree \
         dnf5 \
         firewalld \
         selinux-policy \
         audit \
-        audit-libs \
         aide \
         rkhunter \
-        openssh \
         openssh-server \
         openssh-clients \
         cronie \
         flatpak \
         fail2ban \
         usbguard \
-        kernel \
         policycoreutils \
         psmisc \
         which \
         file \
+        procps-ng \
+        iproute \
         less \
-        nano \
         && \
-    # Clean package manager cache to reduce image size
     dnf clean all && \
-    rm -rf /var/cache/dnf/* && \
-    rm -rf /var/lib/dnf/* && \
-    # Create non-root user for safer testing
+    rm -rf /var/cache/dnf/* /var/cache/libdnf5/* && \
     useradd -m -s /bin/bash testuser && \
-    mkdir -p /var/log/fedora-harden && \
-    # Pre-create directories that script expects
-    mkdir -p /root/harden-backups && \
-    mkdir -p /root/.sessions
+    mkdir -p /var/log/fedora-harden /root/harden-backups
 
-# Set up minimal test environment
 WORKDIR /root
-ENV SCRIPT_NAME="fedora-harden.sh" \
-    PATH="/root:${PATH}" \
-    DEBIAN_FRONTEND=noninteractive
+ENV PATH="/root:${PATH}"
 
-# Copy script (will be mounted at runtime, but provide default)
+# Baked-in copy of the script (the test harness bind-mounts the working-tree copy over it)
 COPY --chown=root:root fedora-harden.sh /root/fedora-harden.sh
-RUN chmod 755 /root/fedora-harden.sh
+RUN chmod 755 /root/fedora-harden.sh && bash -n /root/fedora-harden.sh
 
-# Health check: verify script can be parsed
-RUN bash -n /root/fedora-harden.sh && echo "✓ Script syntax valid"
-
-# Use systemd as init for realistic testing
+STOPSIGNAL SIGRTMIN+3
 ENTRYPOINT ["/usr/sbin/init"]
-CMD ["--unit=multi-user.target"]
 
 # ============================================================================
 # Minimal non-systemd variant for testing just the script logic (faster startup)
 # Build: podman build --target test-only -f Dockerfile.test -t fedora-harden:test-only .
-# Run: podman run --rm -it fedora-harden:test-only /bin/bash
 # ============================================================================
-
-FROM fedora:44-minimal as test-only
+FROM ${FEDORA_IMAGE} AS test-only
 LABEL description="Fedora hardening script logic testing - ultra-minimal, no systemd"
 
 RUN set -e && \
-    echo "nodocs" >> /etc/dnf/dnf.conf && \
-    echo "install_weak_deps=False" >> /etc/dnf/dnf.conf && \
-    # Minimal dependencies for script testing only (no systemd services)
-    dnf install -y \
+    dnf install -y --setopt=install_weak_deps=False \
         bash \
         coreutils \
         findutils \
@@ -111,11 +95,11 @@ RUN set -e && \
         rpm \
         dnf5 \
         which \
+        procps-ng \
         less \
-        nano \
         && \
     dnf clean all && \
-    rm -rf /var/cache/dnf/* /var/lib/dnf/* && \
+    rm -rf /var/cache/dnf/* /var/cache/libdnf5/* && \
     useradd -m -s /bin/bash testuser && \
     mkdir -p /var/log/fedora-harden
 
@@ -125,4 +109,32 @@ ENV PATH="/root:${PATH}"
 COPY --chown=root:root fedora-harden.sh /root/fedora-harden.sh
 RUN chmod 755 /root/fedora-harden.sh && bash -n /root/fedora-harden.sh
 
+ENTRYPOINT ["/bin/bash"]
+
+# ============================================================================
+# Lint/toolchain variant: the static test tier runs here so linters come from
+# Fedora 44 RPMs (same versions setup-dev.sh installs and CI uses).
+# Build: podman build --target lint -f Dockerfile.test -t fedora-harden:lint .
+# ============================================================================
+FROM registry.fedoraproject.org/fedora:44 AS lint
+LABEL description="Fedora 44 lint toolchain for fedora-harden.sh"
+
+RUN set -e && \
+    dnf install -y --setopt=install_weak_deps=False \
+        bash \
+        git \
+        findutils \
+        diffutils \
+        ShellCheck \
+        shfmt \
+        yamllint \
+        ruff \
+        hadolint \
+        python3 \
+        python3-mcp \
+        && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf/* /var/cache/libdnf5/*
+
+WORKDIR /src
 ENTRYPOINT ["/bin/bash"]
