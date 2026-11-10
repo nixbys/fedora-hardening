@@ -87,6 +87,17 @@ The systemd container gets `--cap-add NET_ADMIN,NET_RAW` so firewalld can manage
 nftables. Under rootless podman this applies only to the container's own network
 namespace.
 
+The full tier also checks that the run logs to the journal under its session (and
+writes no log file), that `--report` writes a page with the changes, follow-ups and
+live checks, and that `--resume` brings back the last session's follow-ups.
+
+Section 17 is tested against a real WireGuard peer (`tests/wireguard-test.sh`, two
+containers on a private network): invalid and split-tunnel configs are refused; the
+handshake happens and traffic flows through the tunnel; DNS is routed through it;
+with the tunnel stopped the peer is unreachable outside the tunnel while the endpoint
+stays allowed; `--rollback` removes the tunnel and the kill switch and direct traffic
+works again.
+
 ### gui
 
 Runs `tests/gui-test.sh` on a virtual X display, as root with no UTF-8 locale (as
@@ -178,7 +189,7 @@ in as dependencies, which dnf never removes.
 
 Without `--dry-run` the script makes real changes, but only inside the throwaway
 container. Artifacts are kept after the run (the path is printed): `output.log`,
-`logs/harden-*.log`, `logs/*-errors.log`, `sessions/`, `fs-diff.txt` and, for the
+`logs/harden-*.log` (no journald in the quick container), `sessions/`, `fs-diff.txt` and, for the
 systemd variant, `journal.log` and `failed-units.txt`.
 
 | Option | Default |
@@ -225,7 +236,7 @@ containers and VMs, and every check runs on the Fedora Atomic image under test:
 - **`podman: command not found`** — `sudo dnf install podman` (or use the toolbox above).
 - **Static tier says the lint image failed to build** — see `<artifacts>/build-lint.log`.
 - **A full-tier check failed** — the container is removed afterwards, but every log
-  is in the artifacts directory: `full_real1.log`, `full-logs/*-errors.log`,
+  is in the artifacts directory: `full_real1.log`, `full_journal.log` (the run's journal),
   `full_journal.log`, `full_failed_units.txt`, and `etc.*` checksum snapshots.
 - **SELinux denials on bind mounts** — mounts use the shared `:z` label. Avoid
   mounting the repository with `:Z` (private label) from other containers while
