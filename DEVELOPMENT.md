@@ -9,13 +9,11 @@ Complete guide for contributing to and developing fedora-harden.sh with integrat
 git clone https://github.com/fedora-hardening/fedora-hardening.git
 cd fedora-hardening
 
-# Setup development environment
-pip install pre-commit
-pre-commit install
-pre-commit install --hook-type commit-msg
+# Setup development environment (pre-commit hooks, shellcheck, yamllint, hadolint, ...)
+./setup-dev.sh
 
-# Install optional dev tools
-pip install shellcheck-py yamllint hadolint commitizen
+# Run the full test suite (static + container tiers)
+./tests/run-suite.sh
 
 # Test your changes
 ./test-in-podman.sh --quick --dry-run
@@ -96,7 +94,7 @@ The MCP Server provides Claude-integrated development tools for maximum efficien
 ```bash
 # Install MCP (when available in Claude Code)
 # Or use Python directly:
-pip install mcp
+sudo dnf install python3-mcp   # Fedora 44 RPM
 
 # Run server
 python3 mcp_server_fedora_harden.py
@@ -117,9 +115,6 @@ python3 mcp_server_fedora_harden.py
 # Generate report
 /mcp fedora-harden quality-report
 
-# Update version
-/mcp fedora-harden update-version --bump patch
-
 # Setup environment
 /mcp fedora-harden setup-dev-environment --dry-run false
 ```
@@ -129,14 +124,12 @@ python3 mcp_server_fedora_harden.py
 1. **verify-script** - Comprehensive syntax, lint, test, security, docs check
 2. **lint-script** - Run shellcheck and shfmt
 3. **test-script** - Run test suite (quick/full, specific sections)
-4. **check-security** - Detect secrets, suspicious patterns
+4. **check-security** - Detect verified secrets (trufflehog or gitleaks)
 5. **validate-docs** - Check documentation completeness
 6. **analyze-performance** - Complexity and performance metrics
-7. **update-version** - Semantic versioning (major/minor/patch)
-8. **generate-changelog** - Create changelog from commits
-9. **create-release** - Automated release creation
-10. **quality-report** - Comprehensive quality metrics
-11. **setup-dev-environment** - Initialize dev tools
+7. **generate-changelog** - List commits since the last tag
+8. **quality-report** - Syntax, lint and docs summary (no containers)
+9. **setup-dev-environment** - Run ./setup-dev.sh (dry-run by default)
 
 ## Commit Message Format
 
@@ -326,7 +319,7 @@ pre-commit install --hook-type commit-msg
 ### shellcheck not found
 ```bash
 # Install
-pip install shellcheck-py
+sudo dnf install ShellCheck
 # Or: sudo apt-get install shellcheck
 ```
 
@@ -362,14 +355,6 @@ git tag -a v2.0.0 -m "Release version 2.0.0"
 git push origin v2.0.0
 
 # GitHub automatically creates release
-```
-
-### Automated Release (Future)
-```bash
-# MCP server can automate:
-/mcp fedora-harden update-version --bump minor
-/mcp fedora-harden generate-changelog
-/mcp fedora-harden create-release --version 2.1.0
 ```
 
 ## Resources
