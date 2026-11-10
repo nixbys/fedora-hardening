@@ -130,7 +130,8 @@ etc_diff() { # etc_diff <snapA> <snapB> — changed paths
 # Rollback cannot (and should not) undo: system users and groups that packages
 # created, the rebuilt SELinux policy and udev hardware database, audit.rules
 # (auditd regenerates it from the restored rules.d), and files of protected
-# packages (systemd-udev, ...) a minimal system pulled in, which dnf never removes.
+# packages (systemd-udev, ...) a minimal system pulled in, which dnf never removes,
+# and packages those still need.
 unexplained() {
     local n="$1" p owner protected
     protected="$(sx "$n" bash -c 'cat /etc/dnf/protected.d/*.conf 2>/dev/null')"
@@ -142,6 +143,9 @@ unexplained() {
         esac
         owner="$(sx "$n" rpm -qf --qf '%{NAME}' "$p" 2>/dev/null | head -1)"
         [[ -n "$owner" ]] && grep -qx -- "$owner" <<<"$protected" && continue
+        # A package kept because an installed (protected) package needs it, e.g.
+        # kbd for systemd-udev on Fedora 44: rpm confirms it cannot be removed.
+        [[ -n "$owner" ]] && ! sx "$n" rpm -e --test "$owner" >/dev/null 2>&1 && continue
         echo "$p"
     done <<<"$2"
 }
