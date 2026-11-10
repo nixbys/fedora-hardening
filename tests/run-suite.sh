@@ -170,8 +170,16 @@ tier_header() { printf '\n%s== Tier: %s ==%s\n' "$C_BLU" "$1" "$C_RST"; }
 # ---------------------------------------------------------------------------
 build_image() { # build_image <target> <tag>
     ((NO_BUILD)) && podman image exists "$2" && return 0
-    podman build -f "$ROOT/Dockerfile.test" --build-arg "FEDORA_VERSION=$TARGET_FEDORA" \
-        --target "$1" -t "$2" "$ROOT"
+    # Buildah (Fedora 45+) overlays the build context from $TMPDIR (default /var/tmp).
+    # Inside a container /var/tmp is often overlayfs itself, and overlay-on-overlay
+    # fails ("invalid argument"); use a directory under the artifacts instead.
+    local tmp="${TMPDIR:-}"
+    if [[ -z "$tmp" && "$(stat -f -c %T /var/tmp 2>/dev/null)" == overlayfs ]]; then
+        tmp="$ARTIFACTS/.buildtmp"
+        mkdir -p "$tmp"
+    fi
+    TMPDIR="${tmp:-/var/tmp}" podman build -f "$ROOT/Dockerfile.test" \
+        --build-arg "FEDORA_VERSION=$TARGET_FEDORA" --target "$1" -t "$2" "$ROOT"
 }
 
 # Leaf entries of `podman diff` that are not expected side effects of a dry run.
