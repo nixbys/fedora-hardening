@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  Fedora 44+ Security Hardening Script (multi-release + multi-desktop aware)
-#  Based on: Fedora44-KDE-Security-Hardening-Guide.md (April 2026)
-#  Aligned with privacyguides.org and inteltechniques.com recommendations
-#  Efficiency-tuned and low-I/O focused (v2.6 - June 2026)
+#  Aligned with privacyguides.org and inteltechniques.com recommendations;
+#  sources and review dates: docs/references.json (checked weekly in CI)
+#  v3.0 - November 2026 (tested on Fedora 44 and 45: tests/run-suite.sh)
 #
 #  FEATURES:
 #    • 23 hardening sections (plus subsection 14b) with automatic
@@ -78,7 +78,8 @@
 #    11  auditd rules (identity, privilege escalation, module tracking,
 #        time/network-config/mount/delete syscall coverage)
 #    12  rkhunter + AIDE (rootkit detection + file integrity monitoring)
-#    13  Flatpak / Flathub (app sandboxing foundation) + optional Firejail
+#    13  Flatpak / Flathub + global Flatpak filesystem restrictions + mat2
+#        (Firejail opt-in only)
 #    14  DNS over TLS (systemd-resolved with Quad9 + Cloudflare)
 #   14b  NetworkManager MAC address randomization (network-layer privacy)
 #    15  Desktop environment settings — auto-dispatches by detected DE:
@@ -172,6 +173,9 @@ KERNEL_LABEL=""
 LOG_DIR="/var/log/fedora-harden"
 LOG_FILE="${LOG_DIR}/harden-${RUN_STAMP}.log"
 BACKUP_DIR="/root/harden-backups-${RUN_STAMP}"
+# arkenfox user.js release installed by section 16 (pinned + checksum-verified).
+ARKENFOX_VERSION="144.0"
+ARKENFOX_SHA256="e4ab33c6914899175cf7035e0e57a2d7f08ac887d8f957f1199e7e49bbe7e33e"
 
 printf -v RUN_STAMP_ISO '%(%Y-%m-%dT%H:%M:%S%z)T' -1 2>/dev/null || RUN_STAMP_ISO="$(date -Iseconds)"
 HOST_LABEL="${HOSTNAME:-}"
@@ -1629,11 +1633,16 @@ user_home() {
 
 # confirm() - Prompt user for yes/no confirmation (respects --yes flag).
 # Returns 0 (success) for 'y'/'yes' response, 1 (failure) for 'n'/'no' or default.
-# In --yes mode, automatically assumes affirmative response.
-# Usage: confirm ["prompt text"]
+# In --yes mode the answer is the default: yes, unless the caller passes "no" for
+# an option that current guidance does not recommend enabling automatically.
+# Usage: confirm ["prompt text"] [yes|no]
 confirm() {
-	local prompt="${1:-Continue?}"
+	local prompt="${1:-Continue?}" default="${2:-yes}"
 	if ((ASSUME_YES)); then
+		if [[ "$default" == no ]]; then
+			info "Auto-no (opt-in only): $prompt"
+			return 1
+		fi
 		info "Auto-yes: $prompt"
 		return 0
 	fi
@@ -3294,7 +3303,7 @@ list_sections() {
  10  Kernel sysctl (incl. IPv6 privacy extensions)
  11  auditd (incl. time/network/mount/delete rules)
  12  rkhunter + AIDE
- 13  Flatpak / Flathub (incl. optional Firejail)
+ 13  Flatpak / Flathub, global Flatpak restrictions, mat2 (Firejail opt-in)
  14  DNS over TLS (14b: NetworkManager MAC address randomization)
  15  Desktop environment settings (auto-dispatches by detected DE):
        KDE Plasma  — kwriteconfig6/5: screen lock, recent-docs, BT opt-out
@@ -3614,52 +3623,52 @@ sec_02_updates() {
 	fi
 }
 
-# ============================================================================
-#  SECTION 3 — automatic security updates (dnf5-plugin-automatic, Fedora 41+)
-# ============================================================================
-# sec_03_dnf_automatic() - Configure automatic security updates + countme opt-out
-# Sets up dnf5-plugin-automatic for mutable systems or rpm-ostreed policy for immutable
-# systems to apply security patches automatically. On rpm-ostree, stages updates.
-# Sub-section 3b disables the Fedora system-counting mechanism: sets countme=false
-# in /etc/dnf/dnf.conf on mutable systems, or masks rpm-ostree-countme.timer on
-# immutable ones — per privacyguides.org recommendation.
-sec_03_dnf_automatic() {
-	should_run 3 || return 0
-	section 3 "Automatic security updates"
-
-	# Handle rpm-ostree (immutable) systems first
-	if ((IS_OSTREE)); then
-		local ro_conf="/etc/rpm-ostreed.conf"
-		[[ ! -f "$ro_conf" ]] && {
-			warn "$ro_conf not found; skipping config write."
-			return 0
-		}
-
-		backup_file "$ro_conf"
-		if ((!DRY_RUN)); then
-			# Update existing policy or add new [Daemon] section (batch single sed pass)
-			if grep -qE '^\s*AutomaticUpdatePolicy\s*=' "$ro_conf"; then
-				sed -i -E 's|^\s*AutomaticUpdatePolicy\s*=.*|AutomaticUpdatePolicy=stage|' "$ro_conf" 2>/dev/null || true
-			elif grep -qE '^\[Daemon\]' "$ro_conf"; then
-				sed -i '/^\[Daemon\]/a AutomaticUpdatePolicy=stage' "$ro_conf" 2>/dev/null || true
-			else
-				printf '\n[Daemon]\nAutomaticUpdatePolicy=stage\n' >>"$ro_conf" 2>/dev/null || true
-			fi
-			ok "Configured rpm-ostreed automatic update staging in $ro_conf"
-		else
-			info "Would set AutomaticUpdatePolicy=stage in $ro_conf"
+# _ostree_auto_updates() - Automatic updates on rpm-ostree systems (section 3).
+# Universal Blue images (Bazzite, Bluefin, Aurora) update through uupd.timer and
+# keep rpm-ostreed's own policy at "none"; enabling rpm-ostreed-automatic as well
+# would run two updaters against the same deployments, so leave uupd in charge.
+_ostree_auto_updates() {
+	if [[ -r /usr/share/ublue-os/image-info.json ]] && systemctl list-unit-files uupd.timer >/dev/null 2>&1; then
+		if systemctl is-enabled --quiet uupd.timer 2>/dev/null; then
+			ok "Universal Blue image: automatic updates are handled by uupd.timer (system, Flatpaks, distroboxes)."
+		elif ! run "systemctl enable --now uupd.timer"; then
+			add_action_item 3 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now uupd.timer"
 		fi
-
-		# Enable timer if available
-		if systemctl list-unit-files rpm-ostreed-automatic.timer >/dev/null 2>&1; then
-			run "systemctl enable --now rpm-ostreed-automatic.timer" ||
-				add_action_item 3 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now rpm-ostreed-automatic.timer"
-		else
-			warn "rpm-ostreed-automatic.timer not found; configure automatic updates manually."
-		fi
+		info "Update by hand at any time with: ujust update"
 		return 0
 	fi
+	local ro_conf="/etc/rpm-ostreed.conf"
+	[[ ! -f "$ro_conf" ]] && {
+		warn "$ro_conf not found; skipping config write."
+		return 0
+	}
 
+	backup_file "$ro_conf"
+	if ((!DRY_RUN)); then
+		# Update existing policy or add new [Daemon] section (batch single sed pass)
+		if grep -qE '^\s*AutomaticUpdatePolicy\s*=' "$ro_conf"; then
+			sed -i -E 's|^\s*AutomaticUpdatePolicy\s*=.*|AutomaticUpdatePolicy=stage|' "$ro_conf" 2>/dev/null || true
+		elif grep -qE '^\[Daemon\]' "$ro_conf"; then
+			sed -i '/^\[Daemon\]/a AutomaticUpdatePolicy=stage' "$ro_conf" 2>/dev/null || true
+		else
+			printf '\n[Daemon]\nAutomaticUpdatePolicy=stage\n' >>"$ro_conf" 2>/dev/null || true
+		fi
+		ok "Configured rpm-ostreed automatic update staging in $ro_conf"
+	else
+		info "Would set AutomaticUpdatePolicy=stage in $ro_conf"
+	fi
+
+	# Enable timer if available
+	if systemctl list-unit-files rpm-ostreed-automatic.timer >/dev/null 2>&1; then
+		run "systemctl enable --now rpm-ostreed-automatic.timer" ||
+			add_action_item 3 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now rpm-ostreed-automatic.timer"
+	else
+		warn "rpm-ostreed-automatic.timer not found; configure automatic updates manually."
+	fi
+}
+
+# _dnf_auto_updates() - Automatic security updates on dnf systems (section 3).
+_dnf_auto_updates() {
 	# Handle mutable systems. Fedora 41+ uses dnf5, whose automatic-update plugin is
 	# packaged as dnf5-plugin-automatic (timer: dnf5-automatic.timer). It ships
 	# /etc/dnf/automatic.conf only as an empty %ghost and reads its defaults from
@@ -3709,6 +3718,27 @@ sec_03_dnf_automatic() {
 	if ! run "systemctl enable --now $timer"; then
 		warn "Could not enable $timer"
 		add_action_item 3 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now $timer"
+	fi
+}
+
+# ============================================================================
+#  SECTION 3 — automatic security updates (dnf5-plugin-automatic, Fedora 41+)
+# ============================================================================
+# sec_03_dnf_automatic() - Configure automatic security updates + countme opt-out
+# Sets up dnf5-plugin-automatic for mutable systems or rpm-ostreed policy for immutable
+# systems to apply security patches automatically. On rpm-ostree, stages updates.
+# Sub-section 3b disables the Fedora system-counting mechanism: sets countme=false
+# in /etc/dnf/dnf.conf on mutable systems, or masks rpm-ostree-countme.timer on
+# immutable ones — per privacyguides.org recommendation.
+sec_03_dnf_automatic() {
+	should_run 3 || return 0
+	section 3 "Automatic security updates"
+
+	# rpm-ostree (image-based) systems; Universal Blue keeps its own updater.
+	if ((IS_OSTREE)); then
+		_ostree_auto_updates
+	else
+		_dnf_auto_updates
 	fi
 
 	# 3b — DNF countme=false (privacyguides.org: opt out of Fedora system counting)
@@ -3900,6 +3930,11 @@ firewalld_add_service() {
 sec_05_firewalld() {
 	should_run 5 || return 0
 	section 5 "firewalld — drop-by-default with explicit allow-list"
+	# firewalld filters inbound traffic. To see and block what apps send OUT,
+	# inteltechniques.com (2026 OS Telemetry Guide) recommends the OpenSnitch
+	# application firewall. It is not in Fedora's repositories, so it is only suggested.
+	add_action_item 5 LOW "OUTBOUND_APP_FIREWALL" \
+		"Optional: OpenSnitch shows and blocks outbound connections per application (inteltechniques.com). It is not packaged by Fedora; install it from https://github.com/evilsocket/opensnitch/releases only if you accept a third-party package."
 	pkg_install firewalld
 	run "systemctl enable --now firewalld" || warn "systemctl enable --now firewalld failed — checking daemon state."
 
@@ -4681,8 +4716,39 @@ sec_13_flatpak() {
 		flatpak_install_or_update flathub com.github.tchx84.Flatseal
 	fi
 
-	# Optional: Firejail for sandboxing non-Flatpak apps (inteltechniques.com recommendation)
-	if confirm "Install Firejail (sandbox non-Flatpak applications)?"; then
+	# Flatpak's defaults let many apps bypass their sandbox through broad filesystem
+	# access; revoke it globally and let apps use portals (file pickers) instead.
+	# Source: privacyguides.org — Linux Overview (Flatpak) and "Linux Application
+	# Sandboxing" (revoke filesystem=host / filesystem=home). Re-grant per app with
+	# Flatseal or `flatpak override --filesystem=...`; undo all: --rollback.
+	if cmd_exists flatpak; then
+		local fp_global="/var/lib/flatpak/overrides/global"
+		if confirm "Block Flatpak apps from reading the whole system (host, host-os, host-etc)?"; then
+			backup_file "$fp_global"
+			if run "flatpak override --system --nofilesystem=host --nofilesystem=host-os --nofilesystem=host-etc"; then
+				ok "Flatpak apps can no longer read the host filesystem (portals still work)."
+			else
+				warn "Could not set the global Flatpak override."
+			fi
+		fi
+		# Home-directory access is needed by more apps (editors, IDEs), so it is opt-in.
+		if confirm "Also block Flatpak apps from your home directory? (apps then use file portals; some may need a per-app exception)" no; then
+			backup_file "$fp_global"
+			run "flatpak override --system --nofilesystem=home" &&
+				ok "Flatpak apps can no longer read your home directory."
+		fi
+	fi
+
+	# Metadata removal for files you share (photos, PDFs, documents).
+	# Source: inteltechniques.com — Extreme Privacy (mat2).
+	if confirm "Install mat2 (remove metadata such as GPS location from files before sharing)?"; then
+		pkg_install mat2
+	fi
+
+	# Firejail is opt-in and off under --yes: privacyguides.org's "Linux Application
+	# Sandboxing" notes it is a large setuid binary with a large attack surface that
+	# can weaken security. Prefer Flatpak apps with tightened permissions.
+	if confirm "Install Firejail? (not recommended by privacyguides.org: setuid sandbox with a large attack surface)" no; then
 		pkg_install firejail
 		unset '_CMD_CACHE[firecfg]' # Invalidate stale cache after install
 		if cmd_exists firecfg; then
@@ -4692,11 +4758,8 @@ sec_13_flatpak() {
 		fi
 	fi
 
-	# Remind user to review Flatpak app permissions with Flatseal after install.
-	# privacyguides.org notes Flatpak allows unsafe defaults — Flatseal lets you
-	# restrict per-app access to filesystem, network, portals, etc.
 	add_action_item 13 MEDIUM "FLATPAK_PERMISSIONS" \
-		"Review Flatpak app permissions with Flatseal (com.github.tchx84.Flatseal). Apps may have overly broad filesystem/network access by default — restrict each app to only what it needs."
+		"Review each Flatpak app in Flatseal: remove network, device=all, PulseAudio, X11 (for Wayland-native apps) and org.freedesktop.secrets access where an app does not need it (privacyguides.org)."
 }
 
 # ============================================================================
@@ -4865,6 +4928,19 @@ sec_15_desktop() {
 
 	local user_home applied_des=()
 	user_home="$(user_home "$TARGET_USER")"
+
+	# X11 lets any app read other windows and keystrokes; Wayland isolates them.
+	# Source: privacyguides.org — Linux Overview ("Wayland ... more secure than X11").
+	local sid stype x11_sessions=0
+	cmd_exists loginctl && while read -r sid; do
+		stype="$(loginctl show-session "$sid" -p Type --value 2>/dev/null)"
+		[[ "$stype" == x11 ]] && ((++x11_sessions))
+	done < <(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$TARGET_USER" '$3 == u {print $1}')
+	if ((x11_sessions > 0)); then
+		warn "$TARGET_USER is logged in to an X11 session; Wayland isolates applications from each other."
+		add_action_item 15 MEDIUM "X11_SESSION" \
+			"Log in to the Wayland session instead of X11 (choose it on the login screen) — X11 lets any app capture other windows and keystrokes (privacyguides.org)."
+	fi
 
 	info "Detected desktop(s): ${DESKTOP_ENVS:-unknown}  (spin: ${FEDORA_VARIANT})"
 
@@ -5286,22 +5362,41 @@ sec_16_firefox() {
 
 		if [[ -d "$profile_dir" ]]; then
 			if ((DRY_RUN)); then
-				info "Would install arkenfox user.js into $profile_dir/user.js"
+				info "Would install arkenfox ${ARKENFOX_VERSION} user.js (+ privacy overrides) into $profile_dir/user.js"
 			else
 				local tmp_arken="/tmp/arkenfox-user-$$-$RANDOM-$SECONDS.js"
 				register_tmp "$tmp_arken"
-				if download_file "https://raw.githubusercontent.com/arkenfox/user.js/master/user.js" "$tmp_arken"; then
+				# Pinned release + checksum: a moving branch could change browser
+				# settings (proxies, DNS) without review. Bump both together.
+				if download_file "https://raw.githubusercontent.com/arkenfox/user.js/${ARKENFOX_VERSION}/user.js" "$tmp_arken" &&
+					printf '%s  %s\n' "$ARKENFOX_SHA256" "$tmp_arken" | sha256sum -c --quiet - 2>/dev/null; then
+					# Overrides appended after arkenfox (the user-overrides.js convention).
+					cat >>"$tmp_arken" <<'ARKOVERRIDES'
+
+/*** fedora-harden.sh overrides ***/
+// Global Privacy Control + Do Not Track (inteltechniques.com, Extreme Privacy 5th ed.)
+user_pref("privacy.globalprivacycontrol.enabled", true);
+user_pref("privacy.donottrackheader.enabled", true);
+// DNS over HTTPS so Encrypted Client Hello can hide the site name (SNI);
+// mode 2 falls back to system DNS (DNS-over-TLS, section 14) for captive portals.
+user_pref("network.trr.mode", 2);
+user_pref("network.trr.uri", "https://dns.quad9.net/dns-query");
+user_pref("network.trr.custom_uri", "https://dns.quad9.net/dns-query");
+user_pref("network.dns.echconfig.enabled", true);
+user_pref("network.dns.http3_echconfig.enabled", true);
+ARKOVERRIDES
+					backup_file "$profile_dir/user.js"
 					if ! install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_arken" "$profile_dir/user.js" 2>/dev/null; then
 						warn "Failed to install arkenfox user.js (filesystem may be read-only)"
-						rm -f "$tmp_arken" 2>/dev/null || true
 					else
-						rm -f "$tmp_arken" 2>/dev/null || true
-						ok "Installed arkenfox user.js into $profile_dir/user.js"
+						ok "Installed arkenfox ${ARKENFOX_VERSION} user.js with GPC, DNT and DNS-over-HTTPS into $profile_dir"
 					fi
 				else
-					warn "arkenfox user.js download failed; Firefox profile will use defaults (no arkenfox hardening)"
-					rm -f "$tmp_arken"
+					warn "arkenfox ${ARKENFOX_VERSION} download failed or did not match its checksum; Firefox keeps its current settings."
+					add_action_item 16 MEDIUM "ARKENFOX_NOT_INSTALLED" \
+						"arkenfox user.js was not installed (download or checksum failed). Re-run: sudo ./fedora-harden.sh --only 16"
 				fi
+				rm -f "$tmp_arken" 2>/dev/null || true
 			fi
 		else
 			warn "Resolved Firefox profile directory '$profile_dir' does not exist; skipping arkenfox deployment."
@@ -5655,6 +5750,29 @@ sec_20_perms() {
 	info "Baseline of SUID files (saved for diffing later):"
 	run "find / -xdev -perm /4000 -type f 2>/dev/null | sort > /root/suid-baseline-${RUN_DATE_YMD}.txt || true"
 	info "Saved SUID baseline to /root/suid-baseline-*.txt"
+
+	# 20a2 — Swap: memory written to unencrypted disk swap survives power-off.
+	# Source: privacyguides.org — Linux Overview (Swap and ZRAM).
+	local swap_dev swap_type backing plain_swaps=""
+	while read -r swap_dev swap_type _; do
+		[[ -z "$swap_dev" || "$swap_dev" == Filename || "$swap_dev" == /dev/zram* ]] && continue
+		backing="$swap_dev"
+		if [[ "$swap_type" == file ]]; then
+			# findmnt fails when the file's mount is not visible (containers, CI runners);
+			# without "|| true" the ERR trap would abort the whole run.
+			backing="$(findmnt -no SOURCE -T "$swap_dev" 2>/dev/null || true)"
+			backing="${backing%%[*}"
+			[[ -n "$backing" ]] || backing="$swap_dev"
+		fi
+		lsblk -s -no TYPE "$backing" 2>/dev/null | grep -qx crypt || plain_swaps+="$swap_dev "
+	done </proc/swaps
+	if [[ -n "$plain_swaps" ]]; then
+		warn "Unencrypted swap in use: ${plain_swaps% } — memory contents can be written to disk in the clear."
+		add_action_item 20 HIGH "SWAP_UNENCRYPTED" \
+			"Swap on ${plain_swaps% } is not encrypted. Use ZRAM (Fedora's default: zram-generator) and disable disk swap, or put swap inside LUKS (privacyguides.org)."
+	else
+		ok "Swap is ZRAM or encrypted (or not in use)."
+	fi
 
 	# 20b — umask 077 (inteltechniques.com: restrict new file visibility)
 	local umask_f="/etc/profile.d/99-umask.sh"
