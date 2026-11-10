@@ -35,7 +35,6 @@ FEDORA_TOOLS=(
     python3:python3
     podman:podman
     shellcheck:ShellCheck
-    shfmt:shfmt
     yamllint:yamllint
     ruff:ruff
     hadolint:hadolint
@@ -188,6 +187,16 @@ main() {
         fi
     fi
 
+    # shfmt: RPM on Fedora 44; on 45+ the same pinned version is built with Go.
+    if ! cmd_exists shfmt; then
+        if ((DRY_RUN)); then
+            echo "  Would run: tests/install-shfmt.sh ${HOME}/.local/bin"
+        elif ! "$SCRIPT_DIR/tests/install-shfmt.sh" "${HOME}/.local/bin"; then
+            log_warn "shfmt could not be installed"
+        fi
+        case ":$PATH:" in *":${HOME}/.local/bin:"*) ;; *) export PATH="${HOME}/.local/bin:$PATH" ;; esac
+    fi
+
     if ! ((DRY_RUN)) && ! python_version_ok; then
         log_err "Python ${PYTHON_MIN_VERSION}+ is required"
         exit 1
@@ -213,6 +222,7 @@ main() {
     for spec in "${FEDORA_TOOLS[@]}"; do
         verify_tool "${spec%%:*}" "${spec#*:}" || success=0
     done
+    verify_tool shfmt "shfmt" || success=0
 
     log_info ""
     if ((DRY_RUN)); then
