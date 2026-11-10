@@ -1,0 +1,85 @@
+{
+  "about": "Guidance fedora-harden.sh follows. tests/check-references.py fingerprints each page's main content; the weekly 'Reference watch' workflow opens an issue when one changes. After reviewing a change, run: python3 tests/check-references.py --update",
+  "reviewed": "2026-11-09",
+  "sources": [
+    {
+      "id": "pg-linux-overview",
+      "title": "Privacy Guides — Linux Overview",
+      "url": "https://www.privacyguides.org/en/os/linux-overview/",
+      "type": "html",
+      "sections": "2, 3, 4, 13, 14b, 15, 20",
+      "covers": "microcode/fwupd, SELinux, Flatpak defaults, Wayland, ZRAM/swap, MAC randomization, hostname, countme",
+      "fingerprint": "96bde34035ee78253edf2e6f073ff9dfd4ffe9ef1c00aa93b54d8003eaf8192e",
+      "reviewed": "2026-11-09"
+    },
+    {
+      "id": "pg-desktop",
+      "title": "Privacy Guides — Desktop/PC (distributions)",
+      "url": "https://www.privacyguides.org/en/desktop/",
+      "type": "html",
+      "sections": "platform support",
+      "covers": "Fedora, Fedora Atomic, Secureblue recommendations",
+      "fingerprint": "10476aa7d114df8fdbda5961501fdabdbe5b576923928b40fdbd1cfe833b649e",
+      "reviewed": "2026-11-09"
+    },
+    {
+      "id": "pg-linux-sandboxing",
+      "title": "Privacy Guides — Linux Application Sandboxing",
+      "url": "https://www.privacyguides.org/articles/2022/04/22/linux-application-sandboxing/",
+      "type": "html",
+      "sections": "13, 23",
+      "covers": "Flatpak permission revocation, Firejail caveats, SELinux, rootless Podman",
+      "fingerprint": "dc4c14c52b347ae07a018a2aa2f0dba5e0f04ac8dba977e9accb97069d3a3edb",
+      "reviewed": "2026-11-09"
+    },
+    {
+      "id": "pg-dns",
+      "title": "Privacy Guides — DNS Resolvers",
+      "url": "https://www.privacyguides.org/en/dns/",
+      "type": "html",
+      "sections": "14, 16",
+      "covers": "recommended DoT/DoH providers (Quad9, Mullvad DNS, ...)",
+      "fingerprint": "beee433af1d7b0ab855d19dd3767f1b53b47bf33ad21488e4fdfe85dfb74a144",
+      "reviewed": "2026-11-09"
+    },
+    {
+      "id": "pg-desktop-browsers",
+      "title": "Privacy Guides — Desktop Browsers",
+      "url": "https://www.privacyguides.org/en/desktop-browsers/",
+      "type": "html",
+      "sections": "16",
+      "covers": "Firefox settings, arkenfox, extensions",
+      "fingerprint": "06b4944d6e9a2fa6c17a7c0a85f0bbc4390b2b9f6ab75ba2337af41a213c1e7a",
+      "reviewed": "2026-11-09"
+    },
+    {
+      "id": "it-telemetry-guide",
+      "title": "IntelTechniques — 2026 OS Telemetry Guide",
+      "url": "https://inteltechniques.com/2026.telemetry.html",
+      "type": "html",
+      "sections": "5, 16",
+      "covers": "Linux telemetry stance; OpenSnitch application firewall recommendation",
+      "fingerprint": "c36a38569d5b8fd52c60828d2e12c86ed8fc8e726bd020efdf140e0ce916b6bd",
+      "reviewed": "2026-11-09"
+    },
+    {
+      "id": "it-linux-commands",
+      "title": "IntelTechniques — Linux terminal commands (Extreme Privacy companion)",
+      "url": "https://inteltechniques.com/EP/linux.commands.txt",
+      "type": "text",
+      "sections": "13, 16",
+      "covers": "mat2, DNS filtering, update routine",
+      "fingerprint": "fd1715d503460597f1f24862bd6584cae444efbf9e6b4129ec79f464179dba3d",
+      "reviewed": "2026-11-09"
+    },
+    {
+      "id": "arkenfox-release",
+      "title": "arkenfox user.js release",
+      "repo": "arkenfox/user.js",
+      "type": "github-release",
+      "pinned_var": "ARKENFOX_VERSION",
+      "sections": "16",
+      "covers": "Firefox user.js installed by section 16"
+    }
+  ]
+}
