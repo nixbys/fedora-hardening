@@ -168,6 +168,14 @@
 
 set -Eeuo pipefail
 
+# A closed stdout or stderr (e.g. `cmd >&-` from a wrapper) would make the first
+# status line fail and abort the run; the run log still records everything.
+[[ -e /dev/fd/1 ]] || exec 1>/dev/null
+[[ -e /dev/fd/2 ]] || exec 2>/dev/null
+# Files the script creates are readable but never writable by other users,
+# whatever umask it was started with (configs in /etc must stay world-readable).
+umask 022
+
 # ---------- Globals ---------------------------------------------------------
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -234,6 +242,9 @@ GUI_PROGRESS_PID=""      # PID of running GUI progress process
 GUI_LAST_STATUS=""       # Last status message sent to GUI
 GUI_CANCEL_REQUESTED=0   # Set to 1 if user cancels via GUI
 GUI_SINGLE_WINDOW_MODE=0 # Set to 1 to keep GUI-full updates in one window
+
+# Sections in execution order (dependency flow; see main). --only/--skip accept these.
+SECTIONS=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 23 12 19 20 8)
 
 # ---------- Execution state flags -------------------------------------------
 LOG_READY=0       # Set to 1 after log file initialized
@@ -375,7 +386,7 @@ gui_theme_init() {
 		[[ -n "$dir" ]] && install -d -m 700 "$dir/gtk-4.0" "$dir/gtk-3.0" 2>/dev/null
 	fi
 	if [[ -n "$dir" ]]; then
-		cat >"$dir/gtk-4.0/gtk.css" <<'GTKCSS'
+		cat 2>/dev/null >"$dir/gtk-4.0/gtk.css" <<'GTKCSS'
 /* fedora-harden.sh — Material Design 3 dark theme for zenity (GTK4 / libadwaita).
    Loaded via XDG_CONFIG_HOME for the script's own dialogs only. */
 
@@ -624,7 +635,7 @@ scrolledwindow, frame {
 GTKCSS
 		cp -f "$dir/gtk-4.0/gtk.css" "$dir/gtk-3.0/gtk.css" 2>/dev/null || true
 		printf '[Settings]\ngtk-application-prefer-dark-theme=1\n' >"$dir/gtk-3.0/settings.ini"
-		cat >"$dir/kdeglobals" <<'KDEGLOBALS'
+		cat 2>/dev/null >"$dir/kdeglobals" <<'KDEGLOBALS'
 [General]
 ColorScheme=FedoraHardenMaterialDark
 Name=Fedora Harden Material Dark
@@ -805,7 +816,7 @@ setup_ui_mode() {
 # calc_section_total() - Estimate number of sections that will run for progress display.
 # Uses current --only/--skip filters against the fixed execution plan.
 calc_section_total() {
-	local planned=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 23 12 19 20 8)
+	local planned=("${SECTIONS[@]}")
 	local s n=0
 	for s in "${planned[@]}"; do
 		[[ -n "$ONLY_LIST" ]] && ! in_list "$s" "$ONLY_LIST" && continue
@@ -1180,12 +1191,12 @@ init_log_target() {
 
 	local d
 	d="${LOG_FILE%/*}"
-	if mkdir -p "$d" 2>/dev/null && : >>"$LOG_FILE" 2>/dev/null; then
+	if mkdir -p "$d" 2>/dev/null && : 2>/dev/null >>"$LOG_FILE"; then
 		chmod 640 "$LOG_FILE" 2>/dev/null || true
 		LOG_READY=1
 	else
 		LOG_FILE="/tmp/${SCRIPT_NAME%.*}-${RUN_STAMP}.log"
-		: >>"$LOG_FILE" 2>/dev/null || return 1
+		: 2>/dev/null >>"$LOG_FILE" || return 1
 		chmod 640 "$LOG_FILE" 2>/dev/null || true
 		LOG_READY=1
 	fi
@@ -1193,7 +1204,7 @@ init_log_target() {
 	# Initialize error log with same base directory
 	if ((LOG_READY)); then
 		ERROR_LOG="${LOG_FILE%.log}-errors.log"
-		: >>"$ERROR_LOG" 2>/dev/null || ERROR_LOG="/tmp/$(basename "$LOG_FILE" .log)-errors.log"
+		: 2>/dev/null >>"$ERROR_LOG" || ERROR_LOG="/tmp/$(basename "$LOG_FILE" .log)-errors.log"
 		chmod 640 "$ERROR_LOG" 2>/dev/null || true
 
 		# Create temp file for capturing stderr from commands
@@ -1210,7 +1221,7 @@ log() {
 	init_log_target || return 0
 	local ts
 	printf -v ts '%(%F %T)T' -1 2>/dev/null || ts="$(date '+%F %T')"
-	printf '%s %s\n' "$ts" "$*" >>"$LOG_FILE" 2>/dev/null || true
+	printf '%s %s\n' "$ts" "$*" 2>/dev/null >>"$LOG_FILE" || true
 }
 
 # info() - Write informational message to stdout and log (blue color).
@@ -1276,7 +1287,7 @@ capture_error_context() {
 	{
 		printf '{"timestamp":"%s","line":%d,"exit_code":%d,"command":"%s","stderr":"%s"}\n' \
 			"$ts" "$line" "$ec" "${cmd//\"/\\\"}" "$stderr_content"
-	} >>"$ERROR_LOG" 2>/dev/null || true
+	} 2>/dev/null >>"$ERROR_LOG" || true
 
 	log "[DEBUG] Error at line $line: cmd='$cmd' exit=$ec"
 }
@@ -1370,6 +1381,27 @@ have_cmd() {
 # On mutable systems, updates are applied immediately via dnf.
 # Upgrade failures are treated as warnings, not fatal errors — transient repo
 # conflicts or network issues must not abort the remaining hardening sections.
+# dnf_repos_ready() - Check once that the repositories answer (bounded time). An
+# unreachable repository that drops packets makes every dnf call wait out its
+# timeouts and retries; without this check one such repository stalled a run for
+# well over half an hour. When it fails, package work is skipped with one follow-up.
+_DNF_REPOS_CHECKED=0
+_DNF_REPOS_OK=1
+dnf_repos_ready() {
+	((DRY_RUN)) && return 0
+	if ((!_DNF_REPOS_CHECKED)); then
+		_DNF_REPOS_CHECKED=1
+		info "Checking that the package repositories answer (dnf makecache)..."
+		if ! timeout "${DNF_CHECK_TIMEOUT:-600}" dnf makecache -q >/dev/null 2>"${ERROR_CAPTURE_FILE:-/dev/null}"; then
+			_DNF_REPOS_OK=0
+			warn "The package repositories did not answer — package installs and upgrades are skipped this run."
+			add_action_item 0 HIGH "PKG_REPOS_UNREACHABLE" \
+				"The package repositories could not be reached (network, proxy or a broken .repo file in /etc/yum.repos.d — see 'sudo dnf makecache'). Fix that, then re-run the script; sections that need packages will complete."
+		fi
+	fi
+	((_DNF_REPOS_OK))
+}
+
 pkg_upgrade() {
 	local rc=0
 	if ((IS_OSTREE)); then
@@ -1387,6 +1419,7 @@ pkg_upgrade() {
 			warn "rpm-ostree upgrades are staged and applied on reboot. Reboot when this script completes."
 		fi
 	else
+		dnf_repos_ready || return 0
 		run "dnf upgrade --refresh -y" || rc=$?
 		if ((rc != 0)); then
 			warn "dnf upgrade failed (exit $rc) — check repo availability and re-run manually."
@@ -1475,7 +1508,7 @@ pkg_install() {
 		rc=${rc:-0}
 		# Logging must never abort the run (set -e), even if the log is unwritable.
 		if [[ -n "${out}" ]]; then
-			printf '%s\n' "$out" >>"$LOG_FILE" 2>/dev/null || true
+			printf '%s\n' "$out" 2>/dev/null >>"$LOG_FILE" || true
 		fi
 
 		if ((rc != 0)); then
@@ -1503,6 +1536,14 @@ pkg_install() {
 		record_change PKG_INSTALL "${needed[*]}"
 		warn "Layered packages are applied on reboot. Reboot when this script completes."
 	else
+		if ! dnf_repos_ready; then
+			warn "Skipping install of ${needed[*]} (repositories unreachable)."
+			return 0
+		fi
+		# Record every package the transaction adds (dependencies and weak
+		# dependencies included), so --rollback removes exactly what came in.
+		local pkgs_before=""
+		((DRY_RUN)) || pkgs_before="$(rpm -qa --qf '%{NAME}.%{ARCH}\n' 2>/dev/null | sort -u)"
 		if ! run "dnf install -y ${needed[*]}"; then
 			# A missing/renamed package must not abort every remaining section; the
 			# callers check for the commands they need and skip what is unavailable.
@@ -1515,7 +1556,12 @@ pkg_install() {
 		for pkg in "${needed[@]}"; do
 			_PKG_CACHE[$pkg]=0
 		done
-		record_change PKG_INSTALL "${needed[*]}"
+		local added=""
+		if [[ -n "$pkgs_before" ]]; then
+			added="$(comm -13 <(printf '%s\n' "$pkgs_before") <(rpm -qa --qf '%{NAME}.%{ARCH}\n' 2>/dev/null | sort -u) | tr '\n' ' ')"
+		fi
+		added="${added% }"
+		record_change PKG_INSTALL "${added:-${needed[*]}}"
 		# New binaries may now exist; refresh command cache.
 		unset _CMD_CACHE
 		declare -gA _CMD_CACHE=()
@@ -1580,7 +1626,7 @@ flatpak_install_or_update() {
 	fi
 
 	info "Flatpak ${app_id}: not installed — installing from ${remote}."
-	if ! flatpak install -y "${remote}" "${app_id}" 2>/dev/null; then
+	if ! timeout 1800 flatpak install -y "${remote}" "${app_id}" 2>/dev/null; then
 		warn "Flatpak ${app_id} install failed."
 		add_action_item "13" "MEDIUM" \
 			"FLATPAK_INSTALL_FAILED_${app_id//[^a-zA-Z0-9]/_}" \
@@ -1639,10 +1685,10 @@ download_file() {
 		cmd_exists curl || ensure_command_dep wget "download operations fallback" wget || true
 	fi
 	if cmd_exists curl; then
-		run "curl -fsSL '$url' -o '$dest' 2>/dev/null" && return 0
+		run "curl -fsSL --connect-timeout 20 --max-time 600 '$url' -o '$dest' 2>/dev/null" && return 0
 	fi
 	if cmd_exists wget; then
-		run "wget -qO '$dest' '$url' 2>/dev/null" && return 0
+		run "wget -q --timeout=20 --tries=3 -O '$dest' '$url' 2>/dev/null" && return 0
 	fi
 	err "Neither curl nor wget is available; cannot download $url"
 	return 1
@@ -1686,9 +1732,9 @@ write_new_file() {
 		cat >/dev/null
 		return 0
 	fi
-	backup_file "$f"
+	backup_file "$f" || return 1
 	install -d -m 755 "$(dirname "$f")" 2>/dev/null || true
-	if ! cat >"$f"; then
+	if ! cat 2>/dev/null >"$f"; then
 		warn "Failed to write $f"
 		return 1
 	fi
@@ -1699,7 +1745,7 @@ write_new_file() {
 # so --rollback removes it together with the unit files.
 enable_timer() {
 	local timer="$1"
-	backup_file "/etc/systemd/system/timers.target.wants/$timer"
+	backup_file "/etc/systemd/system/timers.target.wants/$timer" || return 1
 	run "systemctl daemon-reload" || true
 	run "systemctl enable --now $timer"
 }
@@ -1747,27 +1793,63 @@ confirm() {
 # removes the file this run is about to create.
 # Usage: backup_file <file_path>
 backup_file() {
-	local f="$1"
+	local f="$1" dir what
+	# Never change what cannot be written or rolled back. Returning 1 makes the caller
+	# skip the change (sections: `backup_file X || return 0`); the run goes on.
+	if ((!DRY_RUN)); then
+		dir="$(dirname -- "$f")"
+		if [[ -e "$f" && ! -w "$f" ]] || [[ ! -e "$f" && -d "$dir" && ! -w "$dir" ]]; then
+			warn "Leaving $f unchanged: it is not writable (read-only filesystem or immutable file)."
+			add_action_item "${CURRENT_SECTION:-0}" MEDIUM "NOT_WRITABLE_${f//[^a-zA-Z0-9]/_}" \
+				"Section ${CURRENT_SECTION:-?} stopped at $f, which is not writable (read-only filesystem or 'chattr +i'). Make it writable, then re-run: sudo ./fedora-harden.sh --only ${CURRENT_SECTION:-N}"
+			return 1
+		fi
+	fi
 	if [[ ! -e "$f" ]]; then
 		record_change FILE_CREATE "$f"
 		return 0
 	fi
-	if [[ -f "$f" ]]; then
-		if [[ ! -r "$f" ]]; then
-			warn "Cannot read $f for backup (permission denied); backup skipped"
-			return 0
-		fi
-		run "install -d -m 700 '$BACKUP_DIR'" || {
-			warn "Failed to create backup directory"
-			return 1
-		}
-		run "cp -a --parents '$f' '$BACKUP_DIR/'" || {
-			warn "Failed to backup $f"
-			return 1
-		}
-		record_change FILE_BACKUP "$f"
-		info "Backed up $f → $BACKUP_DIR"
+	[[ -f "$f" ]] || return 0
+	what=""
+	if [[ ! -r "$f" ]]; then
+		what="it cannot be read"
+	elif ! run "install -d -m 700 '$BACKUP_DIR'"; then
+		what="the backup folder $BACKUP_DIR cannot be created"
+	elif ! run "cp -a --parents '$f' '$BACKUP_DIR/'"; then
+		what="the copy to $BACKUP_DIR failed (disk full?)"
 	fi
+	if [[ -n "$what" ]]; then
+		warn "Leaving $f unchanged: could not back it up ($what)."
+		add_action_item "${CURRENT_SECTION:-0}" HIGH "BACKUP_FAILED_${f//[^a-zA-Z0-9]/_}" \
+			"Section ${CURRENT_SECTION:-?} stopped because $f could not be backed up ($what). Free space under /root, then re-run: sudo ./fedora-harden.sh --only ${CURRENT_SECTION:-N}"
+		return 1
+	fi
+	record_change FILE_BACKUP "$f"
+	info "Backed up $f → $BACKUP_DIR"
+}
+
+# tool_dir_begin / tool_dir_end <dir> - Tools such as firewall-cmd and augenrules
+# rewrite files themselves. Back up every file under <dir> before they run, and
+# journal the files they create, so --rollback restores the directory exactly.
+declare -gA _TOOL_DIR_BEFORE=()
+tool_dir_begin() {
+	local dir="$1" f
+	((DRY_RUN)) && return 0
+	[[ -d "$dir" ]] || return 0
+	_TOOL_DIR_BEFORE[$dir]="$(find "$dir" -xdev -type f 2>/dev/null | sort)"
+	while IFS= read -r f; do
+		[[ -n "$f" ]] || continue
+		backup_file "$f" || return 1
+	done <<<"${_TOOL_DIR_BEFORE[$dir]}"
+}
+tool_dir_end() {
+	local dir="$1" f
+	((DRY_RUN)) && return 0
+	[[ -d "$dir" ]] || return 0
+	while IFS= read -r f; do
+		[[ -n "$f" ]] || continue
+		grep -qxF -- "$f" <<<"${_TOOL_DIR_BEFORE[$dir]:-}" || record_change FILE_CREATE "$f"
+	done < <(find "$dir" -xdev -type f 2>/dev/null | sort)
 }
 
 # in_list() - Check if needle is present in comma-separated list.
@@ -1818,15 +1900,16 @@ set_conf_key() {
 		warn "$f not found — cannot set $key"
 		return 1
 	}
-	# Replace every active occurrence; otherwise uncomment the first commented default;
-	# otherwise append. awk avoids sed delimiter/quoting pitfalls, and writing back with
-	# printf keeps the file's inode, owner, mode and SELinux label.
+	# Set the first active occurrence and drop later duplicates (one effective value);
+	# otherwise uncomment the first commented default; otherwise append. awk avoids sed
+	# delimiter/quoting pitfalls, and writing back with printf keeps the file's inode,
+	# owner, mode and SELinux label.
 	if ! new="$(awk -v k="$key" -v l="$line" '
 		BEGIN { act = "^[ \t]*" k "([ \t]|=)"; com = "^[ \t]*#[ \t]*" k "([ \t]|=)" }
 		{ lines[NR] = $0; if ($0 ~ act) has_act = 1; else if (!first_com && $0 ~ com) first_com = NR }
 		END {
 			for (i = 1; i <= NR; i++) {
-				if (has_act && lines[i] ~ act) print l
+				if (has_act && lines[i] ~ act) { if (!done) print l; done = 1 }
 				else if (!has_act && i == first_com) print l
 				else print lines[i]
 			}
@@ -1835,7 +1918,7 @@ set_conf_key() {
 		warn "Could not parse $f to set $key"
 		return 1
 	fi
-	if ! printf '%s\n' "$new" >"$f"; then
+	if ! printf '%s\n' "$new" 2>/dev/null >"$f"; then
 		warn "Could not write $key to $f"
 		return 1
 	fi
@@ -2240,7 +2323,9 @@ validate_and_remediate_loop() {
 # Also writes the session report to sessions/ on every exit (normal or abort).
 trap_cleanup() {
 	local rc=$?
+	[[ "$BASHPID" == "$$" ]] || return "$rc" # subshells never clean up for the run
 	gui_progress_close || true
+	release_run_lock
 	# Clean all registered temp files (registered via register_tmp())
 	local _f
 	for _f in "${TEMP_FILES[@]}"; do
@@ -2266,6 +2351,10 @@ trap_cleanup() {
 # Usage: Called automatically on error via trap.
 trap_err() {
 	local rc=$? line=${BASH_LINENO[0]:-?}
+	# With set -E this trap also fires in subshells and command substitutions when a
+	# command fails there. Cleanup belongs to the main script only: a subshell
+	# running it removed the run lock and temp files while the run went on.
+	[[ "$BASHPID" == "$$" ]] || return "$rc"
 	local cmd_ctx="${BASH_COMMAND:-${LAST_RUN_CMD:-script execution}}"
 	if ((EXPECTED_ABORT)); then
 		exit "$rc"
@@ -2306,7 +2395,7 @@ record_change() {
 	((DRY_RUN)) && return 0
 	local ts
 	printf -v ts '%(%F %T)T' -1 2>/dev/null || ts="$(date '+%F %T')"
-	printf '%s|%s|%s\n' "$ts" "$1" "$2" >>"$ROLLBACK_JOURNAL" 2>/dev/null || true
+	printf '%s|%s|%s\n' "$ts" "$1" "$2" 2>/dev/null >>"$ROLLBACK_JOURNAL" || true
 }
 
 # init_rollback_journal() - Create BACKUP_DIR and the per-session change journal.
@@ -2323,8 +2412,11 @@ init_rollback_journal() {
 		printf '# Started:  %s\n' "$RUN_STAMP_ISO"
 		printf '# Format:   TIMESTAMP|CHANGE_TYPE|DETAIL\n'
 		printf '#\n'
-	} >"$ROLLBACK_JOURNAL" 2>/dev/null || ROLLBACK_JOURNAL=""
-	[[ -n "$ROLLBACK_JOURNAL" ]] && chmod 600 "$ROLLBACK_JOURNAL" 2>/dev/null || true
+	} 2>/dev/null >"$ROLLBACK_JOURNAL" || {
+		ROLLBACK_JOURNAL=""
+		return 1
+	}
+	chmod 600 "$ROLLBACK_JOURNAL" 2>/dev/null || true
 }
 
 # init_session_dir() - Create ./sessions/ and write the session header stub.
@@ -2539,6 +2631,7 @@ _apply_rollback_journal() {
 	done <"$journal_file"
 
 	local i n=${#journal_lines[@]}
+	local -a touched=() rb_pkgs=()
 	for ((i = n - 1; i >= 0; i--)); do
 		local ts ctype detail
 		IFS='|' read -r ts ctype detail <<<"${journal_lines[$i]}"
@@ -2547,6 +2640,7 @@ _apply_rollback_journal() {
 		case "$ctype" in
 		FILE_BACKUP)
 			local restored_path="/${detail#/}"
+			touched+=("$restored_path")
 			local backup_copy="${backup_dir}${detail}"
 			if [[ -f "$backup_copy" ]]; then
 				if ((DRY_RUN)); then
@@ -2568,6 +2662,7 @@ _apply_rollback_journal() {
 
 		FILE_CREATE)
 			local created_path="/${detail#/}"
+			touched+=("$created_path")
 			if [[ ! -e "$created_path" ]]; then
 				_rjl "  [SKIP] REMOVE   $created_path (already absent)"
 			elif ((DRY_RUN)); then
@@ -2597,17 +2692,10 @@ _apply_rollback_journal() {
 					((++_RBJ_ERRORS))
 				fi
 			else
-				if ((DRY_RUN)); then
-					info "Would run: dnf remove -y $detail"
-				elif run "dnf remove -y $detail" 2>/dev/null; then
-					ok "Packages removed: $detail"
-					_rjl "  [OK]   PKG_REMOVE  $detail"
-					((++_RBJ_RESTORED))
-				else
-					warn "dnf remove failed for: $detail (may have been pre-existing)"
-					_rjl "  [WARN] PKG_REMOVE  $detail"
-					((++_RBJ_ERRORS))
-				fi
+				# Removed together after the loop: one transaction also removes the
+				# dependencies they pulled in, even ones shared between installs.
+				read -ra _rb_more <<<"$detail"
+				rb_pkgs+=("${_rb_more[@]}")
 			fi
 			;;
 
@@ -2659,6 +2747,78 @@ _apply_rollback_journal() {
 			;;
 		esac
 	done
+
+	if ((${#rb_pkgs[@]})); then
+		# dnf refuses to remove protected packages (systemd, systemd-udev, dnf, ...);
+		# a minimal system can pull them in as dependencies. They stay installed.
+		local -A protected=()
+		local pname pfile kept=()
+		for pfile in /etc/dnf/protected.d/*.conf /usr/share/dnf5/protected.d/*.conf; do
+			[[ -r "$pfile" ]] || continue
+			while read -r pname; do
+				[[ -n "$pname" && "$pname" != \#* ]] && protected[$pname]=1
+			done <"$pfile"
+		done
+		protected[dnf5]=1 protected[dnf]=1
+		for pname in "${rb_pkgs[@]}"; do
+			if [[ -n "${protected[${pname%.*}]:-}" ]]; then
+				info "Keeping protected package $pname (pulled in as a dependency)."
+			else
+				kept+=("$pname")
+			fi
+		done
+		rb_pkgs=("${kept[@]}")
+	fi
+	if ((${#rb_pkgs[@]})); then
+		if ((DRY_RUN)); then
+			info "Would run: dnf remove -y ${rb_pkgs[*]}"
+		elif run "dnf remove -y ${rb_pkgs[*]}" 2>/dev/null; then
+			ok "Packages removed (with the dependencies they pulled in): ${rb_pkgs[*]}"
+			_rjl "  [OK]   PKG_REMOVE  ${rb_pkgs[*]}"
+			((++_RBJ_RESTORED))
+		else
+			# One transaction fails as a whole (a protected or pre-existing package):
+			# fall back to one package at a time.
+			local pkg
+			for pkg in "${rb_pkgs[@]}"; do
+				if run "dnf remove -y $pkg" 2>/dev/null; then
+					ok "Package removed: $pkg"
+					_rjl "  [OK]   PKG_REMOVE  $pkg"
+					((++_RBJ_RESTORED))
+				elif rpm -q "$pkg" >/dev/null 2>&1; then
+					# Still installed: another installed package (often a protected one
+					# such as systemd-udev) needs it. Leaving it is correct.
+					info "Keeping $pkg: an installed package still needs it."
+					_rjl "  [KEEP] PKG_REMOVE  $pkg (still required)"
+				else
+					_rjl "  [SKIP] PKG_REMOVE  $pkg (already absent)"
+				fi
+			done
+		fi
+	fi
+	_rollback_reload "${touched[@]}"
+}
+
+# _rollback_reload() - After restoring files, make the running system use them again.
+# Audit rules are loaded from the restored file (auditctl -R), not regenerated.
+_rollback_reload() {
+	((DRY_RUN)) && return 0
+	local p sysctl=0 audit=0 fw=0 ssh=0 units=0
+	for p in "$@"; do
+		case "$p" in
+		/etc/sysctl.d/* | /etc/sysctl.conf) sysctl=1 ;;
+		/etc/audit/*) audit=1 ;;
+		/etc/firewalld/*) fw=1 ;;
+		/etc/ssh/*) ssh=1 ;;
+		/etc/systemd/* | /etc/containers/systemd/*) units=1 ;;
+		esac
+	done
+	((units)) && { systemctl daemon-reload 2>/dev/null || true; }
+	((sysctl)) && { sysctl --system >/dev/null 2>&1 || true; }
+	((audit)) && have_cmd auditctl && [[ -f /etc/audit/audit.rules ]] && { auditctl -R /etc/audit/audit.rules >/dev/null 2>&1 || true; }
+	((fw)) && systemctl is-active --quiet firewalld 2>/dev/null && { firewall-cmd --reload >/dev/null 2>&1 || true; }
+	((ssh)) && systemctl is-active --quiet sshd 2>/dev/null && { systemctl reload sshd 2>/dev/null || true; }
+	return 0
 }
 
 # _restore_backup_dir_files() - Restore all backed-up files from a directory with no journal.
@@ -2712,6 +2872,7 @@ rollback_session() {
 				local stamp
 				stamp="$(basename "$f" .txt)"
 				stamp="${stamp#session-}"
+				[[ "$stamp" == "$RUN_STAMP" ]] && continue # this rollback run itself
 				[[ -z "$latest" || "$stamp" > "$latest" ]] && latest="$stamp"
 			done
 		fi
@@ -2721,6 +2882,7 @@ rollback_session() {
 				local stamp
 				stamp="${d%/}"
 				stamp="${stamp##*/harden-backups-}"
+				[[ "$stamp" == "$RUN_STAMP" ]] && continue
 				[[ -z "$latest" || "$stamp" > "$latest" ]] && latest="$stamp"
 			done
 		fi
@@ -2839,6 +3001,7 @@ rollback_all_sessions() {
 		[[ -d "$d" ]] || continue
 		local stamp="${d%/}"
 		stamp="${stamp##*/harden-backups-}"
+		[[ "$stamp" == "$RUN_STAMP" ]] && continue # this rollback run itself
 		all_stamps+=("$stamp")
 	done
 
@@ -3067,7 +3230,7 @@ write_user_report() {
 	fi
 	local user="${TARGET_USER:-${SUDO_USER:-}}"
 	local path="${USER_RESULTS_DIR}/${filename}"
-	if ! cat >"$path" 2>/dev/null; then
+	if ! cat 2>/dev/null >"$path"; then
 		err "Failed to write report to $path (filesystem may be read-only or full)"
 		return 1
 	fi
@@ -3505,6 +3668,54 @@ parse_args() {
 			;;
 		esac
 	done
+	[[ -n "$ONLY_LIST" ]] && validate_section_list --only "$ONLY_LIST"
+	[[ -n "$SKIP_LIST" ]] && validate_section_list --skip "$SKIP_LIST"
+	if [[ -n "$TARGET_USER" ]] && ! getent passwd "$TARGET_USER" >/dev/null 2>&1; then
+		err "--user: there is no account named '$TARGET_USER'."
+		exit 2
+	fi
+	return 0
+}
+
+# validate_section_list() - Exit 2 unless <list> is comma-separated section numbers
+# this script runs (a typo would otherwise silently run nothing, or everything).
+# Usage: validate_section_list <option> <list>
+validate_section_list() {
+	local opt="$1" list="$2" item known=" ${SECTIONS[*]} " # joined before IFS changes
+	if [[ ! "$list" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]]; then
+		err "$opt expects section numbers separated by commas (e.g. 5,7,10), not '$list'. See --list."
+		exit 2
+	fi
+	local IFS=','
+	for item in $list; do
+		if [[ "$known" != *" $item "* ]]; then
+			err "$opt: there is no section $item. See --list for the sections."
+			exit 2
+		fi
+	done
+}
+
+# acquire_run_lock() - Refuse to start while another run is changing the system:
+# two runs would interleave edits and journal entries. A PID file (not an inherited
+# flock) so helpers that outlive the run, like the GUI window, cannot hold it; a
+# lock left by a killed run is taken over.
+RUN_LOCK=""
+acquire_run_lock() {
+	local lock=/run/fedora-harden.pid other
+	if ! (set -o noclobber && echo "$$" >"$lock") 2>/dev/null; then
+		other="$(cat "$lock" 2>/dev/null || true)"
+		if [[ "$other" =~ ^[0-9]+$ ]] && ((other != $$)) && kill -0 "$other" 2>/dev/null &&
+			grep -qa fedora-harden "/proc/$other/cmdline" 2>/dev/null; then
+			err "Another fedora-harden run is already in progress (PID $other). Wait for it to finish, then try again."
+			return 1
+		fi
+		echo "$$" 2>/dev/null >"$lock" || true # stale lock from a run that was killed
+	fi
+	RUN_LOCK="$lock"
+}
+release_run_lock() {
+	[[ -n "$RUN_LOCK" && "$(cat "$RUN_LOCK" 2>/dev/null)" == "$$" ]] && rm -f "$RUN_LOCK"
+	RUN_LOCK=""
 }
 
 # preflight() - Initialize script environment, detect system configuration, and validate prerequisites.
@@ -3525,6 +3736,10 @@ preflight() {
 		privilege_source="sudo (invoked by ${SUDO_USER})"
 	fi
 	ok "Privilege check passed: running with administrator/root privileges via ${privilege_source}."
+	if ! acquire_run_lock; then
+		PRECHECK_FAILED=1
+		return 0
+	fi
 
 	mkdir -p "$LOG_DIR"
 	touch "$LOG_FILE"
@@ -3592,8 +3807,13 @@ preflight() {
 		warn "No desktop environment detected; desktop-focused sections may be skipped."
 	fi
 	info "Log file:    $LOG_FILE"
-	info "Backup dir:  $BACKUP_DIR (created on first change)"
-	init_rollback_journal
+	info "Backup dir:  $BACKUP_DIR"
+	# Without a writable journal nothing this run changes could be rolled back.
+	if ! init_rollback_journal; then
+		err "Cannot write the backup folder $BACKUP_DIR (read-only, full, or missing — on image-based systems /root is /var/roothome). Nothing was changed."
+		PRECHECK_FAILED=1
+		return 0
+	fi
 	init_session_dir
 	((DRY_RUN)) && warn "DRY RUN mode — no changes will be applied."
 	((ASSUME_YES)) && warn "Auto-yes mode — no interactive confirmations."
@@ -3640,8 +3860,8 @@ sec_02_updates() {
 	fi
 	if cmd_exists fwupdmgr; then
 		info "Refreshing fwupd metadata and checking for firmware updates..."
-		run "fwupdmgr refresh --force || true"
-		run "fwupdmgr get-updates || true"
+		run "timeout 300 fwupdmgr refresh --force || true"
+		run "timeout 300 fwupdmgr get-updates || true"
 		info "Apply firmware updates with: sudo fwupdmgr update"
 	fi
 
@@ -3675,7 +3895,7 @@ sec_02_updates() {
 			# on its own instead of a layer re-applied to every image.
 			pkg_install pcsc-lite pcsc-lite-libs opensc libfido2
 			if cmd_exists flatpak; then
-				run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" || true
+				run "timeout 120 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" || true
 				flatpak_install_or_update flathub com.yubico.yubioath
 			fi
 		else
@@ -3727,7 +3947,7 @@ _ostree_auto_updates() {
 		return 0
 	}
 
-	backup_file "$ro_conf"
+	backup_file "$ro_conf" || return 0
 	if ((!DRY_RUN)); then
 		# Update existing policy or add new [Daemon] section (batch single sed pass)
 		if grep -qE '^\s*AutomaticUpdatePolicy\s*=' "$ro_conf"; then
@@ -3773,7 +3993,7 @@ _dnf_auto_updates() {
 		[[ -s "$conf" ]] || info "Would seed $conf from ${conf_default:-a minimal [commands] block}"
 		info "Would patch $conf: upgrade_type=security, apply_updates=yes, reboot=when-needed"
 	else
-		backup_file "$conf"
+		backup_file "$conf" || return 0
 		if [[ ! -s "$conf" ]]; then
 			if [[ -n "$conf_default" && -r "$conf_default" ]]; then
 				install -m 0644 "$conf_default" "$conf" ||
@@ -3832,6 +4052,8 @@ sec_03_dnf_automatic() {
 	local dnf_conf="/etc/dnf/dnf.conf"
 	if ((IS_OSTREE)); then
 		if ((!DRY_RUN)); then
+			# The mask is a symlink in /etc; journaled so --rollback unmasks it.
+			backup_file /etc/systemd/system/rpm-ostree-countme.timer || return 0
 			if systemctl mask rpm-ostree-countme.timer 2>/dev/null; then
 				ok "Masked rpm-ostree-countme.timer (privacyguides.org: opt out of system counting)"
 			else
@@ -3842,6 +4064,7 @@ sec_03_dnf_automatic() {
 		fi
 	elif [[ -f "$dnf_conf" ]]; then
 		if ((!DRY_RUN)); then
+			backup_file "$dnf_conf" || return 0
 			if grep -qE '^\s*countme\s*=' "$dnf_conf" 2>/dev/null; then
 				sed -i 's|^\s*countme\s*=.*|countme=false|' "$dnf_conf" 2>/dev/null || true
 			else
@@ -3874,7 +4097,7 @@ sec_04_selinux() {
 	Enforcing)
 		ok "SELinux is enforcing."
 		if [[ -n "$cfg_mode" && "$cfg_mode" != enforcing ]]; then
-			backup_file "$cfg"
+			backup_file "$cfg" || return 0
 			set_conf_key "$cfg" SELINUX enforcing "=" || true
 			((DRY_RUN)) || ok "Set SELINUX=enforcing in $cfg so it persists across reboots."
 		fi
@@ -3884,7 +4107,7 @@ sec_04_selinux() {
 		warn "SELinux is permissive — switching to enforcing now and in $cfg."
 		run "setenforce 1" || warn "setenforce 1 failed"
 		if [[ -f "$cfg" ]]; then
-			backup_file "$cfg"
+			backup_file "$cfg" || return 0
 			set_conf_key "$cfg" SELINUX enforcing "=" || true
 		fi
 		;;
@@ -3900,7 +4123,7 @@ sec_04_selinux() {
 			# files created while SELinux was off carry no labels. Fedora's procedure is
 			# permissive + full relabel on the next boot, then enforcing.
 			warn "SELinux is disabled — enabling it in PERMISSIVE mode with a full relabel on next boot."
-			backup_file "$cfg"
+			backup_file "$cfg" || return 0
 			set_conf_key "$cfg" SELINUX permissive "=" || true
 			if ((DRY_RUN)); then
 				info "Would schedule a relabel: touch /.autorelabel"
@@ -4053,6 +4276,14 @@ sec_05_firewalld() {
 		fi
 	fi
 
+	# firewall-cmd rewrites firewalld.conf and zone files itself (see tool_dir_begin).
+	tool_dir_begin /etc/firewalld || return 0
+	_firewalld_configure
+	tool_dir_end /etc/firewalld
+}
+
+# _firewalld_configure() - Section 5: default zone, allowed services, logging.
+_firewalld_configure() {
 	# Set default zone and configure services (batch permanent operations)
 	info "Setting default zone to 'drop'..."
 	if ! run "$(fw_cmd) --set-default-zone=drop"; then
@@ -4247,7 +4478,7 @@ ${allow_users_line}"
 	local changed=0
 	install -d -m 755 /etc/ssh/sshd_config.d 2>/dev/null || true
 	if [[ -f "$legacy_drop" ]] && grep -q 'fedora-harden' "$legacy_drop" 2>/dev/null; then
-		backup_file "$legacy_drop"
+		backup_file "$legacy_drop" || return 0
 		if rm -f "$legacy_drop"; then
 			changed=1
 			info "Removed legacy drop-in $legacy_drop (its settings were overridden by Fedora defaults)"
@@ -4256,7 +4487,7 @@ ${allow_users_line}"
 	if [[ -f "$drop" ]] && [[ "$(<"$drop")" == "$desired" ]]; then
 		ok "$drop already up to date."
 	else
-		backup_file "$drop"
+		backup_file "$drop" || return 0
 		if ! printf '%s\n' "$desired" >"$drop"; then
 			warn "Failed to write $drop (filesystem may be read-only or full)"
 			add_action_item 7 HIGH "SSHD_DROPIN_WRITE_FAILED" "Could not write $drop — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 7"
@@ -4374,7 +4605,7 @@ sec_09_pam() {
 	local pq="/etc/security/pwquality.conf" kv
 	local -a pq_settings=(minlen=14 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1 minclass=3
 		dictcheck=1 usercheck=1 gecoscheck=1 retry=3 "badwords=admin root password")
-	backup_file "$pq"
+	backup_file "$pq" || return 0
 	for kv in "${pq_settings[@]}"; do
 		set_conf_key "$pq" "${kv%%=*}" "${kv#*=}" || true
 	done
@@ -4390,7 +4621,7 @@ sec_09_pam() {
 	# 9b faillock
 	local fl="/etc/security/faillock.conf"
 	if [[ -f "$fl" ]]; then
-		backup_file "$fl"
+		backup_file "$fl" || return 0
 		set_conf_key "$fl" deny 5 || true
 		set_conf_key "$fl" unlock_time 900 || true
 		if ((!DRY_RUN)); then
@@ -4411,7 +4642,7 @@ sec_09_pam() {
 	# 9c login.defs (whitespace-separated keys)
 	local ld="/etc/login.defs"
 	if [[ -f "$ld" ]]; then
-		backup_file "$ld"
+		backup_file "$ld" || return 0
 		set_conf_key "$ld" PASS_MAX_DAYS 90 "   " || true
 		set_conf_key "$ld" PASS_MIN_DAYS 1 "   " || true
 		set_conf_key "$ld" PASS_WARN_AGE 14 "   " || true
@@ -4442,8 +4673,8 @@ sec_10_sysctl() {
 		info "Would write $f with guide's full sysctl set"
 	else
 		install -d -m 755 /etc/sysctl.d 2>/dev/null || true
-		backup_file "$f"
-		if ! cat >"$f" <<'EOF'; then
+		backup_file "$f" || return 0
+		if ! cat 2>/dev/null >"$f" <<'EOF'; then
 # /etc/sysctl.d/99-hardening.conf
 # Installed by fedora-harden.sh
 
@@ -4564,6 +4795,14 @@ sec_11_auditd() {
 	should_run 11 || return 0
 	section 11 "auditd rules"
 	pkg_install audit audit-libs
+	# Without the audit tools there is nothing to load the rules into; say so plainly
+	# instead of failing later with a misleading "check the rules" message.
+	if ((!DRY_RUN)) && ! cmd_exists augenrules; then
+		warn "The audit package is not installed (and could not be installed) — skipping audit rules."
+		add_action_item 11 HIGH "AUDIT_NOT_INSTALLED" \
+			"Install the audit tools, then re-run section 11: sudo dnf install audit && sudo ./fedora-harden.sh --only 11"
+		return 0
+	fi
 	if ! run "systemctl enable --now auditd"; then
 		warn "auditd could not be started (kernel booted with audit=0, or running in a container?)."
 		add_action_item 11 HIGH "AUDITD_NOT_RUNNING" \
@@ -4574,8 +4813,8 @@ sec_11_auditd() {
 	if ((DRY_RUN)); then
 		info "Would write $rules"
 	else
-		backup_file "$rules"
-		if ! cat >"$rules" <<'EOF'; then
+		backup_file "$rules" || return 0
+		if ! cat 2>/dev/null >"$rules" <<'EOF'; then
 -D
 -b 8192
 -f 1
@@ -4641,7 +4880,10 @@ EOF
 		ok "Wrote $rules"
 	fi
 	local augen_rc=0
+	# augenrules regenerates audit.rules (and audit.rules.prev) itself.
+	tool_dir_begin /etc/audit || return 0
 	run "augenrules --load" || augen_rc=$?
+	tool_dir_end /etc/audit
 	if ((augen_rc != 0)); then
 		warn "augenrules --load failed (exit $augen_rc) — check $rules for syntax errors."
 		warn "Audit rules written but not loaded. Re-run 'sudo augenrules --load' after fixing."
@@ -4743,7 +4985,7 @@ record_etc_baseline() {
 		return 0
 	fi
 	install -d -m 700 /var/lib/fedora-harden 2>/dev/null || true
-	backup_file "$baseline"
+	backup_file "$baseline" || return 0
 	if ostree admin config-diff 2>/dev/null | sort >"$baseline"; then
 		chmod 600 "$baseline" 2>/dev/null || true
 		ok "Recorded the /etc baseline ($(wc -l <"$baseline") changed files relative to the image)."
@@ -4790,8 +5032,8 @@ sec_12_ids() {
 
 		# Daily cron
 		if ((!DRY_RUN)); then
-			backup_file "$cron_rk"
-			if ! cat >"$cron_rk" <<'CRONEOF'; then
+			backup_file "$cron_rk" || return 0
+			if ! cat 2>/dev/null >"$cron_rk" <<'CRONEOF'; then
 #!/bin/bash
 /usr/bin/rkhunter --cronjob --update --quiet
 CRONEOF
@@ -4838,8 +5080,8 @@ CRONEOF
 	fi
 
 	if cmd_exists aide && ((!DRY_RUN)); then
-		backup_file "$cron_aide"
-		if ! cat >"$cron_aide" <<'CRONEOF'; then
+		backup_file "$cron_aide" || return 0
+		if ! cat 2>/dev/null >"$cron_aide" <<'CRONEOF'; then
 #!/bin/bash
 /usr/sbin/aide --check 2>&1 | logger -t aide
 CRONEOF
@@ -4856,7 +5098,7 @@ CRONEOF
 		{
 			printf '=== Section 12: rkhunter + AIDE Report ===\n'
 			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-			printf '--- rkhunter scan output (%d warning(s)) ---\n' "$rk_warn_count"
+			printf -- '--- rkhunter scan output (%d warning(s)) ---\n' "$rk_warn_count"
 			[[ -f "$rk_tmp" ]] && cat "$rk_tmp" || printf '(capture unavailable)\n'
 			printf '\n--- AIDE database status ---\n'
 			if [[ -f /var/lib/aide/aide.db.gz ]]; then
@@ -4901,9 +5143,9 @@ sec_13_flatpak() {
 	else
 		info "Flatpak already present."
 	fi
-	run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" ||
+	run "timeout 120 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" ||
 		warn "Could not add the Flathub remote (network?) — Flatpak installs below may fail."
-	run "flatpak update -y || true"
+	run "timeout 1800 flatpak update -y || true"
 	if confirm "Install Flatseal (graphical Flatpak permission manager)?"; then
 		flatpak_install_or_update flathub com.github.tchx84.Flatseal
 	fi
@@ -4916,7 +5158,7 @@ sec_13_flatpak() {
 	if cmd_exists flatpak; then
 		local fp_global="/var/lib/flatpak/overrides/global"
 		if confirm "Block Flatpak apps from reading the whole system (host, host-os, host-etc)?"; then
-			backup_file "$fp_global"
+			backup_file "$fp_global" || return 0
 			if run "flatpak override --system --nofilesystem=host --nofilesystem=host-os --nofilesystem=host-etc"; then
 				ok "Flatpak apps can no longer read the host filesystem (portals still work)."
 			else
@@ -4925,7 +5167,7 @@ sec_13_flatpak() {
 		fi
 		# Home-directory access is needed by more apps (editors, IDEs), so it is opt-in.
 		if confirm "Also block Flatpak apps from your home directory? (apps then use file portals; some may need a per-app exception)" no; then
-			backup_file "$fp_global"
+			backup_file "$fp_global" || return 0
 			run "flatpak override --system --nofilesystem=home" &&
 				ok "Flatpak apps can no longer read your home directory."
 		fi
@@ -4980,10 +5222,10 @@ sec_14_dot() {
 	local dropin_dir="/etc/systemd/resolved.conf.d"
 	local dropin="${dropin_dir}/99-hardening.conf"
 	# Back up the drop-in if it already exists (not the base file, which we don't touch)
-	backup_file "$dropin"
+	backup_file "$dropin" || return 0
 	if ((!DRY_RUN)); then
 		install -d -m 755 "$dropin_dir" 2>/dev/null || true
-		if ! cat >"$dropin" <<'EOF'; then
+		if ! cat 2>/dev/null >"$dropin" <<'EOF'; then
 [Resolve]
 DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 1.1.1.1#cloudflare-dns.com
 FallbackDNS=149.112.112.112#dns.quad9.net
@@ -5028,8 +5270,8 @@ EOF
 		info "Would write $nm_mac (Wi-Fi and Ethernet MAC randomization)"
 	else
 		install -d -m 755 /etc/NetworkManager/conf.d 2>/dev/null || true
-		backup_file "$nm_mac"
-		if ! cat >"$nm_mac" <<'EOF'; then
+		backup_file "$nm_mac" || return 0
+		if ! cat 2>/dev/null >"$nm_mac" <<'EOF'; then
 [device]
 wifi.scan-rand-mac-address=yes
 
@@ -5315,8 +5557,8 @@ sec_15_desktop() {
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/swaylock' '${user_home}/.config/swayidle'"
 			if [[ ! -f "$swaylock_cfg" ]]; then
-				backup_file "${swaylock_cfg}"
-				cat >"$swaylock_cfg" <<'SWAYEOF'
+				backup_file "${swaylock_cfg}" || return 0
+				cat 2>/dev/null >"$swaylock_cfg" <<'SWAYEOF'
 # swaylock - privacy-hardened config (fedora-harden.sh)
 color=000000
 ignore-empty-password
@@ -5329,8 +5571,8 @@ SWAYEOF
 				info "swaylock config already exists — leaving intact."
 			fi
 			if [[ ! -f "$swayidle_cfg" ]]; then
-				backup_file "${swayidle_cfg}"
-				cat >"$swayidle_cfg" <<'SWAYEOF'
+				backup_file "${swayidle_cfg}" || return 0
+				cat 2>/dev/null >"$swayidle_cfg" <<'SWAYEOF'
 # swayidle - auto-lock/suspend config (fedora-harden.sh)
 timeout 300 'swaylock -f'
 timeout 600 'systemctl suspend'
@@ -5365,8 +5607,8 @@ SWAYEOF
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/hypr'"
 			if [[ ! -f "$hypridle_cfg" ]]; then
-				backup_file "${hypridle_cfg}"
-				cat >"$hypridle_cfg" <<'HYPREOF'
+				backup_file "${hypridle_cfg}" || return 0
+				cat 2>/dev/null >"$hypridle_cfg" <<'HYPREOF'
 # hypridle - auto-lock config (fedora-harden.sh)
 general {
     lock_cmd = pidof hyprlock || hyprlock
@@ -5415,8 +5657,8 @@ HYPREOF
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${i3_cfg_d}'"
 			if [[ ! -f "$i3_lock_frag" ]]; then
-				backup_file "${i3_lock_frag}"
-				cat >"$i3_lock_frag" <<'I3EOF'
+				backup_file "${i3_lock_frag}" || return 0
+				cat 2>/dev/null >"$i3_lock_frag" <<'I3EOF'
 # i3 auto-lock via xss-lock + i3lock (fedora-harden.sh)
 exec --no-startup-id xss-lock --transfer-sleep-lock -- i3lock --nofork --color=000000
 exec --no-startup-id xautolock -time 5 -locker 'i3lock --color=000000'
@@ -5446,12 +5688,12 @@ I3EOF
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/lxqt'"
 			if [[ ! -f "$ss_cfg" ]]; then
-				backup_file "$ss_cfg"
+				backup_file "$ss_cfg" || return 0
 				printf '[General]\nlockAfterEnable=true\nlockAfterTimeout=300\nscreensaverTimeout=300\n' >"$ss_cfg"
 				run "chown '${TARGET_USER}:${TARGET_USER}' '${ss_cfg}'"
 				ok "Wrote LXQt screensaver config"
 			else
-				backup_file "$ss_cfg"
+				backup_file "$ss_cfg" || return 0
 				sed -i \
 					-e 's|^lockAfterEnable=.*|lockAfterEnable=true|' \
 					-e 's|^lockAfterTimeout=.*|lockAfterTimeout=300|' \
@@ -5460,7 +5702,7 @@ I3EOF
 				ok "Patched LXQt screensaver config"
 			fi
 			if [[ ! -f "$pm_cfg" ]]; then
-				backup_file "$pm_cfg"
+				backup_file "$pm_cfg" || return 0
 				printf '[General]\nenableIdleSuspend=true\nidleSuspendTimeout=600\n' >"$pm_cfg"
 				run "chown '${TARGET_USER}:${TARGET_USER}' '${pm_cfg}'"
 				ok "Wrote LXQt power management config"
@@ -5504,7 +5746,7 @@ sec_16_firefox() {
 		info "Detected native RPM Firefox. Keeping it installed, but Flatpak Firefox remains the hardened preferred browser."
 	fi
 
-	run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" ||
+	run "timeout 120 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" ||
 		warn "Could not add the Flathub remote (network?) — Flatpak installs below may fail."
 	flatpak_install_or_update flathub org.mozilla.firefox
 
@@ -5568,7 +5810,7 @@ sec_16_firefox() {
 				if download_file "https://raw.githubusercontent.com/arkenfox/user.js/${ARKENFOX_VERSION}/user.js" "$tmp_arken" &&
 					printf '%s  %s\n' "$ARKENFOX_SHA256" "$tmp_arken" | sha256sum -c --quiet - 2>/dev/null; then
 					# Overrides appended after arkenfox (the user-overrides.js convention).
-					cat >>"$tmp_arken" <<'ARKOVERRIDES'
+					cat 2>/dev/null >>"$tmp_arken" <<'ARKOVERRIDES'
 
 /*** fedora-harden.sh overrides ***/
 // Global Privacy Control + Do Not Track (inteltechniques.com, Extreme Privacy 5th ed.)
@@ -5582,7 +5824,7 @@ user_pref("network.trr.custom_uri", "https://dns.quad9.net/dns-query");
 user_pref("network.dns.echconfig.enabled", true);
 user_pref("network.dns.http3_echconfig.enabled", true);
 ARKOVERRIDES
-					backup_file "$profile_dir/user.js"
+					backup_file "$profile_dir/user.js" || return 0
 					if ! install -m 0600 -o "$ff_user" -g "$ff_user" "$tmp_arken" "$profile_dir/user.js" 2>/dev/null; then
 						warn "Failed to install arkenfox user.js (filesystem may be read-only)"
 					else
@@ -5611,7 +5853,7 @@ ARKOVERRIDES
 		install -d -m 0700 -o "$ff_user" -g "$ff_user" "$policy_dir" 2>/dev/null || true
 		local tmp_policy="/tmp/firefox-policies-$$-$RANDOM-$SECONDS.json"
 		register_tmp "$tmp_policy"
-		if ! cat >"$tmp_policy" <<'EOF'; then
+		if ! cat 2>/dev/null >"$tmp_policy" <<'EOF'; then
 {
   "policies": {
     "DisableTelemetry": true,
@@ -5797,8 +6039,8 @@ sec_18_fail2ban() {
 		fi
 
 		if [[ ! -f "$jl" ]]; then
-			backup_file "$jl"
-			if ! cat >"$jl" <<'EOF'; then
+			backup_file "$jl" || return 0
+			if ! cat 2>/dev/null >"$jl" <<'EOF'; then
 [DEFAULT]
 bantime  = 3600
 findtime = 600
@@ -5852,7 +6094,7 @@ EOF
 		{
 			printf '=== Section 18: Fail2Ban Report ===\n'
 			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-			printf '--- Service status ---\n'
+			printf -- '--- Service status ---\n'
 			systemctl status fail2ban --no-pager 2>&1 || true
 			printf '\n--- Jail summary ---\n%s\n' "$f2b_status"
 			printf '\n--- jail.local contents ---\n'
@@ -5976,8 +6218,8 @@ sec_20_perms() {
 	if ((DRY_RUN)); then
 		info "Would write $umask_f (umask 077)"
 	elif [[ ! -f "$umask_f" ]]; then
-		backup_file "$umask_f"
-		if ! cat >"$umask_f" <<'EOF'; then
+		backup_file "$umask_f" || return 0
+		if ! cat 2>/dev/null >"$umask_f" <<'EOF'; then
 # Set restrictive default umask so new files are not world/group readable
 umask 077
 EOF
@@ -5995,8 +6237,8 @@ EOF
 	if ((DRY_RUN)); then
 		info "Would write $coredump_f (disable core dumps)"
 	elif [[ ! -f "$coredump_f" ]]; then
-		backup_file "$coredump_f"
-		if ! cat >"$coredump_f" <<'EOF'; then
+		backup_file "$coredump_f" || return 0
+		if ! cat 2>/dev/null >"$coredump_f" <<'EOF'; then
 * soft core 0
 * hard core 0
 EOF
@@ -6057,14 +6299,14 @@ sec_21_clamav() {
 	pkg_install clamav clamd clamav-update clamav-scanner-systemd
 	info "Updating ClamAV signatures (freshclam)..."
 	# freshclam can fail if the daemon already holds the lock; suppress for idempotency
-	run "freshclam || true"
+	run "timeout 900 freshclam || true"
 	run "systemctl enable --now clamav-freshclam || true"
 	# Configure clamd BEFORE starting it: Fedora ships /etc/clamd.d/scan.conf with
 	# LocalSocket commented out, and clamd refuses to start without a socket
 	# ("Please define server type").
 	local clamd_conf="/etc/clamd.d/scan.conf"
 	if [[ -f "$clamd_conf" ]]; then
-		backup_file "$clamd_conf"
+		backup_file "$clamd_conf" || return 0
 		local kv
 		local -a clamd_settings=(
 			"LocalSocket /run/clamd.scan/clamd.sock"
@@ -6116,7 +6358,7 @@ sec_21_clamav() {
 		{
 			printf '=== Section 21: ClamAV Report ===\n'
 			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-			printf '--- clamav-freshclam status ---\n'
+			printf -- '--- clamav-freshclam status ---\n'
 			systemctl status clamav-freshclam --no-pager 2>&1 || true
 			printf '\n--- clamd@scan status ---\n'
 			systemctl status clamd@scan --no-pager 2>&1 || systemctl status clamd@scan.service --no-pager 2>&1 || true
@@ -6128,8 +6370,13 @@ sec_21_clamav() {
 			"clamav-freshclam is not running — run: sudo systemctl start clamav-freshclam"
 		((clamd_active)) || add_action_item 21 MEDIUM "CLAMAV_CLAMD_NOT_RUNNING" \
 			"clamd@scan is not running — run: sudo systemctl start clamd@scan"
-		add_action_item 21 MEDIUM "CLAMAV_INITIAL_SCAN" \
-			"Run initial ClamAV home-directory scan (handled automatically in remediation step)."
+		if cmd_exists clamscan; then
+			add_action_item 21 MEDIUM "CLAMAV_INITIAL_SCAN" \
+				"Run initial ClamAV home-directory scan (handled automatically in remediation step)."
+		else
+			add_action_item 21 HIGH "CLAMAV_NOT_INSTALLED" \
+				"ClamAV could not be installed — install it, then re-run section 21: sudo dnf install clamav clamd clamav-update && sudo ./fedora-harden.sh --only 21"
+		fi
 		add_action_item 21 LOW "CLAMAV_REVIEW" \
 			"Review ClamAV status: $USER_RESULTS_DIR/section-21-clamav-${REPORT_DATE}.txt"
 	fi
@@ -6321,7 +6568,7 @@ _oscap_report() {
 				printf 'Pass:         %s\n' "$pass_count"
 				printf 'Fail:         %s\n' "$fail_count"
 				printf 'Not checked:  %s\n\n' "$notchecked_count"
-				printf '--- Top 25 failing rules ---\n'
+				printf -- '--- Top 25 failing rules ---\n'
 				scap_results /root/scap-results.xml failing 2>/dev/null |
 					head -25 ||
 					printf '(no failures found or XML parse error)\n'
@@ -6416,8 +6663,8 @@ sec_23_containers() {
 			if ((!DRY_RUN)); then
 				install -d -m 700 "$cont_conf_dir" 2>/dev/null || true
 				if [[ ! -f "$cont_conf" ]]; then
-					backup_file "$cont_conf"
-					cat >"$cont_conf" <<'EOF'
+					backup_file "$cont_conf" || return 0
+					cat 2>/dev/null >"$cont_conf" <<'EOF'
 # Rootless Podman hardening defaults — written by fedora-harden.sh
 [containers]
 # Block privilege escalation inside containers
@@ -6460,47 +6707,62 @@ EOF
 	# Default Fedora policy is 'insecureAcceptAnything' for all registries.
 	# Hardened policy sets default to 'reject' and explicitly allows trusted sources.
 	local policy_file="/etc/containers/policy.json"
-	if [[ -f "$policy_file" ]]; then
-		local current_policy
-		current_policy="$(cat "$policy_file" 2>/dev/null || true)"
-		if [[ "$current_policy" == *'"insecureAcceptAnything"'* &&
-			"$current_policy" != *'"type": "reject"'* ]]; then
-			if confirm "Harden container image policy to reject unknown registries? (Permits fedora, quay.io, docker.io; blocks all others)"; then
-				backup_file "$policy_file"
-				if ((!DRY_RUN)); then
-					cat >"$policy_file" <<'EOF'
-{
-    "default": [{"type": "reject"}],
-    "transports": {
-        "containers-storage": {
-            "": [{"type": "insecureAcceptAnything"}]
-        },
-        "docker": {
-            "registry.fedoraproject.org": [{"type": "insecureAcceptAnything"}],
-            "registry.centos.org":        [{"type": "insecureAcceptAnything"}],
-            "registry.access.redhat.com": [{"type": "insecureAcceptAnything"}],
-            "quay.io":                    [{"type": "insecureAcceptAnything"}],
-            "docker.io":                  [{"type": "insecureAcceptAnything"}]
-        },
-        "docker-daemon": {
-            "": [{"type": "insecureAcceptAnything"}]
-        }
-    }
-}
-EOF
-					ok "Image policy hardened — pulls from unlisted registries will be rejected."
+	# Merge, never replace: image-based systems sign their own updates in this file
+	# (e.g. Universal Blue: sigstoreSigned for ghcr.io/ublue-os); replacing it would
+	# drop that check. Only the catch-all for unknown registries becomes "reject",
+	# and the trusted registries are added if they are missing.
+	if [[ ! -f "$policy_file" ]]; then
+		warn "Container image policy file not found at $policy_file — skipping policy hardening."
+	elif ! have_cmd python3; then
+		add_action_item 23 LOW "CONTAINER_POLICY_REVIEW" \
+			"Review /etc/containers/policy.json: unknown registries should be rejected (python3 is needed to edit it safely)."
+	else
+		local policy_state
+		policy_state="$(
+			python3 - "$policy_file" <<'PY' 2>/dev/null || echo error
+import json, sys
+p = json.load(open(sys.argv[1]))
+docker = p.get("transports", {}).get("docker", {})
+catch = docker.get("", p.get("default", []))
+print("open" if any(r.get("type") == "insecureAcceptAnything" for r in catch) else "restricted")
+PY
+		)"
+		case "$policy_state" in
+		restricted)
+			ok "Container image policy already rejects unknown registries."
+			;;
+		open)
+			if confirm "Harden the container image policy to reject unknown registries? (keeps existing signature rules; allows Fedora, CentOS, Red Hat, quay.io, docker.io)"; then
+				backup_file "$policy_file" || return 0
+				if ((DRY_RUN)); then
+					info "Would merge a reject-by-default rule into $policy_file"
+				elif python3 - "$policy_file" <<'PY'; then
+import json, os, sys
+path = sys.argv[1]
+p = json.load(open(path))
+docker = p.setdefault("transports", {}).setdefault("docker", {})
+for registry in ("registry.fedoraproject.org", "registry.centos.org",
+                 "registry.access.redhat.com", "quay.io", "docker.io"):
+    docker.setdefault(registry, [{"type": "insecureAcceptAnything"}])
+docker[""] = [{"type": "reject"}]
+p["default"] = [{"type": "reject"}]
+with open(path, "w") as f:
+    json.dump(p, f, indent=4)
+    f.write("\n")
+PY
+					ok "Image policy hardened — pulls from unlisted registries are rejected; existing signature rules kept."
 				else
-					info "[DRY] Would write restricted image policy to $policy_file"
+					warn "Could not update $policy_file."
 				fi
 			else
 				add_action_item 23 LOW "CONTAINER_POLICY_PERMISSIVE" \
-					"Container image policy allows pulls from any registry (insecureAcceptAnything). Consider restricting to trusted sources in /etc/containers/policy.json."
+					"Container image policy accepts images from any registry. Consider rejecting unknown registries in /etc/containers/policy.json."
 			fi
-		else
-			ok "Container image policy already restricts unknown registries."
-		fi
-	else
-		warn "Container image policy file not found at $policy_file — skipping policy hardening."
+			;;
+		*)
+			warn "Could not read $policy_file as JSON — leaving it unchanged."
+			;;
+		esac
 	fi
 
 	# ── Block unqualified image names resolving silently to docker.io ─────────
@@ -6512,8 +6774,8 @@ EOF
 	if [[ ! -f "$reg_conf" ]]; then
 		if ((!DRY_RUN)); then
 			install -d -m 755 "$reg_conf_d" 2>/dev/null || true
-			backup_file "$reg_conf"
-			cat >"$reg_conf" <<'EOF'
+			backup_file "$reg_conf" || return 0
+			cat 2>/dev/null >"$reg_conf" <<'EOF'
 # Require fully-qualified image names — written by fedora-harden.sh
 # An empty list prevents silent docker.io resolution for unqualified names.
 # Always use full names: docker.io/library/nginx, quay.io/fedora/fedora, etc.
@@ -6672,6 +6934,10 @@ remediate_item() {
 		return 1
 		;;
 	CLAMAV_INITIAL_SCAN)
+		cmd_exists clamscan || {
+			warn "clamscan is not installed — skipping the initial scan."
+			return 1
+		}
 		info "Running initial ClamAV scan of home directory (this may take several minutes)..."
 		local scan_user="${TARGET_USER:-${SUDO_USER:-}}"
 		local scan_home
@@ -6944,13 +7210,14 @@ main() {
 	# --rollback: undo a previous session (requires root + IS_OSTREE detection from preflight)
 	if [[ -n "$ROLLBACK_SESSION_ID" ]]; then
 		SESSION_REPORT_FILE="" # Rollback produces its own report; skip session stub
+		local rb_rc=0
 		if [[ "$ROLLBACK_SESSION_ID" == "all" ]]; then
-			rollback_all_sessions
+			rollback_all_sessions || rb_rc=$?
 		else
-			rollback_session "$ROLLBACK_SESSION_ID"
+			rollback_session "$ROLLBACK_SESSION_ID" || rb_rc=$?
 		fi
 		EXPECTED_ABORT=1
-		exit 0
+		exit "$rb_rc"
 	fi
 
 	init_user_report_dirs
