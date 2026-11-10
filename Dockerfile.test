@@ -138,3 +138,40 @@ RUN set -e && \
 
 WORKDIR /src
 ENTRYPOINT ["/bin/bash"]
+
+# ============================================================================
+# GUI variant: virtual X display + both dialog toolkits the script supports
+# (zenity for GTK, kdialog + qdbus for KDE) and tools to inspect/drive windows.
+# Build: podman build --target gui -f Dockerfile.test -t fedora-harden:gui .
+# ============================================================================
+FROM registry.fedoraproject.org/fedora:44 AS gui
+LABEL description="Fedora 44 GUI test bed for fedora-harden.sh --gui/--gui-full"
+
+RUN set -e && \
+    dnf install -y --setopt=install_weak_deps=False \
+        bash \
+        sudo \
+        procps-ng \
+        findutils \
+        xorg-x11-server-Xvfb \
+        xdotool \
+        ImageMagick \
+        dbus-daemon \
+        dbus-tools \
+        zenity \
+        kdialog \
+        qt6-qttools \
+        plasma-integration \
+        adwaita-icon-theme \
+        dejavu-sans-fonts \
+        mesa-libGLES \
+        mesa-libEGL \
+        mesa-dri-drivers \
+        && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf/* /var/cache/libdnf5/* && \
+    useradd -m testuser && \
+    systemd-machine-id-setup
+
+WORKDIR /root
+ENTRYPOINT ["/bin/bash"]

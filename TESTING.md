@@ -9,6 +9,7 @@
 | Static tier (lint, formatting, MCP smoke test) | `registry.fedoraproject.org/fedora:44` — the `lint` image from `Dockerfile.test`, or natively when the host is Fedora 44 |
 | Quick tier | `registry.fedoraproject.org/fedora-minimal:44` (`test-only` image, no systemd) |
 | Full tier | `registry.fedoraproject.org/fedora-minimal:44` with systemd as PID 1 (`base` image) |
+| GUI tier | `registry.fedoraproject.org/fedora:44` + Xvfb, zenity, kdialog (`gui` image) |
 | CI (`.github/workflows/ci.yml`) | every job runs in a `fedora:44` job container; tools are Fedora 44 RPMs |
 | Developer tooling (`setup-dev.sh`, pre-commit) | Fedora 44 RPMs (`ShellCheck shfmt yamllint ruff hadolint gitleaks pre-commit python3-mcp`) |
 
@@ -72,6 +73,20 @@ The systemd container gets `--cap-add NET_ADMIN,NET_RAW` so firewalld can manage
 nftables. Under rootless podman this applies only to the container's own network
 namespace.
 
+### gui
+
+Runs `tests/gui-test.sh` on a virtual X display, as root with no UTF-8 locale (as
+under `sudo -i`/`pkexec`):
+
+- `--gui-full --dry-run --yes` exits 0 and never waits on a dialog
+- the progress window is closed, not orphaned, when the script exits
+- exactly one end-of-run window remains, and a sampled pixel proves the
+  Material-dark theme was applied (`#2B2930` surface)
+- killing the progress window (= the user pressing Cancel) stops a real run with
+  exit 130, and the cancellation is logged
+
+Screenshots (`gui-summary.png`, `gui-progress.png`) are saved in `<artifacts>/gui/`.
+
 ## Ad-hoc runs with test-in-podman.sh
 
 ```bash
@@ -102,6 +117,7 @@ systemd variant, `journal.log` and `failed-units.txt`.
 | `base` | `fedora-minimal:44` + systemd and the services the script manages | full tier |
 | `test-only` | `fedora-minimal:44`, no systemd | quick tier |
 | `lint` | `fedora:44` + the lint toolchain RPMs | static tier |
+| `gui` | `fedora:44` + Xvfb, zenity, kdialog, qdbus, xdotool, ImageMagick | gui tier |
 
 ```bash
 podman build -f Dockerfile.test --target base      -t localhost/fedora-harden:test .
@@ -119,7 +135,7 @@ job runs inside a `registry.fedoraproject.org/fedora:44` container:
 | static | static tier with Fedora 44 RPM tools |
 | secrets | `gitleaks git` over the full history (Fedora `gitleaks` RPM) |
 | vulnerabilities | `trivy fs` (Fedora `trivy` RPM), SARIF uploaded to code scanning |
-| container-tests | quick and full tiers; podman runs nested in a privileged Fedora 44 job container |
+| container-tests | quick, full and gui tiers; podman runs nested in a privileged Fedora 44 job container |
 
 ## Troubleshooting
 
