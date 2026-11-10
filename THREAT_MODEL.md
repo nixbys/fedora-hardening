@@ -126,12 +126,14 @@ These are open and acknowledged:
    stops a tampered copy from running with a valid-looking `--dry-run` output;
    the only defense is verifying the source before running it (SECURITY.md).
    Signed releases/tags are a reasonable future improvement.
-2. **No automated test asserts a hardening section's *effect*, only that the
-   script parses and runs without error.** CI (`ci.yml`) validates syntax and
-   builds a Fedora container image; it does not currently assert "after
-   Section 7 runs, `sshd -T` reports `passwordauthentication no`" for every
-   section. Contributions adding effect-level assertions inside the podman
-   test harness (`test-in-podman.sh`, `TESTING.md`) are welcome.
+2. **Effect-level assertions cover the main sections, not all of them.** The
+   Fedora 44 test suite (`tests/run-suite.sh`, `TESTING.md`) runs the script for
+   real in a systemd container and asserts effects — the effective sshd
+   configuration via `sshd -T`, pwquality/faillock/`login.defs` values, firewalld
+   default zone, sysctl/audit/umask/core-dump drop-ins, ClamAV running,
+   idempotency, and `--rollback all`. Sections that need real hardware or a
+   desktop session (Secure Boot, USBGuard, firmware, most desktop settings) are
+   only dry-run checked; contributions adding assertions are welcome.
 3. **`mcp_server_fedora_harden.py` shells out to run lint/test/security
    commands** as a local development convenience. It is not part of the
    hardening script's runtime path and is not invoked by `fedora-harden.sh`,
