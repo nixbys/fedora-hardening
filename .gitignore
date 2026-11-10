@@ -1,0 +1,9 @@
+# Python bytecode
+__pycache__/
+*.py[co]
+
+# Runtime output of fedora-harden.sh
+sessions/
+
+# Test artifacts
+.test-artifacts/

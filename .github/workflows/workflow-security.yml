@@ -1,0 +1,89 @@
+# Workflow security (CI that audits the CI)
+#
+# The GitHub Actions workflows in this repo decide whether a malicious pull
+# request can do anything more than sit unreviewed. This repo's README tells
+# users to clone it and run fedora-harden.sh with sudo, so a compromised
+# workflow that quietly rewrote the script would end up running as root on
+# every user who pulls it. These tools check every workflow file for the
+# mistakes that would enable that:
+#
+#   - actionlint: workflow syntax errors and shell bugs inside `run:` steps.
+#   - zizmor: Actions security linter — template injection, unpinned action
+#     references, credential persistence, over-broad token permissions.
+#
+# Platform: runs in a Fedora 44 container like every other job. Neither tool
+# is packaged for Fedora 44, so actionlint is a pinned, checksum-verified
+# release binary and zizmor a pinned PyPI release.
+#
+# Adapted from PR #12.
+
+name: Workflow security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Default-deny token; each job grants only read access to the code.
+permissions: {}
+
+concurrency:
+  group: workflow-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint (Fedora 44)
+    runs-on: ubuntu-latest
+    container:
+      image: registry.fedoraproject.org/fedora:44
+    permissions:
+      contents: read
+    steps:
+      - name: Install base tools
+        run: dnf install -y --setopt=install_weak_deps=False git tar gzip ShellCheck
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned version + checksum so a tampered binary cannot run here.
+      # Bump VERSION and SHA256 together (from actionlint_<v>_checksums.txt).
+      - name: Run actionlint (pinned, checksum-verified)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          TARBALL="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "${TARBALL}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${TARBALL}"
+          echo "${ACTIONLINT_SHA256}  ${TARBALL}" | sha256sum -c -
+          tar -xzf "${TARBALL}" actionlint
+          ./actionlint -color
+
+  zizmor:
+    name: zizmor (Fedora 44)
+    runs-on: ubuntu-latest
+    container:
+      image: registry.fedoraproject.org/fedora:44
+    permissions:
+      contents: read
+    steps:
+      - name: Install base tools
+        run: dnf install -y --setopt=install_weak_deps=False git python3 python3-pip
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # --offline keeps the audit hermetic; --min-severity=low surfaces everything.
+      - name: Run zizmor (pinned)
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/zizmor
+          /tmp/zizmor/bin/pip install --quiet zizmor==1.30.0
+          /tmp/zizmor/bin/zizmor --offline --min-severity=low .github/workflows/

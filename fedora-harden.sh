@@ -67,7 +67,7 @@
 #  SECTIONS (execution order optimized for dependency flow):
 #     2  System updates (dnf upgrade + fwupd firmware/microcode install
 #        + optional hardware security key support: YubiKey/FIDO2/PIV/pam-u2f)
-#     3  Automatic updates (dnf5-automatic or rpm-ostreed)
+#     3  Automatic security updates (dnf5-plugin-automatic or rpm-ostreed)
 #     4  SELinux verification + tools
 #     5  firewalld hardening (drop-default policy)
 #     6  Secure Boot verification (GRUB password is manual — printed as a note)
@@ -198,15 +198,15 @@ FORCE_GUI=0          # Request graphical prompts (--gui)
 FORCE_GUI_FULL=0     # Full GUI frontend with progress (--gui-full)
 
 # ---------- GUI mode state ------------------------------------------------
-GUI_MODE=0              # Set to 1 if kdialog/zenity available and enabled
-GUI_FULL_MODE=0         # Set to 1 if --gui-full requested and display available
-GUI_TOOL=""             # Selected dialog tool: "kdialog" or "zenity"
-GUI_PROGRESS_REF=""     # D-Bus reference for kdialog progress tracking
-QDBUS_CMD=""            # qdbus binary name (qdbus-qt6 / qdbus-qt5 / qdbus)
-GUI_PROGRESS_PIPE_FD="" # File descriptor for GUI progress updates
-GUI_PROGRESS_PID=""     # PID of running GUI progress process
-GUI_LAST_STATUS=""      # Last status message sent to GUI
-GUI_CANCEL_REQUESTED=0  # Set to 1 if user cancels via GUI
+GUI_MODE=0               # Set to 1 if kdialog/zenity available and enabled
+GUI_FULL_MODE=0          # Set to 1 if --gui-full requested and display available
+GUI_TOOL=""              # Selected dialog tool: "kdialog" or "zenity"
+GUI_PROGRESS_REF=""      # D-Bus reference for kdialog progress tracking
+QDBUS_CMD=""             # qdbus binary name (qdbus-qt6 / qdbus-qt5 / qdbus)
+GUI_PROGRESS_PIPE_FD=""  # File descriptor for GUI progress updates
+GUI_PROGRESS_PID=""      # PID of running GUI progress process
+GUI_LAST_STATUS=""       # Last status message sent to GUI
+GUI_CANCEL_REQUESTED=0   # Set to 1 if user cancels via GUI
 GUI_SINGLE_WINDOW_MODE=0 # Set to 1 to keep GUI-full updates in one window
 
 # ---------- Execution state flags -------------------------------------------
@@ -247,6 +247,7 @@ DESKTOP_ENVS=""          # Comma-separated list of detected desktop environments
 FEDORA_VARIANT="unknown" # Human-readable Fedora variant name
 FEDORA_MAJOR=0           # Fedora major version number
 UI_SECTION_DONE=0        # Count of completed sections for progress tracking
+CURRENT_SECTION=0        # Section number currently executing (for action items)
 UI_SECTION_TOTAL=23      # Total hardening sections to execute
 
 # Error tracking & remediation infrastructure
@@ -326,6 +327,382 @@ progress_bar() {
 	printf ']'
 }
 
+# ---------- GUI theme (Material Design 3, dark) -----------------------------
+# The script's dialogs use a private Material-dark theme without touching user or
+# system configuration: GTK4/libadwaita (zenity) loads $XDG_CONFIG_HOME/gtk-4.0/gtk.css
+# and KDE/Qt (kdialog) reads its palette from $XDG_CONFIG_HOME/kdeglobals.
+# zenity draws its own titlebar (client-side decorations), so the theme covers the
+# whole window. kdialog titlebars belong to the window manager (KWin) and follow
+# the desktop's decoration settings.
+GUI_THEME_DIR=""
+declare -ga GUI_ZENITY_ENV=()
+declare -ga GUI_KDIALOG_ENV=()
+
+# gui_theme_init() - Write the theme files and build the dialog environments.
+# Location: /run/fedora-harden/gui-theme (root-only tmpfs, kept for detached
+# end-of-run dialogs, cleared at reboot), falling back to a private /tmp dir.
+gui_theme_init() {
+	local dir="/run/fedora-harden/gui-theme"
+	if ! install -d -m 700 "$dir/gtk-4.0" "$dir/gtk-3.0" 2>/dev/null; then
+		dir="$(mktemp -d "/tmp/fedora-harden-gui.XXXXXX" 2>/dev/null)" || dir=""
+		[[ -n "$dir" ]] && install -d -m 700 "$dir/gtk-4.0" "$dir/gtk-3.0" 2>/dev/null
+	fi
+	if [[ -n "$dir" ]]; then
+		cat >"$dir/gtk-4.0/gtk.css" <<'GTKCSS'
+/* fedora-harden.sh — Material Design 3 dark theme for zenity (GTK4 / libadwaita).
+   Loaded via XDG_CONFIG_HOME for the script's own dialogs only. */
+
+/* M3 dark baseline tokens mapped onto libadwaita's palette (variables + legacy names) */
+:root {
+  --window-bg-color: #141218;
+  --window-fg-color: #E6E0E9;
+  --view-bg-color: #211F26;
+  --view-fg-color: #E6E0E9;
+  --headerbar-bg-color: #141218;
+  --headerbar-fg-color: #E6E0E9;
+  --headerbar-backdrop-color: #141218;
+  --headerbar-shade-color: transparent;
+  --dialog-bg-color: #2B2930;
+  --dialog-fg-color: #E6E0E9;
+  --card-bg-color: #211F26;
+  --popover-bg-color: #2B2930;
+  --accent-bg-color: #D0BCFF;
+  --accent-fg-color: #381E72;
+  --accent-color: #D0BCFF;
+  --destructive-bg-color: #F2B8B5;
+  --destructive-fg-color: #601410;
+  --destructive-color: #F2B8B5;
+  --warning-color: #FFB95C;
+  --error-color: #F2B8B5;
+}
+@define-color window_bg_color #141218;
+@define-color window_fg_color #E6E0E9;
+@define-color view_bg_color #211F26;
+@define-color view_fg_color #E6E0E9;
+@define-color headerbar_bg_color #141218;
+@define-color headerbar_fg_color #E6E0E9;
+@define-color dialog_bg_color #2B2930;
+@define-color dialog_fg_color #E6E0E9;
+@define-color accent_bg_color #D0BCFF;
+@define-color accent_fg_color #381E72;
+@define-color accent_color #D0BCFF;
+
+* {
+  font-family: "Roboto", "Noto Sans", "Cantarell", sans-serif;
+}
+
+/* Surfaces: dialogs sit on surface-container-high with a 28px M3 corner radius */
+window, window.background, window.dialog, .message-dialog, dialog-host > dialog {
+  background-color: #2B2930;
+  color: #E6E0E9;
+}
+window.csd, window.dialog.csd, window.message.csd {
+  border-radius: 28px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(147, 143, 153, 0.22);
+}
+
+/* Titlebar (client-side decoration drawn by the dialog itself) */
+headerbar, .titlebar, windowhandle {
+  background: #2B2930;
+  color: #E6E0E9;
+  box-shadow: none;
+  border: none;
+  min-height: 48px;
+}
+.title, headerbar .title, .message-dialog .heading, .title-2, .heading {
+  color: #E6E0E9;
+  font-weight: 500;
+  font-size: 1.35em;
+  letter-spacing: 0.01em;
+}
+windowcontrols button {
+  background: transparent;
+  color: #CAC4D0;
+  border-radius: 9999px;
+  min-width: 32px;
+  min-height: 32px;
+}
+windowcontrols button:hover {
+  background: rgba(230, 224, 233, 0.08);
+}
+
+/* Body text (buttons set their own on-colour; their labels inherit it) */
+label {
+  color: #E6E0E9;
+}
+button label, button image {
+  color: inherit;
+}
+.body, .message-dialog .body, label.dim-label {
+  color: #CAC4D0;
+  font-size: 1.0em;
+}
+
+/* Buttons: M3 pill shapes. Default = tonal; suggested/primary = filled. */
+button {
+  border-radius: 9999px;
+  min-height: 40px;
+  padding: 0 24px;
+  background: #4A4458;
+  color: #E8DEF8;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  box-shadow: none;
+  border: none;
+}
+button:hover {
+  background: #554F64;
+}
+button:active {
+  background: #605A70;
+}
+button:focus-visible {
+  outline: 2px solid #D0BCFF;
+  outline-offset: 2px;
+}
+button.suggested-action, button.suggested, .response-area button.suggested,
+.response-area button:last-child, button.default {
+  background: #D0BCFF;
+  color: #381E72;
+}
+button.suggested-action:hover, button.suggested:hover, .response-area button:last-child:hover {
+  background: #DCCBFF;
+}
+button.destructive-action, button.destructive {
+  background: #8C1D18;
+  color: #F9DEDC;
+}
+button:disabled {
+  background: rgba(230, 224, 233, 0.12);
+  color: rgba(230, 224, 233, 0.38);
+}
+button:disabled label {
+  background: none;
+  color: rgba(230, 224, 233, 0.38);
+}
+.response-area {
+  border-top: none;
+  padding: 8px 16px 16px 16px;
+}
+.response-area button {
+  margin: 0 4px;
+}
+
+/* Text entry: M3 filled text field */
+entry, text, textview {
+  background: #36343B;
+  color: #E6E0E9;
+  border-radius: 4px 4px 0 0;
+  border: none;
+  box-shadow: inset 0 -1px #CAC4D0;
+  min-height: 48px;
+  padding: 0 16px;
+  caret-color: #D0BCFF;
+}
+entry:focus-within {
+  box-shadow: inset 0 -2px #D0BCFF;
+  outline: none;
+}
+entry selection, text selection {
+  background: rgba(208, 188, 255, 0.35);
+  color: #E6E0E9;
+}
+
+/* Progress: M3 linear indicator */
+progressbar trough {
+  background: #4A4458;
+  border-radius: 9999px;
+  min-height: 6px;
+}
+progressbar progress {
+  background: #D0BCFF;
+  border-radius: 9999px;
+  min-height: 6px;
+}
+progressbar text {
+  color: #CAC4D0;
+}
+
+/* Icons in message dialogs follow the accent / status colours */
+image {
+  color: #D0BCFF;
+}
+.warning image, image.warning {
+  color: #FFB95C;
+}
+.error image, image.error {
+  color: #F2B8B5;
+}
+
+scrollbar slider {
+  background: #938F99;
+  border-radius: 9999px;
+}
+/* Disabled must win over the filled-primary rules above (same or higher specificity) */
+button:disabled, button.suggested-action:disabled, button.suggested:disabled,
+.response-area button:disabled, .response-area button:last-child:disabled {
+  background: rgba(230, 224, 233, 0.12);
+  color: rgba(230, 224, 233, 0.38);
+}
+
+/* Lists (end-of-run follow-up items): M3 surface-container with a tonal header */
+columnview, treeview, listview, .view {
+  background-color: #211F26;
+  color: #E6E0E9;
+  border-radius: 12px;
+}
+columnview > header, treeview > header, columnview > header > button,
+treeview header button {
+  background: #36343B;
+  color: #CAC4D0;
+  border-radius: 0;
+  min-height: 36px;
+  font-weight: 500;
+  padding: 0 12px;
+  box-shadow: none;
+}
+columnview > listview > row, treeview row, listview > row {
+  min-height: 40px;
+  padding: 0 4px;
+}
+columnview > listview > row:hover, listview > row:hover {
+  background: rgba(230, 224, 233, 0.08);
+}
+columnview > listview > row:selected, listview > row:selected, treeview:selected {
+  background: #4F378B;
+  color: #EADDFF;
+}
+columnview cell, columnview label {
+  padding: 4px 12px;
+}
+textview, textview text {
+  background-color: #211F26;
+  color: #E6E0E9;
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-family: "Roboto Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+  font-size: 0.95em;
+  box-shadow: none;
+  min-height: 0;
+}
+textview text selection {
+  background: #4F378B;
+  color: #EADDFF;
+}
+scrolledwindow, frame {
+  border-radius: 12px;
+  border: none;
+  background: transparent;
+}
+GTKCSS
+		cp -f "$dir/gtk-4.0/gtk.css" "$dir/gtk-3.0/gtk.css" 2>/dev/null || true
+		printf '[Settings]\ngtk-application-prefer-dark-theme=1\n' >"$dir/gtk-3.0/settings.ini"
+		cat >"$dir/kdeglobals" <<'KDEGLOBALS'
+[General]
+ColorScheme=FedoraHardenMaterialDark
+Name=Fedora Harden Material Dark
+font=Roboto,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+
+[KDE]
+widgetStyle=Fusion
+
+[Colors:Window]
+BackgroundNormal=43,41,48
+BackgroundAlternate=33,31,38
+ForegroundNormal=230,224,233
+ForegroundInactive=202,196,208
+ForegroundActive=208,188,255
+ForegroundLink=208,188,255
+ForegroundVisited=204,194,220
+ForegroundNegative=242,184,181
+ForegroundNeutral=255,185,92
+ForegroundPositive=166,218,166
+DecorationFocus=208,188,255
+DecorationHover=208,188,255
+
+[Colors:View]
+BackgroundNormal=54,52,59
+BackgroundAlternate=43,41,48
+ForegroundNormal=230,224,233
+ForegroundInactive=202,196,208
+ForegroundActive=208,188,255
+ForegroundLink=208,188,255
+ForegroundVisited=204,194,220
+ForegroundNegative=242,184,181
+ForegroundNeutral=255,185,92
+ForegroundPositive=166,218,166
+DecorationFocus=208,188,255
+DecorationHover=208,188,255
+
+[Colors:Button]
+BackgroundNormal=74,68,88
+BackgroundAlternate=85,79,100
+ForegroundNormal=232,222,248
+ForegroundInactive=202,196,208
+ForegroundActive=208,188,255
+ForegroundLink=208,188,255
+ForegroundVisited=204,194,220
+ForegroundNegative=242,184,181
+ForegroundNeutral=255,185,92
+ForegroundPositive=166,218,166
+DecorationFocus=208,188,255
+DecorationHover=208,188,255
+
+[Colors:Selection]
+BackgroundNormal=208,188,255
+BackgroundAlternate=79,55,139
+ForegroundNormal=56,30,114
+ForegroundInactive=56,30,114
+ForegroundActive=56,30,114
+ForegroundLink=56,30,114
+ForegroundVisited=56,30,114
+ForegroundNegative=96,20,16
+ForegroundNeutral=56,30,114
+ForegroundPositive=56,30,114
+DecorationFocus=208,188,255
+DecorationHover=208,188,255
+
+[Colors:Tooltip]
+BackgroundNormal=230,224,233
+ForegroundNormal=50,47,53
+
+[Colors:Header]
+BackgroundNormal=20,18,24
+ForegroundNormal=230,224,233
+
+[WM]
+activeBackground=20,18,24
+activeForeground=230,224,233
+inactiveBackground=20,18,24
+inactiveForeground=147,143,153
+activeBlend=20,18,24
+inactiveBlend=20,18,24
+KDEGLOBALS
+		GUI_THEME_DIR="$dir"
+	fi
+
+	# zenity silently shows NO dialog for non-ASCII text (this script uses — and →)
+	# under a non-UTF-8 locale, which root often has (sudo -i, pkexec, cron).
+	local -a locale_env=()
+	if [[ ! "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" =~ [Uu][Tt][Ff]-?8 ]]; then
+		locale_env=(LC_ALL=C.UTF-8)
+	fi
+	GUI_ZENITY_ENV=("${locale_env[@]}" ADW_DEBUG_COLOR_SCHEME=prefer-dark)
+	GUI_KDIALOG_ENV=("${locale_env[@]}")
+	if [[ -n "$GUI_THEME_DIR" ]]; then
+		GUI_ZENITY_ENV+=(XDG_CONFIG_HOME="$GUI_THEME_DIR")
+		GUI_KDIALOG_ENV+=(XDG_CONFIG_HOME="$GUI_THEME_DIR")
+	fi
+}
+
+# gui_zenity() / gui_kdialog() - Run a dialog with the theme and locale applied.
+gui_zenity() {
+	env "${GUI_ZENITY_ENV[@]}" zenity "$@"
+}
+gui_kdialog() {
+	env "${GUI_KDIALOG_ENV[@]}" kdialog "$@"
+}
+
 # setup_ui_mode() - Configure GUI prompt mode if requested and available.
 # Prefers kdialog on KDE systems, then zenity, otherwise falls back to TTY prompts.
 setup_ui_mode() {
@@ -336,49 +713,35 @@ setup_ui_mode() {
 	GUI_SINGLE_WINDOW_MODE=0
 
 	# If GUI mode is requested, try to satisfy missing GUI dialog dependencies.
+	# zenity is preferred on every desktop: it draws its own titlebar, so the
+	# Material-dark theme covers the whole window. kdialog is the fallback.
 	if ((has_display && (FORCE_GUI || FORCE_GUI_FULL))); then
-		if ((prefers_kde)); then
-			cmd_exists kdialog || ensure_command_dep kdialog "GUI dialog mode" kdialog
-		fi
-		if ! cmd_exists kdialog; then
-			cmd_exists zenity || ensure_command_dep zenity "GUI dialog fallback" zenity
+		if ! cmd_exists zenity && ! cmd_exists kdialog; then
+			ensure_command_dep zenity "GUI dialogs" zenity ||
+				{ ((prefers_kde)) && ensure_command_dep kdialog "GUI dialog fallback" kdialog; } || true
 		fi
 	fi
 
-	if ((has_display)) && cmd_exists kdialog; then
-		GUI_TOOL="kdialog"
-	elif ((has_display)) && cmd_exists zenity; then
+	if ((has_display)) && cmd_exists zenity; then
 		GUI_TOOL="zenity"
+	elif ((has_display)) && cmd_exists kdialog; then
+		GUI_TOOL="kdialog"
 	fi
 
 	if ((FORCE_GUI)); then
 		if [[ -n "$GUI_TOOL" ]]; then
 			GUI_MODE=1
-			info "GUI mode enabled using $GUI_TOOL dialogs."
+			gui_theme_init
+			info "GUI mode enabled using $GUI_TOOL dialogs (Material dark theme)."
 		else
 			GUI_MODE=0
 			warn "--gui requested, but no supported GUI dialog tool was found. Falling back to terminal prompts."
-			warn "Install 'kdialog' (KDE) or 'zenity' (GTK) to use GUI prompts."
+			warn "Install 'zenity' (recommended: fully themed) or 'kdialog' to use GUI prompts."
 		fi
 	fi
 
 	if ((FORCE_GUI_FULL)); then
 		FORCE_GUI=1
-		GUI_TOOL=""  # Reset to force zenity preference for --gui-full
-
-		# Prefer zenity for --gui-full to avoid kdialog progress startup hangs on some stacks.
-		if ((has_display)); then
-			if ! cmd_exists zenity; then
-				ensure_command_dep zenity "full GUI frontend (--gui-full)" zenity || true
-			fi
-			if cmd_exists zenity; then
-				GUI_TOOL="zenity"
-			elif cmd_exists kdialog; then
-				# Fallback to kdialog if zenity unavailable
-				GUI_TOOL="kdialog"
-			fi
-		fi
-
 		if [[ -n "$GUI_TOOL" ]]; then
 			if [[ "$GUI_TOOL" == "kdialog" ]]; then
 				# Fedora 44+ ships qdbus-qt6; older releases use qdbus-qt5 or qdbus.
@@ -400,13 +763,14 @@ setup_ui_mode() {
 			GUI_MODE=1
 			GUI_FULL_MODE=1
 			GUI_SINGLE_WINDOW_MODE=1
+			[[ ${#GUI_ZENITY_ENV[@]} -gt 0 ]] || gui_theme_init
 			info "Full GUI frontend enabled using $GUI_TOOL (single-window mode)."
 		else
 			GUI_MODE=0
 			GUI_FULL_MODE=0
 			GUI_SINGLE_WINDOW_MODE=0
 			warn "--gui-full requested, but no supported GUI dialog tool was found. Falling back to terminal output."
-			warn "Install 'kdialog' or 'zenity' and rerun with --gui-full."
+			warn "Install 'zenity' (recommended) or 'kdialog' and rerun with --gui-full."
 		fi
 	fi
 }
@@ -425,16 +789,50 @@ calc_section_total() {
 	UI_SECTION_DONE=0
 }
 
+# gui_markup_escape() - Escape text for zenity, which renders dialog and progress text
+# as Pango markup: a bare '&', '<' or '>' makes GTK drop the whole message.
+# Usage: gui_markup_escape <text>
+gui_markup_escape() {
+	local t="${1//&/&amp;}"
+	t="${t//</&lt;}"
+	t="${t//>/&gt;}"
+	printf '%s' "$t"
+}
+
+# gui_progress_active() - True while the --gui-full progress window is open.
+gui_progress_active() {
+	case "$GUI_TOOL" in
+	zenity) [[ -n "$GUI_PROGRESS_PIPE_FD" ]] ;;
+	kdialog) [[ -n "$GUI_PROGRESS_REF" ]] ;;
+	*) return 1 ;;
+	esac
+}
+
+# gui_kdialog_dbus() - Call a method on the kdialog progress dialog over D-Bus.
+# kdialog --progressbar prints "<service> <object-path>"; qdbus needs them as two
+# separate arguments.
+# Usage: gui_kdialog_dbus <method> [args...]
+gui_kdialog_dbus() {
+	[[ -n "$GUI_PROGRESS_REF" && -n "${QDBUS_CMD:-}" ]] || return 1
+	local svc path
+	read -r svc path <<<"$GUI_PROGRESS_REF"
+	[[ -n "$svc" && -n "$path" ]] || return 1
+	"$QDBUS_CMD" "$svc" "$path" "$@" 2>/dev/null
+}
+
 # gui_alert() - Show concise GUI notifications for summary and fatal errors.
+# While the --gui-full progress window is open, messages go into that window.
+# Afterwards (end of run, aborts) they are shown as dialogs that do not block the
+# script, so it can finish and exit while the user reads them.
 # Usage: gui_alert <info|warning|error> <message>
 gui_alert() {
 	local level="$1" message="$2"
 	((GUI_MODE)) || return 0
 
-	# In full GUI mode, keep status inside a single progress window.
-	if ((GUI_FULL_MODE && GUI_SINGLE_WINDOW_MODE)); then
+	if ((GUI_FULL_MODE && GUI_SINGLE_WINDOW_MODE)) && gui_progress_active; then
 		local one_line="$message"
 		one_line="${one_line//$'\n'/ | }"
+		one_line="${one_line//\\n/ | }"
 		case "$level" in
 		info) gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$one_line" ;;
 		warning) gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "Warning: $one_line" ;;
@@ -443,22 +841,100 @@ gui_alert() {
 		return 0
 	fi
 
+	# Interactive --gui mode keeps modal dialogs; --gui-full end-of-run dialogs are detached.
+	local -a dlg=()
 	case "$GUI_TOOL" in
 	kdialog)
 		case "$level" in
-		info) kdialog --title "$SCRIPT_NAME" --msgbox "$message" ;;
-		warning) kdialog --title "$SCRIPT_NAME" --sorry "$message" ;;
-		error) kdialog --title "$SCRIPT_NAME" --error "$message" ;;
+		info) dlg=(gui_kdialog --title "$SCRIPT_NAME" --msgbox "$message") ;;
+		warning) dlg=(gui_kdialog --title "$SCRIPT_NAME" --sorry "$message") ;;
+		error) dlg=(gui_kdialog --title "$SCRIPT_NAME" --error "$message") ;;
 		esac
 		;;
 	zenity)
+		local text
+		text="$(gui_markup_escape "$message")"
 		case "$level" in
-		info) zenity --info --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
-		warning) zenity --warning --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
-		error) zenity --error --title="$SCRIPT_NAME" --text="$message" --width=460 ;;
+		info) dlg=(gui_zenity --info --title="$SCRIPT_NAME" --text="$text" --width=460) ;;
+		warning) dlg=(gui_zenity --warning --title="$SCRIPT_NAME" --text="$text" --width=460) ;;
+		error) dlg=(gui_zenity --error --title="$SCRIPT_NAME" --text="$text" --width=460) ;;
 		esac
 		;;
 	esac
+	((${#dlg[@]})) || return 0
+	if ((GUI_FULL_MODE)); then
+		"${dlg[@]}" >/dev/null 2>&1 &
+		disown "$!" 2>/dev/null || true
+	else
+		"${dlg[@]}" >/dev/null 2>&1 || true
+	fi
+	return 0
+}
+
+# gui_final_summary() - One end-of-run window. With follow-up items (zenity) it is
+# a sortable list (HIGH first) with the summary as its header; otherwise a message.
+# Non-blocking in --gui-full so the script can exit while the user reads it.
+# Usage: gui_final_summary <headline> <details>
+GUI_SUMMARY_SHOWN=0
+gui_final_summary() {
+	local headline="$1" details="$2"
+	((GUI_MODE)) || return 0
+	GUI_SUMMARY_SHOWN=1
+	if ((${#ACTIONABLE_ITEMS[@]} == 0)) || [[ "$GUI_TOOL" != zenity ]]; then
+		local body="${headline}\n\n${details}"
+		if ((${#ACTIONABLE_ITEMS[@]} > 0)); then
+			local item section priority tag desc
+			body+="\n\nFollow-up items:"
+			for item in "${ACTIONABLE_ITEMS[@]}"; do
+				IFS='|' read -r section priority tag desc <<<"$item"
+				body+="\n• [${priority}] §${section}: ${desc}"
+			done
+		fi
+		gui_alert info "$body"
+		return 0
+	fi
+
+	# Text view (not a list): it wraps long items and lets the user select and copy
+	# the commands they contain.
+	local report="${GUI_THEME_DIR:-/tmp}/summary-${RUN_STAMP}.txt"
+	local line rank section priority tag desc current=""
+	{
+		printf '%s\n\n' "$headline"
+		printf '%b\n' "$details"
+		printf '\n──────────── Follow-up items ────────────\n'
+		for line in "${ACTIONABLE_ITEMS[@]}"; do
+			IFS='|' read -r section priority tag desc <<<"$line"
+			case "$priority" in HIGH) rank=1 ;; MEDIUM) rank=2 ;; *) rank=3 ;; esac
+			printf '%s|%s|%s|%s\n' "$rank" "${section#S}" "$priority" "$desc"
+		done | sort -t'|' -k1,1n -k2,2n | while IFS='|' read -r rank section priority desc; do
+			if [[ "$priority" != "$current" ]]; then
+				printf '\n%s\n' "$priority"
+				current="$priority"
+			fi
+			printf '  • §%-3s %s\n' "$section" "$desc"
+		done
+	} >"$report" 2>/dev/null || return 0
+	chmod 600 "$report" 2>/dev/null || true
+	local -a dlg=(gui_zenity --text-info --title="$SCRIPT_NAME" --filename="$report"
+		--width=900 --height=600 --ok-label=Done)
+	if ((GUI_FULL_MODE)); then
+		"${dlg[@]}" >/dev/null 2>&1 &
+		disown "$!" 2>/dev/null || true
+	else
+		"${dlg[@]}" >/dev/null 2>&1 || true
+	fi
+	return 0
+}
+
+# gui_dialog_failed() - Handle a dialog that exited with an error (not Yes/No/Cancel):
+# typically no usable display (missing XAUTHORITY, dead session). Treating that as
+# "No" would silently decline every prompt, so fall back to terminal prompts instead.
+# Usage: gui_dialog_failed <exit-code>
+gui_dialog_failed() {
+	warn "GUI dialog failed (exit $1, display unusable?) — falling back to terminal prompts."
+	GUI_MODE=0
+	GUI_FULL_MODE=0
+	GUI_SINGLE_WINDOW_MODE=0
 }
 
 # prompt_input() - Request free-form input from user in GUI or terminal mode.
@@ -466,50 +942,75 @@ gui_alert() {
 prompt_input() {
 	local prompt="$1" default_value="${2:-}" value=""
 
+	# --yes: take the default without prompting (consistent with confirm()).
+	if ((ASSUME_YES)); then
+		# stdout is the return value here (callers use $(...)), so log instead of info().
+		log "[INFO]  Auto-yes: $prompt → ${default_value:-<empty>}"
+		printf '%s' "$default_value"
+		return 0
+	fi
+
 	if ((GUI_MODE)); then
+		local rc=0
 		case "$GUI_TOOL" in
 		kdialog)
-			value="$(kdialog --title "$SCRIPT_NAME" --inputbox "$prompt" "$default_value" 2>/dev/null || true)"
+			value="$(gui_kdialog --title "$SCRIPT_NAME" --inputbox "$prompt" "$default_value" 2>/dev/null)" || rc=$?
 			;;
 		zenity)
-			value="$(zenity --entry --title="$SCRIPT_NAME" --text="$prompt" --entry-text="$default_value" --width=520 2>/dev/null || true)"
+			value="$(gui_zenity --entry --title="$SCRIPT_NAME" --text="$(gui_markup_escape "$prompt")" --entry-text="$default_value" --width=520 2>/dev/null)" || rc=$?
 			;;
 		esac
-	else
-		read -r -p "$(printf '%s[??]%s  %s ' "$C_YEL" "$C_RST" "$prompt")" value || true
+		if ((rc > 1)); then
+			gui_dialog_failed "$rc"
+			value=""
+		else
+			printf '%s' "$value"
+			return 0
+		fi
 	fi
+	read -r -p "$(printf '%s[??]%s  %s ' "$C_YEL" "$C_RST" "$prompt")" value || true
 
 	printf '%s' "$value"
 }
 
-# gui_progress_start() - Start full-GUI progress stream with minimal I/O overhead.
+# gui_progress_start() - Open the --gui-full progress window.
 gui_progress_start() {
 	((GUI_FULL_MODE)) || return 0
 
 	case "$GUI_TOOL" in
 	kdialog)
 		if [[ -n "${QDBUS_CMD:-}" ]]; then
-			GUI_PROGRESS_REF="$(kdialog --title "$SCRIPT_NAME" --progressbar "Initializing hardening..." "$UI_SECTION_TOTAL")"
+			# Read only the first line, with a timeout: $(...) waits for EOF and hangs if a
+			# helper process keeps kdialog's stdout open.
+			GUI_PROGRESS_REF=""
+			read -r -t 10 GUI_PROGRESS_REF < <(gui_kdialog --title "$SCRIPT_NAME" --progressbar "Initializing hardening..." "$UI_SECTION_TOTAL" 2>/dev/null) || true
+			[[ -n "$GUI_PROGRESS_REF" ]] || warn "kdialog progress window did not start — continuing without it."
 			if [[ -n "$GUI_PROGRESS_REF" ]]; then
-				"$QDBUS_CMD" "$GUI_PROGRESS_REF" showCancelButton true >/dev/null 2>&1 || true
-				"$QDBUS_CMD" "$GUI_PROGRESS_REF" setLabelText "Preparing section execution..." >/dev/null 2>&1 || true
-				"$QDBUS_CMD" "$GUI_PROGRESS_REF" Set "" value 0 >/dev/null 2>&1 || true
+				gui_kdialog_dbus showCancelButton true >/dev/null || true
+				gui_kdialog_dbus setLabelText "Preparing section execution..." >/dev/null || true
+				gui_kdialog_dbus Set "" value 0 >/dev/null || true
 			fi
 		else
 			warn "qdbus not found; kdialog progress updates are limited."
 		fi
 		;;
 	zenity)
+		# Writing to the window after it closed must not kill the script with SIGPIPE;
+		# a failed write is handled explicitly in gui_progress_update instead.
+		trap '' PIPE
+		# No --auto-close: the window closes when gui_progress_close says so, not when
+		# the bar first reaches 100% (later status writes would then fail).
+		# exec: the coproc PID must be zenity itself, or closing would orphan the window.
 		coproc GUI_ZENITY_PROGRESS {
-			zenity --progress \
+			exec env "${GUI_ZENITY_ENV[@]}" zenity --progress \
 				--title="$SCRIPT_NAME" \
 				--text="Preparing section execution..." \
 				--percentage=0 \
-				--auto-close \
-				--width=640
+				--width=640 2>/dev/null
 		}
 		GUI_PROGRESS_PIPE_FD="${GUI_ZENITY_PROGRESS[1]:-}"
-		GUI_PROGRESS_PID="$COPROC_PID"
+		# A named coproc stores its PID in <NAME>_PID (COPROC_PID is only for unnamed ones).
+		GUI_PROGRESS_PID="${GUI_ZENITY_PROGRESS_PID:-}"
 		;;
 	esac
 }
@@ -523,49 +1024,63 @@ gui_progress_update() {
 	((current < 0)) && current=0
 	((current > total)) && current=total
 	local pct=$((current * 100 / total))
+	# 100% is reserved for gui_progress_close: the run is not finished when the last
+	# section starts.
+	((pct >= 100)) && pct=99
 	GUI_LAST_STATUS="$message"
 
 	case "$GUI_TOOL" in
 	kdialog)
 		[[ -n "$GUI_PROGRESS_REF" ]] || return 0
-		if [[ -n "${QDBUS_CMD:-}" ]] && [[ "$(${QDBUS_CMD} "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
+		if [[ "$(gui_kdialog_dbus wasCancelled || echo false)" == "true" ]]; then
 			GUI_CANCEL_REQUESTED=1
 			return 0
 		fi
-		"${QDBUS_CMD:-qdbus}" "$GUI_PROGRESS_REF" Set "" value "$current" >/dev/null 2>&1 || true
-		"${QDBUS_CMD:-qdbus}" "$GUI_PROGRESS_REF" setLabelText "$message" >/dev/null 2>&1 || true
+		gui_kdialog_dbus Set "" value "$current" >/dev/null || true
+		gui_kdialog_dbus setLabelText "$message" >/dev/null || true
 		;;
 	zenity)
 		[[ -n "$GUI_PROGRESS_PIPE_FD" ]] || return 0
-		if ! printf '%s\n# %s\n' "$pct" "$message" 1>&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null; then
+		# zenity exits only when the user presses Cancel or closes the window.
+		if [[ -n "$GUI_PROGRESS_PID" ]] && ! kill -0 "$GUI_PROGRESS_PID" 2>/dev/null; then
 			GUI_CANCEL_REQUESTED=1
+			return 0
 		fi
+		printf '%s\n# %s\n' "$pct" "$(gui_markup_escape "$message")" 1>&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null || true
 		;;
 	esac
+	return 0
 }
 
-# gui_progress_close() - Gracefully close full-GUI progress resources.
+# gui_progress_close() - Finish and close the progress window (idempotent).
 gui_progress_close() {
 	((GUI_FULL_MODE)) || return 0
 
 	case "$GUI_TOOL" in
 	kdialog)
 		if [[ -n "$GUI_PROGRESS_REF" ]]; then
-			"${QDBUS_CMD:-qdbus}" "$GUI_PROGRESS_REF" close >/dev/null 2>&1 || true
+			gui_kdialog_dbus Set "" value "$UI_SECTION_TOTAL" >/dev/null || true
+			gui_kdialog_dbus close >/dev/null || true
 			GUI_PROGRESS_REF=""
 		fi
 		;;
 	zenity)
 		if [[ -n "$GUI_PROGRESS_PIPE_FD" ]]; then
-			exec {GUI_PROGRESS_PIPE_FD}>&- || true
+			printf '100\n# %s\n' "Finished." 1>&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null || true
+			exec {GUI_PROGRESS_PIPE_FD}>&- 2>/dev/null || true
 			GUI_PROGRESS_PIPE_FD=""
 		fi
 		if [[ -n "$GUI_PROGRESS_PID" ]]; then
+			# Without --auto-close zenity waits for "OK" at 100%; close it ourselves —
+			# the end-of-run summary is shown in its own dialog.
+			kill "$GUI_PROGRESS_PID" 2>/dev/null || true
 			wait "$GUI_PROGRESS_PID" 2>/dev/null || true
 			GUI_PROGRESS_PID=""
 		fi
+		trap - PIPE
 		;;
 	esac
+	return 0
 }
 
 # gui_status_event() - Route status messages to GUI widgets without file polling.
@@ -582,11 +1097,17 @@ gui_status_event() {
 		;;
 	warning)
 		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-		((popup_ok)) && gui_alert warning "$message"
+		# Must not end the function on a false test: callers (warn/err) run under set -e.
+		if ((popup_ok)); then
+			gui_alert warning "$message"
+		fi
 		;;
 	error)
 		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-		((popup_ok)) && gui_alert error "$message"
+		# Must not end the function on a false test: callers (warn/err) run under set -e.
+		if ((popup_ok)); then
+			gui_alert error "$message"
+		fi
 		;;
 	esac
 }
@@ -598,7 +1119,15 @@ gui_check_cancel() {
 
 	case "$GUI_TOOL" in
 	kdialog)
-		if [[ -n "${QDBUS_CMD:-}" ]] && [[ -n "$GUI_PROGRESS_REF" ]] && [[ "$(${QDBUS_CMD} "$GUI_PROGRESS_REF" wasCancelled 2>/dev/null || echo false)" == "true" ]]; then
+		if [[ "$(gui_kdialog_dbus wasCancelled || echo false)" == "true" ]]; then
+			GUI_CANCEL_REQUESTED=1
+			return 0
+		fi
+		;;
+	zenity)
+		# The progress window only exits early when the user cancels or closes it.
+		if [[ -n "$GUI_PROGRESS_PIPE_FD" && -n "$GUI_PROGRESS_PID" ]] &&
+			! kill -0 "$GUI_PROGRESS_PID" 2>/dev/null; then
 			GUI_CANCEL_REQUESTED=1
 			return 0
 		fi
@@ -733,6 +1262,7 @@ section() {
 	abort_if_cancelled
 	local n="$1"
 	shift
+	CURRENT_SECTION="$n"
 	((++UI_SECTION_DONE))
 	local pct=$((UI_SECTION_DONE * 100 / UI_SECTION_TOTAL))
 	local pb
@@ -935,7 +1465,14 @@ pkg_install() {
 		record_change PKG_INSTALL "${needed[*]}"
 		warn "Layered packages are applied on reboot. Reboot when this script completes."
 	else
-		run "dnf install -y ${needed[*]}"
+		if ! run "dnf install -y ${needed[*]}"; then
+			# A missing/renamed package must not abort every remaining section; the
+			# callers check for the commands they need and skip what is unavailable.
+			warn "dnf install failed for: ${needed[*]}"
+			add_action_item "${CURRENT_SECTION:-0}" MEDIUM "PKG_INSTALL_FAILED_${needed[0]//[^a-zA-Z0-9]/_}" \
+				"Package install failed: sudo dnf install -y ${needed[*]}"
+			return 0
+		fi
 		# Keep package cache coherent after successful mutable-system installs.
 		for pkg in "${needed[@]}"; do
 			_PKG_CACHE[$pkg]=0
@@ -1102,16 +1639,18 @@ confirm() {
 	fi
 
 	if ((GUI_MODE)); then
+		local rc=0
 		case "$GUI_TOOL" in
 		kdialog)
-			kdialog --title "$SCRIPT_NAME" --yesno "$prompt"
-			return $?
+			gui_kdialog --title "$SCRIPT_NAME" --yesno "$prompt" 2>/dev/null || rc=$?
 			;;
 		zenity)
-			zenity --question --title="$SCRIPT_NAME" --text="$prompt" --width=480
-			return $?
+			gui_zenity --question --title="$SCRIPT_NAME" --text="$(gui_markup_escape "$prompt")" --width=480 2>/dev/null || rc=$?
 			;;
 		esac
+		# 0 = Yes, 1 = No/closed; anything else means the dialog itself failed.
+		((rc <= 1)) && return "$rc"
+		gui_dialog_failed "$rc"
 	fi
 
 	local reply
@@ -1122,9 +1661,15 @@ confirm() {
 # backup_file() - Create backup of file in designated backup directory.
 # Creates directory structure if needed; uses mode 0700 for restricted access.
 # All backups are organized by timestamp in /root/harden-backups-YYYYMMDD-HHMMSS/
+# If the file does not exist yet, journal FILE_CREATE instead so that --rollback
+# removes the file this run is about to create.
 # Usage: backup_file <file_path>
 backup_file() {
 	local f="$1"
+	if [[ ! -e "$f" ]]; then
+		record_change FILE_CREATE "$f"
+		return 0
+	fi
 	if [[ -f "$f" ]]; then
 		if [[ ! -r "$f" ]]; then
 			warn "Cannot read $f for backup (permission denied); backup skipped"
@@ -1156,6 +1701,7 @@ in_list() {
 
 # batch_sed() - Apply multiple sed patterns in a single pass (more efficient).
 # Reduces I/O overhead by batching replacements on same file.
+# Patterns are POSIX *extended* regular expressions (sed -E), so #? and \s+ work.
 # Usage: batch_sed <file> <pattern1> <pattern2> ...
 batch_sed() {
 	local f="$1"
@@ -1169,8 +1715,46 @@ batch_sed() {
 	for pattern in "$@"; do
 		args+=(-e "$pattern")
 	done
-	if ! sed -i "${args[@]}" "$f" 2>/dev/null; then
+	if ! sed -E -i "${args[@]}" "$f" 2>/dev/null; then
 		warn "sed failed on $f (file may be read-only or missing)"
+		return 1
+	fi
+}
+
+# set_conf_key() - Set "key<sep>value" in a config file: replaces the first active or
+# commented-out occurrence of the key, or appends it when absent. Idempotent.
+# <sep> is " = " for key=value files, or whitespace (e.g. "   ") for login.defs.
+# Usage: set_conf_key <file> <key> <value> [sep]
+set_conf_key() {
+	local f="$1" key="$2" value="$3" sep="${4:- = }" line new
+	line="${key}${sep}${value}"
+	if ((DRY_RUN)); then
+		info "Would set '${line}' in $f"
+		return 0
+	fi
+	[[ -f "$f" ]] || {
+		warn "$f not found — cannot set $key"
+		return 1
+	}
+	# Replace every active occurrence; otherwise uncomment the first commented default;
+	# otherwise append. awk avoids sed delimiter/quoting pitfalls, and writing back with
+	# printf keeps the file's inode, owner, mode and SELinux label.
+	if ! new="$(awk -v k="$key" -v l="$line" '
+		BEGIN { act = "^[ \t]*" k "([ \t]|=)"; com = "^[ \t]*#[ \t]*" k "([ \t]|=)" }
+		{ lines[NR] = $0; if ($0 ~ act) has_act = 1; else if (!first_com && $0 ~ com) first_com = NR }
+		END {
+			for (i = 1; i <= NR; i++) {
+				if (has_act && lines[i] ~ act) print l
+				else if (!has_act && i == first_com) print l
+				else print lines[i]
+			}
+			if (!has_act && !first_com) print l
+		}' "$f")"; then
+		warn "Could not parse $f to set $key"
+		return 1
+	fi
+	if ! printf '%s\n' "$new" >"$f"; then
+		warn "Could not write $key to $f"
 		return 1
 	fi
 }
@@ -1457,17 +2041,17 @@ analyze_error_log() {
 
 	while IFS= read -r line; do
 		[[ -z "$line" ]] && continue
-		((error_count++))
+		((++error_count))
 
 		# Pattern matching for auto-remediation categories
 		if [[ "$line" =~ Permission\ denied || "$line" =~ not\ in\ sudoers ]]; then
-			((permission_errors++))
+			((++permission_errors))
 		elif [[ "$line" =~ No\ such\ file\ or\ directory || "$line" =~ package.*not\ found ]]; then
-			((package_errors++))
+			((++package_errors))
 		elif [[ "$line" =~ service.*not\ available || "$line" =~ Unit.*not\ found ]]; then
-			((service_errors++))
+			((++service_errors))
 		elif [[ "$line" =~ Connection\ refused || "$line" =~ Network.*unreachable ]]; then
-			((connection_errors++))
+			((++connection_errors))
 		fi
 	done <"$ERROR_LOG"
 
@@ -1697,13 +2281,13 @@ write_session_report() {
 	if [[ -n "$ROLLBACK_JOURNAL" && -f "$ROLLBACK_JOURNAL" ]]; then
 		while IFS='|' read -r _ts ctype _detail; do
 			[[ "$_ts" == '#'* || -z "${ctype:-}" ]] && continue
-			((change_count++))
+			((++change_count))
 			case "$ctype" in
-			FILE_BACKUP) ((file_backups++)) ;;
-			PKG_INSTALL) ((pkg_installs++)) ;;
-			SERVICE_ENABLE) ((svc_enables++)) ;;
-			SERVICE_DISABLE) ((svc_disables++)) ;;
-			FLATPAK_INSTALL) ((flatpak_installs++)) ;;
+			FILE_BACKUP) ((++file_backups)) ;;
+			PKG_INSTALL) ((++pkg_installs)) ;;
+			SERVICE_ENABLE) ((++svc_enables)) ;;
+			SERVICE_DISABLE) ((++svc_disables)) ;;
+			FLATPAK_INSTALL) ((++flatpak_installs)) ;;
 			esac
 		done <"$ROLLBACK_JOURNAL"
 	fi
@@ -1745,7 +2329,7 @@ write_session_report() {
 				local section priority tag desc
 				IFS='|' read -r section priority tag desc <<<"$item"
 				printf '  [%2d] [%s][%s] %s\n' "$idx" "$priority" "$section" "$desc"
-				((idx++))
+				((++idx))
 			done
 		else
 			printf '  None.\n'
@@ -1813,7 +2397,7 @@ list_sessions_cmd() {
 	if [[ -d "$SESSION_DIR" ]]; then
 		for f in "$SESSION_DIR"/session-*.txt; do
 			[[ -f "$f" ]] || continue
-			((found++))
+			((++found))
 			# Single awk pass extracts both Session and Status fields to avoid reading the file twice.
 			local session_id status _awk_out
 			_awk_out="$(awk '/^Session:/{sid=$2} /^Status:/{sts=$2} END{print (sid?sid:"unknown"), (sts?sts:"unknown")}' "$f" 2>/dev/null || true)"
@@ -1838,7 +2422,7 @@ list_sessions_cmd() {
 		local stamp="${d%/}"
 		stamp="${stamp##*/harden-backups-}"
 		[[ -n "${seen_stamps[$stamp]:-}" ]] && continue
-		((found++))
+		((++found))
 		local journal_note="no journal"
 		[[ -f "${d}.rollback-journal" ]] && journal_note="journal present"
 		printf '  %s[?]%s %s  (no session report — %s)\n' "$C_YEL" "$C_RST" "$stamp" "$journal_note"
@@ -1884,15 +2468,32 @@ _apply_rollback_journal() {
 				elif cp -a "$backup_copy" "$restored_path" 2>/dev/null; then
 					ok "Restored: $restored_path"
 					_rjl "  [OK]   RESTORE  $restored_path"
-					((_RBJ_RESTORED++))
+					((++_RBJ_RESTORED))
 				else
 					warn "Failed to restore: $restored_path"
 					_rjl "  [FAIL] RESTORE  $restored_path"
-					((_RBJ_ERRORS++))
+					((++_RBJ_ERRORS))
 				fi
 			else
 				warn "Backup copy not found: $backup_copy — skipping restore of $detail"
 				_rjl "  [SKIP] RESTORE  $detail (backup copy missing)"
+			fi
+			;;
+
+		FILE_CREATE)
+			local created_path="/${detail#/}"
+			if [[ ! -e "$created_path" ]]; then
+				_rjl "  [SKIP] REMOVE   $created_path (already absent)"
+			elif ((DRY_RUN)); then
+				info "Would remove created file: $created_path"
+			elif rm -f -- "$created_path" 2>/dev/null; then
+				ok "Removed created file: $created_path"
+				_rjl "  [OK]   REMOVE   $created_path"
+				((++_RBJ_RESTORED))
+			else
+				warn "Failed to remove created file: $created_path"
+				_rjl "  [FAIL] REMOVE   $created_path"
+				((++_RBJ_ERRORS))
 			fi
 			;;
 
@@ -1903,11 +2504,11 @@ _apply_rollback_journal() {
 				elif run "rpm-ostree uninstall $detail" 2>/dev/null; then
 					ok "rpm-ostree uninstall queued: $detail (reboot required)"
 					_rjl "  [OK]   RPM_OSTREE_UNINSTALL  $detail"
-					((_RBJ_RESTORED++))
+					((++_RBJ_RESTORED))
 				else
 					warn "rpm-ostree uninstall failed for: $detail (may not have been layered)"
 					_rjl "  [WARN] RPM_OSTREE_UNINSTALL  $detail"
-					((_RBJ_ERRORS++))
+					((++_RBJ_ERRORS))
 				fi
 			else
 				if ((DRY_RUN)); then
@@ -1915,11 +2516,11 @@ _apply_rollback_journal() {
 				elif run "dnf remove -y $detail" 2>/dev/null; then
 					ok "Packages removed: $detail"
 					_rjl "  [OK]   PKG_REMOVE  $detail"
-					((_RBJ_RESTORED++))
+					((++_RBJ_RESTORED))
 				else
 					warn "dnf remove failed for: $detail (may have been pre-existing)"
 					_rjl "  [WARN] PKG_REMOVE  $detail"
-					((_RBJ_ERRORS++))
+					((++_RBJ_ERRORS))
 				fi
 			fi
 			;;
@@ -1930,11 +2531,11 @@ _apply_rollback_journal() {
 			elif systemctl disable "$detail" 2>/dev/null; then
 				ok "Service disabled: $detail"
 				_rjl "  [OK]   SERVICE_DISABLE  $detail"
-				((_RBJ_RESTORED++))
+				((++_RBJ_RESTORED))
 			else
 				warn "Could not disable service: $detail"
 				_rjl "  [WARN] SERVICE_DISABLE  $detail"
-				((_RBJ_ERRORS++))
+				((++_RBJ_ERRORS))
 			fi
 			;;
 
@@ -1944,11 +2545,11 @@ _apply_rollback_journal() {
 			elif systemctl enable "$detail" 2>/dev/null; then
 				ok "Service re-enabled: $detail"
 				_rjl "  [OK]   SERVICE_ENABLE  $detail"
-				((_RBJ_RESTORED++))
+				((++_RBJ_RESTORED))
 			else
 				warn "Could not re-enable service: $detail"
 				_rjl "  [WARN] SERVICE_ENABLE  $detail"
-				((_RBJ_ERRORS++))
+				((++_RBJ_ERRORS))
 			fi
 			;;
 
@@ -1958,11 +2559,11 @@ _apply_rollback_journal() {
 			elif have_cmd flatpak && flatpak uninstall -y "$detail" 2>/dev/null; then
 				ok "Flatpak removed: $detail"
 				_rjl "  [OK]   FLATPAK_REMOVE  $detail"
-				((_RBJ_RESTORED++))
+				((++_RBJ_RESTORED))
 			else
 				warn "Flatpak uninstall failed for: $detail"
 				_rjl "  [WARN] FLATPAK_REMOVE  $detail"
-				((_RBJ_ERRORS++))
+				((++_RBJ_ERRORS))
 			fi
 			;;
 
@@ -1993,11 +2594,11 @@ _restore_backup_dir_files() {
 		elif cp -a "$bfile" "$restored_path" 2>/dev/null; then
 			ok "Restored: $restored_path"
 			_rbfl "  [OK]   RESTORE  $restored_path"
-			((_RBJ_RESTORED++))
+			((++_RBJ_RESTORED))
 		else
 			warn "Failed to restore: $restored_path"
 			_rbfl "  [FAIL] RESTORE  $restored_path"
-			((_RBJ_ERRORS++))
+			((++_RBJ_ERRORS))
 		fi
 	done < <(find "$backup_dir" -type f ! -name '.rollback-journal' 2>/dev/null | sort)
 
@@ -2253,7 +2854,7 @@ rollback_all_sessions() {
 			warn "Backup directory missing for session $s — skipping."
 			printf '  [SKIP] Backup directory not found.\n' >>"$rb_report" 2>/dev/null || true
 			_frblog "Session $s skipped: backup dir missing"
-			((sessions_skipped++))
+			((++sessions_skipped))
 			continue
 		fi
 
@@ -2280,9 +2881,9 @@ rollback_all_sessions() {
 			"$_RBJ_RESTORED" "$_RBJ_ERRORS" >>"$rb_report" 2>/dev/null || true
 		_frblog "Session $s done: restored=$_RBJ_RESTORED errors=$_RBJ_ERRORS"
 
-		((total_restored += _RBJ_RESTORED))
-		((total_errors += _RBJ_ERRORS))
-		((sessions_ok++))
+		total_restored=$((total_restored + _RBJ_RESTORED))
+		total_errors=$((total_errors + _RBJ_ERRORS))
+		((++sessions_ok))
 	done
 
 	# 4. Write combined summary to report and log
@@ -2609,7 +3210,7 @@ select_actionable_items() {
 		else
 			DEFERRED_ACTIONABLE_ITEMS+=("$item")
 		fi
-		((idx++))
+		((++idx))
 	done
 
 	((${#SELECTED_ACTIONABLE_ITEMS[@]} > 0))
@@ -3005,15 +3606,15 @@ sec_02_updates() {
 		printf '%s║    or use the USBGuard GUI / CLI to allow the device.        ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s╚══════════════════════════════════════════════════════════════╝%s\n\n' "$C_YEL" "$C_RST"
 		add_action_item 2 HIGH "HWKEY_USBGUARD_READY" \
-			"Hardware security key detected: ensure it is plugged in BEFORE section 8 (USBGuard) runs so it is added to the allowlist. If missed, run: sudo usbguard generate-policy >> /etc/usbguard/rules.conf"
+			"Hardware security key support enabled: ensure your key is plugged in BEFORE section 8 (USBGuard) runs so it is added to the allowlist. If missed, run: sudo usbguard generate-policy >> /etc/usbguard/rules.conf"
 	fi
 }
 
 # ============================================================================
-#  SECTION 3 — dnf5-automatic (Fedora 41+)
+#  SECTION 3 — automatic security updates (dnf5-plugin-automatic, Fedora 41+)
 # ============================================================================
 # sec_03_dnf_automatic() - Configure automatic security updates + countme opt-out
-# Sets up dnf5-automatic for mutable systems or rpm-ostreed policy for immutable
+# Sets up dnf5-plugin-automatic for mutable systems or rpm-ostreed policy for immutable
 # systems to apply security patches automatically. On rpm-ostree, stages updates.
 # Sub-section 3b disables the Fedora system-counting mechanism: sets countme=false
 # in /etc/dnf/dnf.conf on mutable systems, or masks rpm-ostree-countme.timer on
@@ -3047,45 +3648,64 @@ sec_03_dnf_automatic() {
 
 		# Enable timer if available
 		if systemctl list-unit-files rpm-ostreed-automatic.timer >/dev/null 2>&1; then
-			run "systemctl enable --now rpm-ostreed-automatic.timer"
+			run "systemctl enable --now rpm-ostreed-automatic.timer" ||
+				add_action_item 3 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now rpm-ostreed-automatic.timer"
 		else
 			warn "rpm-ostreed-automatic.timer not found; configure automatic updates manually."
 		fi
 		return 0
 	fi
 
-	# Handle mutable systems: detect dnf version, configure, enable
-	local pkg timer conf
-	pkg="dnf5-automatic"
-	timer="dnf5-automatic.timer"
-	conf="/etc/dnf/automatic.conf"
-	if ! cmd_exists dnf || ! dnf info dnf5-automatic &>/dev/null; then
+	# Handle mutable systems. Fedora 41+ uses dnf5, whose automatic-update plugin is
+	# packaged as dnf5-plugin-automatic (timer: dnf5-automatic.timer). It ships
+	# /etc/dnf/automatic.conf only as an empty %ghost and reads its defaults from
+	# /usr/share/dnf5/dnf5-plugins/automatic.conf, so the override file must be seeded.
+	local pkg timer conf="/etc/dnf/automatic.conf" conf_default=""
+	if cmd_exists dnf5; then
+		pkg="dnf5-plugin-automatic"
+		timer="dnf5-automatic.timer"
+		conf_default="/usr/share/dnf5/dnf5-plugins/automatic.conf"
+	else
 		pkg="dnf-automatic"
 		timer="dnf-automatic.timer"
-		conf="/etc/dnf/automatic.conf"
-		warn "dnf5-automatic not found in repos — falling back to dnf-automatic."
 	fi
 
 	pkg_install "$pkg"
-	[[ -f "$conf" ]] || {
-		warn "$conf not found after install; skipping config."
-		return 0
-	}
 
-	backup_file "$conf"
-	if ((!DRY_RUN)); then
+	if ((DRY_RUN)); then
+		[[ -s "$conf" ]] || info "Would seed $conf from ${conf_default:-a minimal [commands] block}"
+		info "Would patch $conf: upgrade_type=security, apply_updates=yes, reboot=when-needed"
+	else
+		backup_file "$conf"
+		if [[ ! -s "$conf" ]]; then
+			if [[ -n "$conf_default" && -r "$conf_default" ]]; then
+				install -m 0644 "$conf_default" "$conf" ||
+					warn "Could not seed $conf from $conf_default"
+			else
+				printf '[commands]\nupgrade_type = default\napply_updates = no\nreboot = never\nreboot_command = ""\n' >"$conf" ||
+					warn "Could not create $conf"
+			fi
+		fi
 		# Batch sed patterns for single-pass efficiency
 		batch_sed "$conf" \
 			's|^\s*upgrade_type\s*=.*|upgrade_type = security|' \
 			's|^\s*apply_updates\s*=.*|apply_updates = yes|' \
 			's|^\s*reboot\s*=.*|reboot = when-needed|' \
-			's|^\s*reboot_command\s*=.*|reboot_command = "shutdown -r +5 '\''Rebooting for security updates'\''"|'
-		ok "Patched $conf (upgrade_type=security, apply_updates=yes, reboot=when-needed)"
-	else
-		info "Would patch $conf: upgrade_type=security, apply_updates=yes, reboot=when-needed"
+			's|^\s*reboot_command\s*=.*|reboot_command = "shutdown -r +5 '\''Rebooting for security updates'\''"|' || true
+		if grep -qE '^\s*upgrade_type\s*=\s*security' "$conf" 2>/dev/null &&
+			grep -qE '^\s*apply_updates\s*=\s*yes' "$conf" 2>/dev/null; then
+			ok "Patched $conf (upgrade_type=security, apply_updates=yes, reboot=when-needed)"
+		else
+			warn "$conf could not be patched for automatic security updates."
+			add_action_item 3 HIGH "AUTO_UPDATES_CONFIG" \
+				"Set upgrade_type = security and apply_updates = yes under [commands] in $conf"
+		fi
 	fi
 
-	run "systemctl enable --now $timer"
+	if ! run "systemctl enable --now $timer"; then
+		warn "Could not enable $timer"
+		add_action_item 3 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now $timer"
+	fi
 
 	# 3b — DNF countme=false (privacyguides.org: opt out of Fedora system counting)
 	# The Fedora Project uses a 'countme' variable to count unique systems accessing
@@ -3127,25 +3747,72 @@ sec_03_dnf_automatic() {
 sec_04_selinux() {
 	should_run 4 || return 0
 	section 4 "SELinux (verify enforcing + install tools)"
-	local mode
+	local mode cfg="/etc/selinux/config" cfg_mode=""
 	mode="$(getenforce 2>/dev/null || echo unknown)"
-	info "Current SELinux mode: $mode"
-	if [[ "$mode" != "Enforcing" ]]; then
-		warn "SELinux is not enforcing — setting enforcing now and updating /etc/selinux/config"
-		run "setenforce 1 || true"
-		if [[ -f /etc/selinux/config ]]; then
-			backup_file /etc/selinux/config
-			if ! sed -i 's|^SELINUX=.*|SELINUX=enforcing|' /etc/selinux/config 2>/dev/null; then
-				err "Failed to set SELINUX=enforcing in /etc/selinux/config"
-				add_action_item 4 HIGH "SELINUX_CONFIG_UPDATE" "Manually set SELINUX=enforcing in /etc/selinux/config"
-				return 1
-			fi
-		fi
-	else
+	[[ -f "$cfg" ]] && cfg_mode="$(awk -F= '/^[[:space:]]*SELINUX=/{print $2; exit}' "$cfg")"
+	info "Current SELinux mode: $mode (configured: ${cfg_mode:-unset})"
+
+	case "$mode" in
+	Enforcing)
 		ok "SELinux is enforcing."
-	fi
+		if [[ -n "$cfg_mode" && "$cfg_mode" != enforcing ]]; then
+			backup_file "$cfg"
+			set_conf_key "$cfg" SELINUX enforcing "=" || true
+			((DRY_RUN)) || ok "Set SELINUX=enforcing in $cfg so it persists across reboots."
+		fi
+		;;
+	Permissive)
+		# Labels are maintained in permissive mode, so switching to enforcing is safe.
+		warn "SELinux is permissive — switching to enforcing now and in $cfg."
+		run "setenforce 1" || warn "setenforce 1 failed"
+		if [[ -f "$cfg" ]]; then
+			backup_file "$cfg"
+			set_conf_key "$cfg" SELINUX enforcing "=" || true
+		fi
+		;;
+	Disabled)
+		if [[ "$cfg_mode" == enforcing || "$cfg_mode" == permissive ]]; then
+			# Config already enables SELinux, so it is disabled at runtime by the kernel
+			# command line (selinux=0) or the environment (containers).
+			warn "SELinux is disabled at runtime although $cfg says SELINUX=$cfg_mode."
+			add_action_item 4 HIGH "SELINUX_DISABLED_RUNTIME" \
+				"SELinux is disabled at boot. Remove the kernel argument: sudo grubby --update-kernel ALL --remove-args selinux — then reboot (a relabel may run)."
+		elif [[ -f "$cfg" ]]; then
+			# Going straight from disabled to enforcing can leave the system unbootable:
+			# files created while SELinux was off carry no labels. Fedora's procedure is
+			# permissive + full relabel on the next boot, then enforcing.
+			warn "SELinux is disabled — enabling it in PERMISSIVE mode with a full relabel on next boot."
+			backup_file "$cfg"
+			set_conf_key "$cfg" SELINUX permissive "=" || true
+			if ((DRY_RUN)); then
+				info "Would schedule a relabel: touch /.autorelabel"
+			elif touch /.autorelabel; then
+				record_change FILE_CREATE /.autorelabel
+			else
+				warn "Could not create /.autorelabel"
+			fi
+			add_action_item 4 HIGH "SELINUX_ENABLE_ENFORCING" \
+				"Reboot to relabel the filesystem in permissive mode, check 'sudo ausearch -m avc -ts boot', then: sudo setenforce 1 && sudo sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config"
+		else
+			warn "$cfg not found — cannot enable SELinux."
+			add_action_item 4 HIGH "SELINUX_CONFIG_MISSING" "Install selinux-policy-targeted and configure /etc/selinux/config"
+		fi
+		;;
+	*)
+		warn "Could not determine the SELinux mode (getenforce unavailable)."
+		;;
+	esac
 	pkg_install setools-console setroubleshoot-server
 	info "Use 'sudo ausearch -m avc -ts recent | audit2why' to diagnose denials."
+}
+
+# fw_cmd() - Print the firewalld CLI to use for permanent configuration.
+# firewall-cmd talks to the running daemon; when firewalld cannot start (broken
+# nftables backend, minimal containers, ...) firewall-offline-cmd edits the same
+# permanent configuration on disk so the policy applies as soon as firewalld starts.
+FW_OFFLINE=0
+fw_cmd() {
+	if ((FW_OFFLINE)); then echo firewall-offline-cmd; else echo firewall-cmd; fi
 }
 
 # firewalld_ensure_service() - Register a custom firewalld service XML if not already known.
@@ -3161,7 +3828,7 @@ firewalld_ensure_service() {
 	local svc_file="${svc_dir}/${svc_name}.xml"
 
 	# Already known to firewalld — nothing to do.
-	if firewall-cmd --get-services 2>/dev/null | grep -qw "${svc_name}"; then
+	if "$(fw_cmd)" --get-services 2>/dev/null | grep -qw "${svc_name}"; then
 		return 0
 	fi
 
@@ -3184,7 +3851,7 @@ firewalld_ensure_service() {
 		printf '</service>\n'
 	} >"${svc_file}"
 	chmod 640 "${svc_file}" 2>/dev/null || true
-	firewall-cmd --reload &>/dev/null || true
+	((FW_OFFLINE)) || firewall-cmd --reload &>/dev/null || true
 	info "Created firewalld service definition: ${svc_name}"
 }
 
@@ -3198,10 +3865,12 @@ firewalld_add_service() {
 		info "Would run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent"
 		return 0
 	fi
-	log "[RUN]   firewall-cmd --zone=${zone} --add-service=${svc} --permanent"
-	local out ec
+	local fw perm=(--permanent) out ec
+	fw="$(fw_cmd)"
+	((FW_OFFLINE)) && perm=() # firewall-offline-cmd only edits permanent config
+	log "[RUN]   ${fw} --zone=${zone} --add-service=${svc} ${perm[*]}"
 	# Capture output and exit code without triggering set -e abort on failure
-	out=$(firewall-cmd --zone="${zone}" --add-service="${svc}" --permanent 2>&1) || ec=$?
+	out=$("${fw}" --zone="${zone}" --add-service="${svc}" "${perm[@]}" 2>&1) || ec=$?
 	ec=${ec:-0}
 	if ((ec == 0)); then
 		ok "firewalld: added service '${svc}' to zone '${zone}'."
@@ -3213,8 +3882,10 @@ firewalld_add_service() {
 			"firewalld service '${svc}' is not registered. Create /etc/firewalld/services/${svc}.xml then run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent && firewall-cmd --reload"
 		return 1
 	fi
-	err "firewall-cmd --add-service=${svc} failed (exit ${ec}): ${out}"
-	return "${ec}"
+	warn "${fw} --add-service=${svc} failed (exit ${ec}): ${out}"
+	add_action_item "5" "HIGH" "FW_ADD_SVC_FAILED_${svc^^}" \
+		"Could not allow '${svc}' in zone '${zone}' — run: sudo firewall-cmd --zone=${zone} --add-service=${svc} --permanent && sudo firewall-cmd --reload"
+	return 1
 }
 
 # ============================================================================
@@ -3226,24 +3897,40 @@ sec_05_firewalld() {
 	should_run 5 || return 0
 	section 5 "firewalld — drop-by-default with explicit allow-list"
 	pkg_install firewalld
-	run "systemctl enable --now firewalld"
+	run "systemctl enable --now firewalld" || warn "systemctl enable --now firewalld failed — checking daemon state."
 
-	# Smart wait for firewalld readiness (max 10 seconds with exponential backoff)
-	info "Waiting for firewalld to be ready..."
+	# Smart wait for firewalld readiness (max 10 seconds with exponential backoff).
+	# Skipped in dry-run: the daemon was not actually started, so waiting is pointless.
 	local attempt=0 max_attempts=10
+	((DRY_RUN)) && max_attempts=0
+	((max_attempts > 0)) && info "Waiting for firewalld to be ready..."
 	while ((attempt < max_attempts)); do
 		if firewall-cmd --state &>/dev/null; then
 			ok "firewalld is ready"
 			break
 		fi
-		((attempt++))
+		((++attempt))
 		sleep $((attempt / 3 + 1)) # Exponential backoff: 1s, 1s, 2s, 2s...
 	done
-	((attempt >= max_attempts)) && warn "firewalld failed to become ready; proceeding anyway"
+	FW_OFFLINE=0
+	if ((max_attempts > 0 && attempt >= max_attempts)); then
+		add_action_item 5 HIGH "FIREWALLD_NOT_RUNNING" \
+			"firewalld is installed but not running. Diagnose with 'journalctl -u firewalld', then run: sudo systemctl enable --now firewalld"
+		if cmd_exists firewall-offline-cmd; then
+			warn "firewalld is not running — writing permanent configuration with firewall-offline-cmd (applies when firewalld starts)."
+			FW_OFFLINE=1
+		else
+			err "firewalld is not running and firewall-offline-cmd is unavailable — skipping firewall configuration."
+			return 0
+		fi
+	fi
 
 	# Set default zone and configure services (batch permanent operations)
 	info "Setting default zone to 'drop'..."
-	run "firewall-cmd --set-default-zone=drop"
+	if ! run "$(fw_cmd) --set-default-zone=drop"; then
+		warn "Could not set the default firewalld zone to 'drop'."
+		add_action_item 5 HIGH "FIREWALL_DEFAULT_ZONE" "Set the default zone manually: sudo firewall-cmd --set-default-zone=drop"
+	fi
 
 	local svc services_to_allow=()
 	if confirm "Allow 'mdns' through the firewall?"; then
@@ -3281,15 +3968,20 @@ sec_05_firewalld() {
 
 	# Add each service with soft-fail guard (INVALID_SERVICE → warn + action item, not abort).
 	for svc in "${services_to_allow[@]}"; do
-		firewalld_add_service drop "$svc"
+		firewalld_add_service drop "$svc" || true
 	done
 
-	run "firewall-cmd --set-log-denied=all" || warn "firewall-cmd --set-log-denied failed"
+	run "$(fw_cmd) --set-log-denied=all" || warn "$(fw_cmd) --set-log-denied failed"
+	if ((FW_OFFLINE)); then
+		run "firewall-offline-cmd --zone=drop --list-all || true"
+		warn "firewalld permanent configuration written offline — it is NOT active until firewalld starts."
+		return 0
+	fi
 	if ! run "firewall-cmd --reload"; then
 		err "firewall-cmd --reload failed; firewall rules may not be active"
 		add_action_item 5 HIGH "FIREWALL_RELOAD_FAILED" "Manually reload firewall: sudo firewall-cmd --reload"
 	fi
-	run "firewall-cmd --list-all"
+	run "firewall-cmd --list-all || true"
 	ok "firewalld configured."
 }
 
@@ -3356,35 +4048,51 @@ sec_07_ssh() {
 		return 0
 	fi
 
-	# Verify public key auth is working before disabling password auth
-	if ! grep -q "^ssh-" ~/.ssh/authorized_keys 2>/dev/null; then
-		warn "WARNING: No public SSH keys found in ~/.ssh/authorized_keys"
-		warn "If you proceed with hardening, you will LOSE SSH access unless you have alternative access method."
-		if ! confirm "Continue without verified public key? (Not recommended)"; then
-			info "Skipped SSH hardening."
-			return 0
-		fi
-		add_action_item 7 HIGH "SSH_NO_PUBLIC_KEY" "Install public SSH key to ~/.ssh/authorized_keys before testing remote login."
-	fi
-	local cfg="/etc/ssh/sshd_config"
-	local drop="/etc/ssh/sshd_config.d/99-hardening.conf"
-	backup_file "$cfg"
-
 	# Validate TARGET_USER to prevent shell injection
 	if [[ -n "$TARGET_USER" && ! "$TARGET_USER" =~ ^[a-zA-Z0-9._-]+$ ]]; then
 		err "Invalid username: $TARGET_USER (must be alphanumeric, dots, dashes, underscores)"
 		return 1
 	fi
 
+	# Verify the account that will be allowed to log in has a public key before
+	# password authentication is disabled. With AllowUsers set, that is TARGET_USER;
+	# otherwise fall back to root's keys (the invoking context).
+	local key_home="${HOME:-/root}" key_owner="root"
+	if [[ -n "$TARGET_USER" ]]; then
+		key_home="$(user_home "$TARGET_USER")"
+		key_owner="$TARGET_USER"
+	fi
+	local key_file="${key_home}/.ssh/authorized_keys"
+	# Key types: ssh-ed25519/ssh-rsa/ssh-dss, ecdsa-sha2-*, sk-* (FIDO); optionally after options.
+	if ! grep -qE '(^|[[:space:]])(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9]+|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com)[[:space:]]+AAAA' \
+		"$key_file" 2>/dev/null; then
+		warn "No public SSH key found in $key_file (user: $key_owner)."
+		warn "Hardening disables password logins — without a key you would LOSE SSH access."
+		add_action_item 7 HIGH "SSH_NO_PUBLIC_KEY" \
+			"Install a public key for ${key_owner} in ${key_file} (ssh-copy-id from your client), then re-run: sudo ./fedora-harden.sh --only 7"
+		if ((ASSUME_YES)); then
+			# Never auto-accept a potential lockout in non-interactive mode.
+			warn "Skipping SSH hardening in --yes mode until a key is installed."
+			return 0
+		fi
+		if ! confirm "Continue without a verified public key? (Not recommended)"; then
+			info "Skipped SSH hardening."
+			return 0
+		fi
+	fi
+
+	# sshd keeps the FIRST value it reads for each option, and Fedora ships
+	# 40-redhat-crypto-policies.conf and 50-redhat.conf (X11Forwarding yes, system
+	# crypto policy). The hardening drop-in must therefore sort before them.
+	local drop="/etc/ssh/sshd_config.d/10-hardening.conf"
+	local legacy_drop="/etc/ssh/sshd_config.d/99-hardening.conf"
+
 	local allow_users_line=""
 	[[ -n "$TARGET_USER" ]] && allow_users_line="AllowUsers $TARGET_USER"
 
-	if ((DRY_RUN)); then
-		info "Would write hardened drop-in to $drop"
-	else
-		install -d -m 755 /etc/ssh/sshd_config.d 2>/dev/null || true
-		if ! cat >"$drop" <<EOF; then
-# Written by $SCRIPT_NAME on $RUN_STAMP_ISO
+	local desired
+	desired="# Managed by fedora-harden.sh. Sorts before 40-redhat-*/50-redhat.conf so these
+# values take precedence (sshd uses the first value it reads for each option).
 PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -3398,17 +4106,65 @@ ClientAliveInterval 300
 ClientAliveCountMax 1
 X11Forwarding no
 AllowAgentForwarding no
-${allow_users_line}
-EOF
+${allow_users_line}"
+
+	if ((DRY_RUN)); then
+		info "Would write hardened drop-in to $drop"
+		[[ -f "$legacy_drop" ]] && info "Would remove legacy drop-in $legacy_drop (overridden by Fedora defaults)"
+		run "/usr/sbin/sshd -t"
+		run "systemctl restart sshd"
+		return 0
+	fi
+
+	local changed=0
+	install -d -m 755 /etc/ssh/sshd_config.d 2>/dev/null || true
+	if [[ -f "$legacy_drop" ]] && grep -q 'fedora-harden' "$legacy_drop" 2>/dev/null; then
+		backup_file "$legacy_drop"
+		if rm -f "$legacy_drop"; then
+			changed=1
+			info "Removed legacy drop-in $legacy_drop (its settings were overridden by Fedora defaults)"
+		fi
+	fi
+	if [[ -f "$drop" ]] && [[ "$(<"$drop")" == "$desired" ]]; then
+		ok "$drop already up to date."
+	else
+		backup_file "$drop"
+		if ! printf '%s\n' "$desired" >"$drop"; then
 			warn "Failed to write $drop (filesystem may be read-only or full)"
-			return 1
+			add_action_item 7 HIGH "SSHD_DROPIN_WRITE_FAILED" "Could not write $drop — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 7"
+			return 0
 		fi
 		chmod 644 "$drop" 2>/dev/null || true
+		changed=1
 		ok "Wrote $drop"
 	fi
 
-	run "/usr/sbin/sshd -t || true"
-	run "systemctl restart sshd"
+	# Never restart sshd on a configuration it rejects: that is how remote lockouts happen.
+	local sshd_test
+	if ! sshd_test="$(/usr/sbin/sshd -t 2>&1)"; then
+		err "sshd rejected the configuration: ${sshd_test}"
+		if ((changed)); then
+			warn "Removing $drop so the sshd configuration stays valid."
+			rm -f "$drop"
+		fi
+		add_action_item 7 HIGH "SSHD_CONFIG_INVALID" \
+			"sshd -t failed after hardening (${sshd_test//$'\n'/ }). Fix the configuration, then: sudo sshd -t && sudo systemctl restart sshd"
+		return 0
+	fi
+	ok "sshd -t: configuration valid."
+
+	if ((!changed)); then
+		info "sshd configuration unchanged — no restart needed."
+	elif systemctl is-active --quiet sshd 2>/dev/null; then
+		if ! run "systemctl restart sshd"; then
+			err "sshd failed to restart — check: journalctl -u sshd"
+			add_action_item 7 HIGH "SSHD_RESTART_FAILED" \
+				"sshd failed to restart after hardening: sudo journalctl -u sshd; sudo systemctl restart sshd"
+			return 0
+		fi
+	else
+		info "sshd is not running — the new configuration applies when it starts."
+	fi
 	warn "IMPORTANT: Before closing this session, open a SECOND terminal and confirm"
 	warn "you can still SSH in with your key. If not, you still have this session to fix it."
 }
@@ -3457,6 +4213,7 @@ EOF
 				"USBGuard policy not generated — reboot, plug in all USB devices, then run: sudo usbguard generate-policy > /etc/usbguard/rules.conf && sudo systemctl enable --now usbguard"
 			return 0
 		fi
+		backup_file /etc/usbguard/rules.conf
 		if ! install -m 0600 -o root -g root "$tmp_usbguard" /etc/usbguard/rules.conf 2>/dev/null; then
 			warn "Failed to install USBGuard rules (filesystem may be read-only)"
 			rm -f "$tmp_usbguard" 2>/dev/null || true
@@ -3485,53 +4242,56 @@ sec_09_pam() {
 	should_run 9 || return 0
 	section 9 "Password quality + account lockout + aging"
 
-	# 9a pwquality — batched sed for efficiency
-	local pq="/etc/security/pwquality.conf"
+	# 9a pwquality (each key: replace active value, uncomment default, or append)
+	local pq="/etc/security/pwquality.conf" kv
+	local -a pq_settings=(minlen=14 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1 minclass=3
+		dictcheck=1 usercheck=1 gecoscheck=1 retry=3 "badwords=admin root password")
 	backup_file "$pq"
+	for kv in "${pq_settings[@]}"; do
+		set_conf_key "$pq" "${kv%%=*}" "${kv#*=}" || true
+	done
 	if ((!DRY_RUN)); then
-		batch_sed "$pq" \
-			's|^\s*#?\s*minlen\s*=.*|minlen = 14|' \
-			's|^\s*#?\s*ucredit\s*=.*|ucredit = -1|' \
-			's|^\s*#?\s*lcredit\s*=.*|lcredit = -1|' \
-			's|^\s*#?\s*dcredit\s*=.*|dcredit = -1|' \
-			's|^\s*#?\s*ocredit\s*=.*|ocredit = -1|' \
-			's|^\s*#?\s*minclass\s*=.*|minclass = 3|' \
-			's|^\s*#?\s*dictcheck\s*=.*|dictcheck = 1|' \
-			's|^\s*#?\s*usercheck\s*=.*|usercheck = 1|' \
-			's|^\s*#?\s*gecoscheck\s*=.*|gecoscheck = 1|' \
-			's|^\s*#?\s*retry\s*=.*|retry = 3|'
-		# Ensure gecoscheck and badwords are present (may not be in all pwquality.conf versions)
-		grep -qE '^\s*gecoscheck\s*=' "$pq" || echo 'gecoscheck = 1' >>"$pq"
-		grep -qE '^\s*badwords\s*=' "$pq" || echo 'badwords = admin root password' >>"$pq"
-		ok "Applied pwquality policy in $pq"
-	else
-		info "Would set minlen=14, ucredit=-1, lcredit=-1, dcredit=-1, ocredit=-1, minclass=3, dictcheck=1, usercheck=1, retry=3"
+		if grep -qE '^minlen = 14$' "$pq" && grep -qE '^minclass = 3$' "$pq"; then
+			ok "Applied pwquality policy in $pq"
+		else
+			warn "pwquality policy could not be fully applied to $pq"
+			add_action_item 9 HIGH "PWQUALITY_NOT_APPLIED" "Set minlen = 14 and minclass = 3 in $pq"
+		fi
 	fi
 
 	# 9b faillock
 	local fl="/etc/security/faillock.conf"
-	backup_file "$fl"
-	if ((!DRY_RUN)) && [[ -f "$fl" ]]; then
-		batch_sed "$fl" \
-			's|^\s*#?\s*deny\s*=.*|deny = 5|' \
-			's|^\s*#?\s*unlock_time\s*=.*|unlock_time = 900|'
-		grep -qE '^\s*even_deny_root' "$fl" || echo 'even_deny_root' >>"$fl"
-		ok "Applied faillock policy in $fl"
+	if [[ -f "$fl" ]]; then
+		backup_file "$fl"
+		set_conf_key "$fl" deny 5 || true
+		set_conf_key "$fl" unlock_time 900 || true
+		if ((!DRY_RUN)); then
+			# even_deny_root is a bare flag; uncomment it or append it
+			if ! grep -qE '^[[:space:]]*even_deny_root[[:space:]]*$' "$fl"; then
+				if grep -qE '^[[:space:]]*#[[:space:]]*even_deny_root[[:space:]]*$' "$fl"; then
+					sed -E -i 's|^[[:space:]]*#[[:space:]]*even_deny_root[[:space:]]*$|even_deny_root|' "$fl"
+				else
+					echo 'even_deny_root' >>"$fl"
+				fi
+			fi
+			ok "Applied faillock policy in $fl (deny=5, unlock_time=900, even_deny_root)"
+		fi
+	else
+		warn "$fl not found — faillock policy not applied."
 	fi
 
-	# 9c login.defs — batched sed
+	# 9c login.defs (whitespace-separated keys)
 	local ld="/etc/login.defs"
-	backup_file "$ld"
-	if ((!DRY_RUN)) && [[ -f "$ld" ]]; then
-		batch_sed "$ld" \
-			's|^\s*PASS_MAX_DAYS\s+.*|PASS_MAX_DAYS   90|' \
-			's|^\s*PASS_MIN_DAYS\s+.*|PASS_MIN_DAYS   1|' \
-			's|^\s*PASS_WARN_AGE\s+.*|PASS_WARN_AGE   14|'
-		ok "Set PASS_MAX_DAYS=90, PASS_MIN_DAYS=1, PASS_WARN_AGE=14"
+	if [[ -f "$ld" ]]; then
+		backup_file "$ld"
+		set_conf_key "$ld" PASS_MAX_DAYS 90 "   " || true
+		set_conf_key "$ld" PASS_MIN_DAYS 1 "   " || true
+		set_conf_key "$ld" PASS_WARN_AGE 14 "   " || true
+		((DRY_RUN)) || ok "Set PASS_MAX_DAYS=90, PASS_MIN_DAYS=1, PASS_WARN_AGE=14 in $ld (applies to new accounts)"
 	fi
 	if [[ -n "$TARGET_USER" ]]; then
-		run "chage -M 90 -m 1 -W 14 '$TARGET_USER'"
-		run "chage -l '$TARGET_USER'"
+		run "chage -M 90 -m 1 -W 14 '$TARGET_USER'" || warn "chage failed for $TARGET_USER"
+		run "chage -l '$TARGET_USER'" || true
 	else
 		warn "No target user — skipping 'chage' password-aging apply."
 	fi
@@ -3553,6 +4313,8 @@ sec_10_sysctl() {
 	if ((DRY_RUN)); then
 		info "Would write $f with guide's full sysctl set"
 	else
+		install -d -m 755 /etc/sysctl.d 2>/dev/null || true
+		backup_file "$f"
 		if ! cat >"$f" <<'EOF'; then
 # /etc/sysctl.d/99-hardening.conf
 # Installed by fedora-harden.sh
@@ -3643,13 +4405,24 @@ net.ipv4.tcp_timestamps = 0
 kernel.core_pattern = |/bin/false
 EOF
 			err "Failed to write sysctl configuration"
-			return 1
+			add_action_item 10 HIGH "SYSCTL_WRITE_FAILED" "Could not write $f — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 10"
+			return 0
 		fi
 		chmod 644 "$f" 2>/dev/null || true
 		ok "Wrote $f"
 	fi
-	run "sysctl --system"
-	run "sysctl kernel.kptr_restrict"
+	# sysctl --system exits non-zero if ANY key cannot be applied (key absent on this
+	# kernel, read-only in a container, ...). The drop-in still applies at boot, so
+	# report the rejected keys instead of aborting the remaining sections.
+	if ! run "sysctl --system >/dev/null"; then
+		local rejected=""
+		[[ -s "$ERROR_CAPTURE_FILE" ]] &&
+			rejected="$(grep -oE 'key "[^"]+"' "$ERROR_CAPTURE_FILE" | tr -d '"' | sed 's/^key //' | sort -u | paste -sd, - | sed 's/,/, /g')"
+		warn "sysctl --system could not apply some keys${rejected:+: $rejected}"
+		add_action_item 10 MEDIUM "SYSCTL_APPLY_PARTIAL" \
+			"Some sysctl keys were rejected by the running kernel${rejected:+ ($rejected)}. Check with: sudo sysctl --system — unsupported keys can be removed from $f"
+	fi
+	run "sysctl kernel.kptr_restrict || true"
 }
 
 # ============================================================================
@@ -3663,12 +4436,17 @@ sec_11_auditd() {
 	should_run 11 || return 0
 	section 11 "auditd rules"
 	pkg_install audit audit-libs
-	run "systemctl enable --now auditd"
+	if ! run "systemctl enable --now auditd"; then
+		warn "auditd could not be started (kernel booted with audit=0, or running in a container?)."
+		add_action_item 11 HIGH "AUDITD_NOT_RUNNING" \
+			"auditd is not running — check 'journalctl -u auditd' and that the kernel was not booted with audit=0, then: sudo systemctl enable --now auditd"
+	fi
 
 	local rules="/etc/audit/rules.d/hardening.rules"
 	if ((DRY_RUN)); then
 		info "Would write $rules"
 	else
+		backup_file "$rules"
 		if ! cat >"$rules" <<'EOF'; then
 -D
 -b 8192
@@ -3728,7 +4506,8 @@ sec_11_auditd() {
 # -e 2
 EOF
 			warn "Failed to write $rules (filesystem may be read-only)"
-			return 1
+			add_action_item 11 HIGH "AUDIT_RULES_WRITE_FAILED" "Could not write $rules — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 11"
+			return 0
 		fi
 		chmod 640 "$rules" 2>/dev/null || true
 		ok "Wrote $rules"
@@ -3739,7 +4518,11 @@ EOF
 		warn "augenrules --load failed (exit $augen_rc) — check $rules for syntax errors."
 		warn "Audit rules written but not loaded. Re-run 'sudo augenrules --load' after fixing."
 	fi
-	run "systemctl restart auditd || service auditd restart"
+	# auditd sets RefuseManualStop=yes, so `systemctl restart auditd` is refused; the
+	# packaged legacy action performs the supported restart (`service` is not installed
+	# by default on Fedora 44).
+	run "/usr/libexec/initscripts/legacy-actions/auditd/restart || service auditd restart" ||
+		warn "auditd restart failed — rules load on next boot (see 'journalctl -u auditd')."
 }
 
 # ============================================================================
@@ -3753,13 +4536,13 @@ sec_12_ids() {
 
 	pkg_install rkhunter aide
 
-	local rk_tmp="/tmp/rkhunter-out-$$.tmp" rk_warn_count=0 cron_rk="/etc/cron.daily/rkhunter-scan"
+	local rk_tmp="/tmp/rkhunter-out-$$.tmp" rk_warn_count=0 rk_scanned=0 cron_rk="/etc/cron.daily/rkhunter-scan"
 	register_tmp "$rk_tmp"
 
 	if cmd_exists rkhunter; then
 		# rkhunter: update signatures then run scan with output capture
 		run "rkhunter --update || true"
-		run "rkhunter --propupd"
+		run "rkhunter --propupd" || warn "rkhunter --propupd failed — run it manually after fixing the reported issue."
 		info "Running initial rkhunter scan (this takes a minute)..."
 		if ((!DRY_RUN)); then
 			log "[RUN]   rkhunter --check --sk --rwo"
@@ -3769,12 +4552,14 @@ sec_12_ids() {
 				rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" || true
 			fi
 			rk_warn_count="$(awk '/^\[ Warning \]/{count++} END{print count+0}' "$rk_tmp" 2>/dev/null || echo 0)"
+			rk_scanned=1
 		else
 			run "rkhunter --check --sk --rwo || true"
 		fi
 
 		# Daily cron
 		if ((!DRY_RUN)); then
+			backup_file "$cron_rk"
 			if ! cat >"$cron_rk" <<'CRONEOF'; then
 #!/bin/bash
 /usr/bin/rkhunter --cronjob --update --quiet
@@ -3785,27 +4570,44 @@ CRONEOF
 				ok "Wrote $cron_rk"
 			fi
 		fi
-	else
+	elif ((DRY_RUN)); then
+		info "rkhunter is not installed yet — a real run installs it, then updates signatures and scans."
+	elif ((IS_OSTREE)); then
 		warn "rkhunter not yet active (staged for next boot on rpm-ostree) — skipping scan; cron will run after reboot."
 		add_action_item 12 MEDIUM "RK_REBOOT_REQUIRED" \
 			"rkhunter staged but not active — reboot then run: sudo rkhunter --propupd && sudo rkhunter --check --sk --rwo"
+	else
+		warn "rkhunter is unavailable after the install attempt — skipping scan."
+		add_action_item 12 MEDIUM "RK_INSTALL_FAILED" "Install rkhunter manually: sudo dnf install -y rkhunter"
 	fi
 
 	# AIDE: initialize database
 	local cron_aide="/etc/cron.weekly/aide-check"
 	if cmd_exists aide; then
 		info "Initializing AIDE database (this can take several minutes)..."
-		run "aide --init"
-		if ((!DRY_RUN)) && [[ -f /var/lib/aide/aide.db.new.gz ]]; then
-			run "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+		if run "aide --init"; then
+			if ((!DRY_RUN)) && [[ -f /var/lib/aide/aide.db.new.gz ]]; then
+				run "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz" ||
+					warn "Could not move the new AIDE database into place."
+			fi
+		else
+			warn "aide --init failed."
+			add_action_item 12 MEDIUM "AIDE_INIT_FAILED" \
+				"AIDE database initialisation failed — run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
 		fi
-	else
+	elif ((DRY_RUN)); then
+		info "aide is not installed yet — a real run installs it and initializes the database."
+	elif ((IS_OSTREE)); then
 		warn "aide not yet active (staged for next boot on rpm-ostree) — skipping database init."
 		add_action_item 12 MEDIUM "AIDE_REBOOT_REQUIRED" \
 			"aide staged but not active — reboot then run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+	else
+		warn "aide is unavailable after the install attempt — skipping database init."
+		add_action_item 12 MEDIUM "AIDE_INSTALL_FAILED" "Install AIDE manually: sudo dnf install -y aide"
 	fi
 
 	if cmd_exists aide && ((!DRY_RUN)); then
+		backup_file "$cron_aide"
 		if ! cat >"$cron_aide" <<'CRONEOF'; then
 #!/bin/bash
 /usr/sbin/aide --check 2>&1 | logger -t aide
@@ -3843,7 +4645,7 @@ CRONEOF
 		add_action_item 12 HIGH "RK_WARNINGS" \
 			"rkhunter found $rk_warn_count warning(s): investigate flagged files, then run: sudo rkhunter --propupd"
 	else
-		ok "rkhunter scan: no warnings detected."
+		((rk_scanned)) && ok "rkhunter scan: no warnings detected."
 	fi
 	if ((!DRY_RUN)) && [[ ! -f /var/lib/aide/aide.db.gz ]] && cmd_exists aide; then
 		add_action_item 12 HIGH "AIDE_DB_MISSING" \
@@ -3868,7 +4670,8 @@ sec_13_flatpak() {
 	else
 		info "Flatpak already present."
 	fi
-	run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+	run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" ||
+		warn "Could not add the Flathub remote (network?) — Flatpak installs below may fail."
 	run "flatpak update -y || true"
 	if confirm "Install Flatseal (graphical Flatpak permission manager)?"; then
 		flatpak_install_or_update flathub com.github.tchx84.Flatseal
@@ -3906,10 +4709,14 @@ sec_13_flatpak() {
 sec_14_dot() {
 	should_run 14 || return 0
 	section 14 "DNS over TLS via systemd-resolved"
+	# Fedora Workstation/Atomic ship systemd-resolved; Server/minimal installs may not.
+	if ! systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1; then
+		pkg_install systemd-resolved
+	fi
 	local dropin_dir="/etc/systemd/resolved.conf.d"
 	local dropin="${dropin_dir}/99-hardening.conf"
 	# Back up the drop-in if it already exists (not the base file, which we don't touch)
-	[[ -f "$dropin" ]] && backup_file "$dropin"
+	backup_file "$dropin"
 	if ((!DRY_RUN)); then
 		install -d -m 755 "$dropin_dir" 2>/dev/null || true
 		if ! cat >"$dropin" <<'EOF'; then
@@ -3920,7 +4727,8 @@ DNSOverTLS=yes
 DNSSEC=yes
 EOF
 			err "Failed to write DNS-over-TLS configuration"
-			return 1
+			add_action_item 14 HIGH "DOT_WRITE_FAILED" "Could not write $dropin — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 14"
+			return 0
 		fi
 		ok "Wrote $dropin"
 		info "DNS-over-TLS: Quad9 (primary, malware-blocking) + Cloudflare (fallback)"
@@ -3928,7 +4736,25 @@ EOF
 		info "  • Mullvad DNS  — 194.242.2.2 / dns.mullvad.net  (Sweden, no-log, DoT+DoH)"
 		info "  • AdGuard DNS  — 94.140.14.14 / dns.adguard-dns.com (anonymized, DoT+DoH+DoQ)"
 	fi
-	run "systemctl restart systemd-resolved"
+	if ! systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 && ((!DRY_RUN)); then
+		warn "systemd-resolved is not installed — DNS-over-TLS is NOT active."
+		add_action_item 14 HIGH "RESOLVED_MISSING" \
+			"Install and enable systemd-resolved for DNS-over-TLS: sudo dnf install -y systemd-resolved && sudo systemctl enable --now systemd-resolved"
+	elif ! run "systemctl enable systemd-resolved && systemctl restart systemd-resolved"; then
+		warn "systemd-resolved could not be (re)started — DNS-over-TLS settings apply when it next starts."
+		add_action_item 14 MEDIUM "RESOLVED_RESTART_FAILED" "Restart systemd-resolved: sudo systemctl enable --now systemd-resolved"
+	fi
+	# DoT only protects lookups that go through resolved, i.e. when /etc/resolv.conf
+	# points at its stub (the Fedora default). Report instead of re-plumbing DNS.
+	local resolv_target
+	resolv_target="$(readlink -f /etc/resolv.conf 2>/dev/null || true)"
+	if [[ "$resolv_target" == /run/systemd/resolve/stub-resolv.conf || "$resolv_target" == /run/systemd/resolve/resolv.conf ]]; then
+		ok "/etc/resolv.conf uses systemd-resolved — DNS-over-TLS applies to all lookups."
+	elif ((!DRY_RUN)); then
+		warn "/etc/resolv.conf does not point to systemd-resolved (${resolv_target:-missing}) — applications bypass DNS-over-TLS."
+		add_action_item 14 HIGH "RESOLV_CONF_NOT_RESOLVED" \
+			"Route DNS through systemd-resolved: sudo ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf && sudo systemctl restart NetworkManager"
+	fi
 	run "resolvectl status | head -25 || true"
 
 	# 14b — NetworkManager MAC address randomization (privacyguides.org network privacy)
@@ -3938,6 +4764,7 @@ EOF
 		info "Would write $nm_mac (Wi-Fi and Ethernet MAC randomization)"
 	else
 		install -d -m 755 /etc/NetworkManager/conf.d 2>/dev/null || true
+		backup_file "$nm_mac"
 		if ! cat >"$nm_mac" <<'EOF'; then
 [device]
 wifi.scan-rand-mac-address=yes
@@ -3953,6 +4780,43 @@ EOF
 			run "systemctl restart NetworkManager || true"
 		fi
 	fi
+}
+
+# user_session_run() - Run a shell snippet as <user> with a working D-Bus session.
+# gsettings (dconf) and xfconf-query need the user's session bus. Plain `sudo -u`
+# from a root shell has none: gsettings then exits 0 but silently discards every
+# change. Use the user's live bus when they are logged in (the running session sees
+# the change immediately), otherwise a private bus via dbus-run-session (dconf still
+# persists to ~/.config/dconf/user).
+# Usage: user_session_run <user> <script>
+user_session_run() {
+	local user="$1" script="$2" uid home
+	uid="$(id -u "$user" 2>/dev/null)" || return 1
+	home="$(user_home "$user")"
+	if [[ -S "/run/user/${uid}/bus" ]]; then
+		sudo -u "$user" env HOME="$home" XDG_RUNTIME_DIR="/run/user/${uid}" \
+			DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" bash -c "$script"
+	elif cmd_exists dbus-run-session; then
+		sudo -u "$user" env HOME="$home" dbus-run-session -- bash -c "$script"
+	else
+		warn "No D-Bus session for $user and dbus-run-session is unavailable."
+		return 1
+	fi
+}
+
+# verify_user_setting() - Report whether a desktop setting really persisted.
+# Usage: verify_user_setting <label> <expected> <read-command>
+verify_user_setting() {
+	local label="$1" expected="$2" read_cmd="$3" actual
+	actual="$(user_session_run "$TARGET_USER" "$read_cmd" 2>/dev/null | tail -n 1)"
+	if [[ "$actual" == "$expected" ]]; then
+		ok "${label} applied for ${TARGET_USER} (verified)."
+		return 0
+	fi
+	warn "${label}: settings did not persist for ${TARGET_USER} (read back '${actual:-nothing}', expected '${expected}')."
+	add_action_item 15 MEDIUM "DESKTOP_SETTINGS_${label%%:*}" \
+		"${label} could not be applied automatically — set screen lock/privacy options in the desktop settings for ${TARGET_USER}."
+	return 1
 }
 
 # ============================================================================
@@ -3996,7 +4860,7 @@ sec_15_desktop() {
 	fi
 
 	local user_home applied_des=()
-	user_home="$(eval echo "~${TARGET_USER}")"
+	user_home="$(user_home "$TARGET_USER")"
 
 	info "Detected desktop(s): ${DESKTOP_ENVS:-unknown}  (spin: ${FEDORA_VARIANT})"
 
@@ -4035,7 +4899,7 @@ sec_15_desktop() {
 		info "--- GNOME settings ---"
 		if ((!DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (GNOME privacy)"
-			sudo -u "$TARGET_USER" bash -c '
+			user_session_run "$TARGET_USER" '
 				gsettings set org.gnome.desktop.session idle-delay 300
 				gsettings set org.gnome.desktop.screensaver lock-enabled true
 				gsettings set org.gnome.desktop.screensaver lock-delay 0
@@ -4051,7 +4915,8 @@ sec_15_desktop() {
 		else
 			info "Would apply GNOME gsettings: screen lock, location off, privacy, mic off"
 		fi
-		ok "GNOME: screen lock, location off, privacy, mic off."
+		((DRY_RUN)) || verify_user_setting "GNOME: screen lock, location off, privacy, mic off" true \
+			"gsettings get org.gnome.desktop.screensaver lock-enabled" || true
 		info "GNOME GUI-only: Online Accounts, Sharing, Bluetooth → GNOME Settings."
 		applied_des+=("GNOME")
 	fi
@@ -4061,7 +4926,7 @@ sec_15_desktop() {
 		info "--- Budgie settings ---"
 		if ((!DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (Budgie/GNOME privacy)"
-			sudo -u "$TARGET_USER" bash -c '
+			user_session_run "$TARGET_USER" '
 				gsettings set org.gnome.desktop.session idle-delay 300
 				gsettings set org.gnome.desktop.screensaver lock-enabled true
 				gsettings set org.gnome.desktop.screensaver lock-delay 0
@@ -4076,7 +4941,8 @@ sec_15_desktop() {
 		else
 			info "Would apply Budgie gsettings: screen lock, location off, privacy, mic off"
 		fi
-		ok "Budgie: screen lock, privacy applied."
+		((DRY_RUN)) || verify_user_setting "Budgie: screen lock, privacy" true \
+			"gsettings get org.gnome.desktop.screensaver lock-enabled" || true
 		applied_des+=("Budgie")
 	fi
 
@@ -4085,7 +4951,7 @@ sec_15_desktop() {
 		info "--- Cinnamon settings ---"
 		if ((!DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (Cinnamon privacy)"
-			sudo -u "$TARGET_USER" bash -c '
+			user_session_run "$TARGET_USER" '
 				gsettings set org.cinnamon.desktop.screensaver lock-enabled true
 				gsettings set org.cinnamon.desktop.screensaver lock-delay 0
 				gsettings set org.cinnamon.desktop.session idle-delay 300 2>/dev/null || true
@@ -4098,7 +4964,8 @@ sec_15_desktop() {
 		else
 			info "Would apply Cinnamon gsettings: screen lock, privacy, location off"
 		fi
-		ok "Cinnamon: screen lock, privacy applied."
+		((DRY_RUN)) || verify_user_setting "Cinnamon: screen lock, privacy" true \
+			"gsettings get org.cinnamon.desktop.screensaver lock-enabled" || true
 		applied_des+=("Cinnamon")
 	fi
 
@@ -4107,7 +4974,7 @@ sec_15_desktop() {
 		info "--- MATE settings ---"
 		if ((!DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (MATE privacy)"
-			sudo -u "$TARGET_USER" bash -c '
+			user_session_run "$TARGET_USER" '
 				gsettings set org.mate.screensaver lock-enabled true 2>/dev/null || true
 				gsettings set org.mate.screensaver idle-activation-enabled true 2>/dev/null || true
 				gsettings set org.mate.screensaver idle-delay 5 2>/dev/null || true
@@ -4118,7 +4985,8 @@ sec_15_desktop() {
 		else
 			info "Would apply MATE gsettings: screensaver lock, idle timeout, privacy"
 		fi
-		ok "MATE: screensaver lock, power-manager idle applied."
+		((DRY_RUN)) || verify_user_setting "MATE: screensaver lock, power-manager idle" true \
+			"gsettings get org.mate.screensaver lock-enabled" || true
 		applied_des+=("MATE")
 	fi
 
@@ -4132,17 +5000,21 @@ sec_15_desktop() {
 		else
 			if ((!DRY_RUN)); then
 				log "[RUN]   sudo -u '$TARGET_USER' xfconf-query batch (XFCE screensaver/power)"
-				sudo -u "$TARGET_USER" xfconf-query -c xfce4-screensaver -p /saver/enabled -s true 2>/dev/null || true
-				sudo -u "$TARGET_USER" xfconf-query -c xfce4-screensaver -p /lock/enabled -s true 2>/dev/null || true
-				sudo -u "$TARGET_USER" xfconf-query -c xfce4-screensaver -p /saver/idle-activation/enabled -s true 2>/dev/null || true
-				sudo -u "$TARGET_USER" xfconf-query -c xfce4-screensaver -p /saver/idle-activation/delay -s 5 2>/dev/null || true
-				sudo -u "$TARGET_USER" xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 5 2>/dev/null || true
-				sudo -u "$TARGET_USER" xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -s 3 2>/dev/null || true
-				sudo -u "$TARGET_USER" xfconf-query -c xfce4-session -p /general/SaveOnExit -s false 2>/dev/null || true
+				# -n creates the property if it does not exist yet; -t gives its type.
+				user_session_run "$TARGET_USER" '
+					xfconf-query -c xfce4-screensaver -p /saver/enabled -n -t bool -s true
+					xfconf-query -c xfce4-screensaver -p /lock/enabled -n -t bool -s true
+					xfconf-query -c xfce4-screensaver -p /saver/idle-activation/enabled -n -t bool -s true
+					xfconf-query -c xfce4-screensaver -p /saver/idle-activation/delay -n -t int -s 5
+					xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -n -t int -s 5
+					xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -n -t int -s 3
+					xfconf-query -c xfce4-session -p /general/SaveOnExit -n -t bool -s false
+				' 2>/dev/null || true
 			else
 				info "Would apply xfconf-query: screensaver lock, power manager idle, session save off"
 			fi
-			ok "XFCE: screensaver lock, power manager idle applied."
+			((DRY_RUN)) || verify_user_setting "XFCE: screensaver lock, power manager idle" true \
+				"xfconf-query -c xfce4-screensaver -p /lock/enabled" || true
 			info "XFCE GUI-only: File Manager → Preferences → Privacy (clear recent files on exit)."
 		fi
 		applied_des+=("XFCE")
@@ -4166,6 +5038,7 @@ sec_15_desktop() {
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/swaylock' '${user_home}/.config/swayidle'"
 			if [[ ! -f "$swaylock_cfg" ]]; then
+				backup_file "${swaylock_cfg}"
 				cat >"$swaylock_cfg" <<'SWAYEOF'
 # swaylock - privacy-hardened config (fedora-harden.sh)
 color=000000
@@ -4179,6 +5052,7 @@ SWAYEOF
 				info "swaylock config already exists — leaving intact."
 			fi
 			if [[ ! -f "$swayidle_cfg" ]]; then
+				backup_file "${swayidle_cfg}"
 				cat >"$swayidle_cfg" <<'SWAYEOF'
 # swayidle - auto-lock/suspend config (fedora-harden.sh)
 timeout 300 'swaylock -f'
@@ -4214,6 +5088,7 @@ SWAYEOF
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/hypr'"
 			if [[ ! -f "$hypridle_cfg" ]]; then
+				backup_file "${hypridle_cfg}"
 				cat >"$hypridle_cfg" <<'HYPREOF'
 # hypridle - auto-lock config (fedora-harden.sh)
 general {
@@ -4263,6 +5138,7 @@ HYPREOF
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${i3_cfg_d}'"
 			if [[ ! -f "$i3_lock_frag" ]]; then
+				backup_file "${i3_lock_frag}"
 				cat >"$i3_lock_frag" <<'I3EOF'
 # i3 auto-lock via xss-lock + i3lock (fedora-harden.sh)
 exec --no-startup-id xss-lock --transfer-sleep-lock -- i3lock --nofork --color=000000
@@ -4293,6 +5169,7 @@ I3EOF
 		if ((!DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/lxqt'"
 			if [[ ! -f "$ss_cfg" ]]; then
+				backup_file "$ss_cfg"
 				printf '[General]\nlockAfterEnable=true\nlockAfterTimeout=300\nscreensaverTimeout=300\n' >"$ss_cfg"
 				run "chown '${TARGET_USER}:${TARGET_USER}' '${ss_cfg}'"
 				ok "Wrote LXQt screensaver config"
@@ -4306,6 +5183,7 @@ I3EOF
 				ok "Patched LXQt screensaver config"
 			fi
 			if [[ ! -f "$pm_cfg" ]]; then
+				backup_file "$pm_cfg"
 				printf '[General]\nenableIdleSuspend=true\nidleSuspendTimeout=600\n' >"$pm_cfg"
 				run "chown '${TARGET_USER}:${TARGET_USER}' '${pm_cfg}'"
 				ok "Wrote LXQt power management config"
@@ -4349,7 +5227,8 @@ sec_16_firefox() {
 		info "Detected native RPM Firefox. Keeping it installed, but Flatpak Firefox remains the hardened preferred browser."
 	fi
 
-	run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+	run "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" ||
+		warn "Could not add the Flathub remote (network?) — Flatpak installs below may fail."
 	flatpak_install_or_update flathub org.mozilla.firefox
 
 	local ff_user="${TARGET_USER:-${SUDO_USER:-}}"
@@ -4622,6 +5501,7 @@ sec_18_fail2ban() {
 		fi
 
 		if [[ ! -f "$jl" ]]; then
+			backup_file "$jl"
 			if ! cat >"$jl" <<'EOF'; then
 [DEFAULT]
 bantime  = 3600
@@ -4777,6 +5657,7 @@ sec_20_perms() {
 	if ((DRY_RUN)); then
 		info "Would write $umask_f (umask 077)"
 	elif [[ ! -f "$umask_f" ]]; then
+		backup_file "$umask_f"
 		if ! cat >"$umask_f" <<'EOF'; then
 # Set restrictive default umask so new files are not world/group readable
 umask 077
@@ -4795,6 +5676,7 @@ EOF
 	if ((DRY_RUN)); then
 		info "Would write $coredump_f (disable core dumps)"
 	elif [[ ! -f "$coredump_f" ]]; then
+		backup_file "$coredump_f"
 		if ! cat >"$coredump_f" <<'EOF'; then
 * soft core 0
 * hard core 0
@@ -4854,56 +5736,48 @@ sec_21_clamav() {
 	# freshclam can fail if the daemon already holds the lock; suppress for idempotency
 	run "freshclam || true"
 	run "systemctl enable --now clamav-freshclam || true"
-	# The clamd@scan unit varies; try both
-	run "systemctl enable --now clamd@scan || systemctl enable --now clamd@scan.service || true"
-
-	# Configure on-access scanning for home directories (inteltechniques.com)
+	# Configure clamd BEFORE starting it: Fedora ships /etc/clamd.d/scan.conf with
+	# LocalSocket commented out, and clamd refuses to start without a socket
+	# ("Please define server type").
 	local clamd_conf="/etc/clamd.d/scan.conf"
 	if [[ -f "$clamd_conf" ]]; then
-		if ((!DRY_RUN)); then
-			backup_file "$clamd_conf"
-			# Enable on-access scanning if not already configured
-			if ! grep -q "^OnAccessIncludePath" "$clamd_conf" 2>/dev/null; then
-				if {
-					echo ""
-					echo "# On-access scanning — monitor home directories (inteltechniques.com)"
-					echo "OnAccessIncludePath /home"
-					echo "OnAccessExcludeRootUID yes"
-					echo "OnAccessPrevention no"
-				} >>"$clamd_conf" 2>/dev/null; then
-					ok "Configured ClamAV on-access scanning for /home in $clamd_conf"
-				else
-					warn "Failed to update $clamd_conf for on-access scanning"
-				fi
-			else
-				info "ClamAV on-access scanning already configured in $clamd_conf"
-			fi
-			# Increase scan size limits to suppress spurious decompress-exceeds-limits
-			# warnings on large XZ/archive files while keeping memory use reasonable.
-			if ! grep -q "^MaxFileSize" "$clamd_conf" 2>/dev/null; then
-				if {
-					echo ""
-					echo "# Scan size limits — raised to handle large archives/ISOs without"
-					echo "# LibClamAV 'decompress file size exceeds limits' noise"
-					echo "MaxFileSize 500M"
-					echo "MaxScanSize 2000M"
-					echo "MaxRecursion 16"
-					echo "StreamMaxLength 500M"
-				} >>"$clamd_conf" 2>/dev/null; then
-					ok "Configured ClamAV scan size limits in $clamd_conf"
-				else
-					warn "Failed to write ClamAV scan size limits to $clamd_conf"
-				fi
-			else
-				info "ClamAV scan size limits already set in $clamd_conf"
-			fi
-		else
-			info "Would configure ClamAV on-access scanning (OnAccessIncludePath /home) in $clamd_conf"
-		fi
+		backup_file "$clamd_conf"
+		local kv
+		local -a clamd_settings=(
+			"LocalSocket /run/clamd.scan/clamd.sock"
+			# On-access scanning of home directories (inteltechniques.com); clamonacc
+			# reads these. The clamd user is excluded to avoid scan loops.
+			"OnAccessIncludePath /home"
+			"OnAccessExcludeRootUID yes"
+			"OnAccessExcludeUname clamscan"
+			"OnAccessPrevention no"
+			# Scan size limits — handle large archives/ISOs without
+			# LibClamAV 'decompress file size exceeds limits' noise
+			"MaxFileSize 500M"
+			"MaxScanSize 2000M"
+			"MaxRecursion 16"
+			"StreamMaxLength 500M"
+		)
+		for kv in "${clamd_settings[@]}"; do
+			set_conf_key "$clamd_conf" "${kv%% *}" "${kv#* }" " " || true
+		done
+		((DRY_RUN)) || ok "Configured clamd socket, on-access scanning (/home) and scan limits in $clamd_conf"
 	else
 		info "ClamAV clamd config not found at $clamd_conf — on-access config skipped."
 		add_action_item 21 LOW "CLAMAV_ONACCESS_CONFIG" \
 			"Manually configure on-access scanning: add 'OnAccessIncludePath /home' to your clamd config (/etc/clamd.d/scan.conf)"
+	fi
+
+	if ! run "systemctl enable --now clamd@scan"; then
+		warn "clamd@scan failed to start — check: journalctl -u clamd@scan"
+	fi
+	# clamonacc performs the on-access scanning (fanotify; needs a running clamd@scan).
+	if systemctl list-unit-files clamav-clamonacc.service >/dev/null 2>&1; then
+		if ! run "systemctl enable --now clamav-clamonacc"; then
+			warn "clamav-clamonacc failed to start — on-access scanning inactive (journalctl -u clamav-clamonacc)."
+			add_action_item 21 MEDIUM "CLAMAV_ONACCESS_NOT_RUNNING" \
+				"On-access scanning is configured but clamonacc is not running: sudo systemctl enable --now clamav-clamonacc"
+		fi
 	fi
 
 	# Post-enable status check and report
@@ -5093,6 +5967,7 @@ sec_23_containers() {
 			if ((!DRY_RUN)); then
 				install -d -m 700 "$cont_conf_dir" 2>/dev/null || true
 				if [[ ! -f "$cont_conf" ]]; then
+					backup_file "$cont_conf"
 					cat >"$cont_conf" <<'EOF'
 # Rootless Podman hardening defaults — written by fedora-harden.sh
 [containers]
@@ -5188,6 +6063,7 @@ EOF
 	if [[ ! -f "$reg_conf" ]]; then
 		if ((!DRY_RUN)); then
 			install -d -m 755 "$reg_conf_d" 2>/dev/null || true
+			backup_file "$reg_conf"
 			cat >"$reg_conf" <<'EOF'
 # Require fully-qualified image names — written by fedora-harden.sh
 # An empty list prevents silent docker.io resolution for unqualified names.
@@ -5246,10 +6122,10 @@ show_actionable_items() {
 			MEDIUM) printf '%s  [%2d] [%s][%s] %s%s\n' "$C_YEL" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
 			*) printf '%s  [%2d] [%s][%s] %s%s\n' "$C_BLU" "$idx" "$priority" "$section" "$desc" "$C_RST" ;;
 			esac
-			((idx++))
+			((++idx))
 		done
 		printf '%s════════════════════════════════════════════%s\n\n' "$C_YEL" "$C_RST"
-	else
+	elif ((!GUI_SUMMARY_SHOWN)); then
 		local msg="Actionable Items (${#ACTIONABLE_ITEMS[@]}):"$'\n'
 		for item in "${ACTIONABLE_ITEMS[@]}"; do
 			local section priority tag desc
@@ -5412,7 +6288,7 @@ remediation_loop() {
 			ok "All actionable items resolved in round $round."
 			break
 		}
-		((round++))
+		((++round))
 	done
 	if ((${#ACTIONABLE_ITEMS[@]} > 0)); then
 		warn "${#ACTIONABLE_ITEMS[@]} item(s) could not be auto-resolved and require manual action:"
@@ -5453,7 +6329,7 @@ final_summary() {
 					local section priority tag desc
 					IFS='|' read -r section priority tag desc <<<"$item"
 					printf '  [%2d] [%s][%s] %s\n' "$idx" "$priority" "$section" "$desc"
-					((idx++))
+					((++idx))
 				done
 			else
 				printf '  None — sections 12/18/21/22/23 appear clean.\n'
@@ -5519,7 +6395,11 @@ EOF
 		((IS_OSTREE)) && log "Summary: reboot required on rpm-ostree for staged/layered changes"
 	fi
 
-	gui_alert info "Fedora hardening finished.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
+	local gui_headline="Fedora hardening finished."
+	((DRY_RUN)) && gui_headline="Dry run finished — no changes were made."
+	local gui_items="${#ACTIONABLE_ITEMS[@]} item(s) need follow-up (listed below)."
+	((${#ACTIONABLE_ITEMS[@]} == 0)) && gui_items="No follow-up items."
+	gui_final_summary "$gui_headline" "${gui_items}\nA reboot is recommended.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
 
 	# Display the actionable items from sections 12/18/21/22/23 and handle approval/selection.
 	handle_actionable_follow_up "$summary_path"
@@ -5626,7 +6506,9 @@ main() {
 
 	SESSION_STATUS="completed"
 	ok "Script execution complete. See logs for full details."
-	[[ -n "$SESSION_REPORT_FILE" ]] && ok "Session report: $SESSION_REPORT_FILE"
+	if [[ -n "$SESSION_REPORT_FILE" ]]; then
+		ok "Session report: $SESSION_REPORT_FILE"
+	fi
 }
 
 main "$@"
