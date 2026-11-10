@@ -18,8 +18,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+# Default-deny token; each job opts back in to exactly what it needs.
+permissions: {}
 
 jobs:
   static:
@@ -27,13 +27,17 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: registry.fedoraproject.org/fedora:44
+    permissions:
+      contents: read
     steps:
       - name: Install Fedora 44 toolchain
         run: >-
           dnf install -y --setopt=install_weak_deps=False
           git bash findutils diffutils ShellCheck shfmt yamllint ruff hadolint python3 python3-mcp
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Static test tier
         run: ./tests/run-suite.sh --tier static
@@ -43,13 +47,17 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: registry.fedoraproject.org/fedora:44
+    permissions:
+      contents: read
     steps:
       - name: Install gitleaks
         run: dnf install -y --setopt=install_weak_deps=False git gitleaks
 
-      - uses: actions/checkout@v7
+      # Full history: a secret committed earlier and later deleted is still in Git.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Scan full git history
         run: |
@@ -68,13 +76,15 @@ jobs:
       - name: Install trivy
         run: dnf install -y --setopt=install_weak_deps=False git trivy
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Trivy filesystem scan
         run: trivy fs --scanners vuln,misconfig,secret --format sarif --output trivy-results.sarif .
 
       - name: Upload results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
         with:
           sarif_file: trivy-results.sarif
 
@@ -88,6 +98,8 @@ jobs:
     container:
       image: registry.fedoraproject.org/fedora:44
       options: --privileged
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -96,14 +108,18 @@ jobs:
       - name: Install podman
         run: dnf install -y --setopt=install_weak_deps=False git podman fuse-overlayfs findutils diffutils
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run ${{ matrix.tier }} tier
-        run: ./tests/run-suite.sh --tier ${{ matrix.tier }} --artifacts "$RUNNER_TEMP/suite-${{ matrix.tier }}"
+        env:
+          TIER: ${{ matrix.tier }}
+        run: ./tests/run-suite.sh --tier "$TIER" --artifacts "$RUNNER_TEMP/suite-$TIER"
 
       - name: Upload test artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: suite-${{ matrix.tier }}
           path: ${{ runner.temp }}/suite-${{ matrix.tier }}
