@@ -67,7 +67,7 @@ This is a personal hardening script that has grown a substantial feature set and
 
 ## Requirements
 
-- **Fedora 44+** (or a compatible Atomic/Universal Blue variant) — every change is tested on Fedora 44 (see [Testing](#testing))
+- **Fedora 44+** (or a compatible Atomic/Universal Blue variant) — every change is tested on Fedora 44 and 45 (see [Testing](#testing))
 - `bash` 5.x
 - `sudo` / root access
 - Internet connection (for package installs and firmware updates)
@@ -225,6 +225,13 @@ Section 23 sets up a **containerized-mindset** environment using rootless Podman
 
 ## After Running
 
+Check that the hardening is really in effect. This only reads state and changes nothing:
+
+```bash
+sudo ./tests/verify-host.sh            # every check, with PASS / FAIL / SKIP
+sudo ./tests/verify-host.sh --only SSH # one area: AUTO SEL FW SSH PAM SYS AUD DNS CLAM DESK PERM ROLL
+```
+
 The script generates a session report in `./sessions/` and prints a prioritized **actionable items** list at the end (HIGH / MEDIUM / LOW). Items that require manual steps (GRUB password, WireGuard tunnel config, etc.) are called out explicitly with instructions.
 
 You can export the audit to PDF/TXT for later review:
@@ -238,8 +245,8 @@ sudo ./fedora-harden.sh --import-audit ./sessions/audit-20260601-143022.txt
 
 ## Testing
 
-All tests run on **Fedora 44** in throwaway rootless podman containers — the host
-is never modified:
+All tests run on **Fedora 44 and 45** in throwaway rootless podman containers — the
+host is never modified:
 
 ```bash
 ./tests/run-suite.sh                  # everything
@@ -247,12 +254,13 @@ is never modified:
 ./tests/run-suite.sh --tier quick     # CLI, dry-run makes no changes, desktop settings
 ./tests/run-suite.sh --tier full      # real run under systemd, idempotency, rollback
 ./tests/run-suite.sh --tier gui       # --gui-full on a virtual display, theme, Cancel
+./tests/run-suite.sh --fedora 45      # the same on Fedora 45 (default: 44)
 ```
 
 The full tier checks the hardening is really in effect (e.g. the effective sshd
 configuration via `sshd -T`, the password policy files), that a second run
 changes nothing, and that `--rollback all` restores the system. See
-[TESTING.md](TESTING.md); setup is `./setup-dev.sh` (Fedora 44 RPM toolchain).
+[TESTING.md](TESTING.md); setup is `./setup-dev.sh` (Fedora RPM toolchain).
 
 ---
 
@@ -263,12 +271,13 @@ fedora-harden.sh               # the tool: 23 hardening sections
 tests/run-suite.sh             # test suite: static, quick, full and gui tiers (see TESTING.md)
 tests/*.sh, tests/*.py         # in-container checks (desktop settings, GUI, MCP smoke test)
 test-in-podman.sh              # ad-hoc runs in a throwaway podman container
-Dockerfile.test                # Fedora 44 test images: base, test-only, lint, gui
-setup-dev.sh                   # contributor setup (Fedora 44 RPM toolchain + git hooks)
+Dockerfile.test                # test images (FEDORA_VERSION 44/45): base, test-only, lint, gui
+setup-dev.sh                   # contributor setup (Fedora RPM toolchain + git hooks)
+tests/verify-host.sh           # read-only check of a hardened machine (see After Running)
 mcp_server_fedora_harden.py    # optional, contributor-only: exposes lint/test workflows
                                # as MCP tools — not used by fedora-harden.sh at runtime
 .pre-commit-config.yaml        # local lint/format/secret-scan hooks
-.github/workflows/             # CI (all jobs on Fedora 44): tests, gitleaks, trivy,
+.github/workflows/             # CI (Fedora 44 + 45 containers): tests, gitleaks, trivy,
                                # workflow-security (actionlint + zizmor)
 SECURITY.md / THREAT_MODEL.md  # responsible-use policy and trust boundary
 DEVELOPMENT.md / TOOLCHAIN.md  # contributor setup and the dev-tooling pipeline
@@ -287,7 +296,7 @@ you need — everything else is for people modifying the script itself.
 | Shell syntax | `bash -n` | [![CI](https://github.com/nixbys/fedora-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/ci.yml) |
 | Static analysis | ShellCheck 0.11.0 (`--enable=all`) | ↑ same |
 | Formatting | shfmt v3.12.0 (style from `.editorconfig`) | ↑ same |
-| Container tests | `tests/run-suite.sh` quick, full and gui tiers (Fedora 44, podman) | ↑ same |
+| Container tests | `tests/run-suite.sh` quick, full and gui tiers (Fedora 44 and 45, podman) | ↑ same |
 | Secret scanning | gitleaks (full history, blocking) | ↑ same |
 | Vulnerabilities | Trivy (results in the Security tab) | ↑ same |
 | Workflow security | actionlint + zizmor | [![Workflow security](https://github.com/nixbys/fedora-hardening/actions/workflows/workflow-security.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/workflow-security.yml) |
