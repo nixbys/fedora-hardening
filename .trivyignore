@@ -1,0 +1,10 @@
+# Trivy suppressions — each entry needs a justification.
+
+# DS-0002 "no non-root USER": Dockerfile.test images exist to run fedora-harden.sh,
+# which must run as root, and the "base" image boots systemd as PID 1. The images are
+# test-only, run rootless under podman, and are never published or deployed.
+DS-0002
+
+# DS-0026 "no HEALTHCHECK": short-lived test containers; the suite checks readiness
+# itself with `systemctl is-system-running`.
+DS-0026

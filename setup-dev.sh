@@ -1,305 +1,233 @@
 #!/usr/bin/env bash
-# setup-dev.sh - Initialize development environment for fedora-harden.sh
-# This script installs all necessary tools for efficient development
+# setup-dev.sh - Initialize the development environment for fedora-harden.sh
+#
+# The supported development platform is Fedora 44 (the release the script targets).
+# All tooling comes from Fedora 44 RPMs, so local runs, pre-commit hooks and CI use
+# the same tool versions:
+#   ShellCheck shfmt yamllint ruff hadolint gitleaks pre-commit python3-mcp podman
+#
+# On an rpm-ostree host (Silverblue, Kinoite, Bazzite, ...) run this inside a
+# Fedora 44 toolbox:
+#   toolbox create --image registry.fedoraproject.org/fedora-toolbox:44 fh-dev
+#   toolbox enter fh-dev && ./setup-dev.sh
 
 set -Eeuo pipefail
 
-# Colors
-C_RED=$'\033[0;31m'
-C_GRN=$'\033[0;32m'
-C_YEL=$'\033[0;33m'
-C_BLU=$'\033[0;34m'
-C_RST=$'\033[0m'
+# Colors (only when stdout is a terminal)
+if [[ -t 1 ]]; then
+    C_RED=$'\033[0;31m' C_GRN=$'\033[0;32m' C_YEL=$'\033[0;33m' C_BLU=$'\033[0;34m' C_RST=$'\033[0m'
+else
+    C_RED="" C_GRN="" C_YEL="" C_BLU="" C_RST=""
+fi
 
-# Functions
 log_info() { printf '%s[ℹ]%s %s\n' "$C_BLU" "$C_RST" "$*"; }
-log_ok()   { printf '%s[✓]%s %s\n' "$C_GRN" "$C_RST" "$*"; }
+log_ok() { printf '%s[✓]%s %s\n' "$C_GRN" "$C_RST" "$*"; }
 log_warn() { printf '%s[⚠]%s %s\n' "$C_YEL" "$C_RST" "$*"; }
-log_err()  { printf '%s[✗]%s %s\n' "$C_RED" "$C_RST" "$*"; }
+log_err() { printf '%s[✗]%s %s\n' "$C_RED" "$C_RST" "$*" >&2; }
 
 # Configuration
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
-PYTHON_MIN_VERSION="3.8"
+TARGET_FEDORA="44"
+PYTHON_MIN_VERSION="3.10"
+# command:rpm pairs for the Fedora toolchain
+FEDORA_TOOLS=(
+    git:git
+    python3:python3
+    podman:podman
+    shellcheck:ShellCheck
+    shfmt:shfmt
+    yamllint:yamllint
+    ruff:ruff
+    hadolint:hadolint
+    gitleaks:gitleaks
+    pre-commit:pre-commit
+)
+OPTIONAL_RPMS=(python3-mcp)
 SKIP_OPTIONAL=0
 DRY_RUN=0
 
-# Parse arguments
-while (( $# > 0 )); do
-    case "$1" in
-        --skip-optional) SKIP_OPTIONAL=1; shift ;;
-        --dry-run)       DRY_RUN=1; shift ;;
-        --help)          show_help; exit 0 ;;
-        *)               log_err "Unknown option: $1"; show_help; exit 1 ;;
-    esac
-done
-
 show_help() {
     cat <<EOF
-Setup development environment for fedora-hardening project
+Set up the development environment for the fedora-hardening project
 
 USAGE:
     ./setup-dev.sh [OPTIONS]
 
 OPTIONS:
-    --skip-optional    Skip optional tools
-    --dry-run         Show what would be installed
-    --help            Show this help
+    --skip-optional    Skip optional packages (${OPTIONAL_RPMS[*]})
+    --dry-run          Show what would be installed
+    --help             Show this help
 
-WHAT IT INSTALLS:
-    Core tools (required):
-    - Python 3.8+ (for development tools)
-    - Git (version control)
-    - Podman (container runtime)
-    - Bash (script runtime)
-
-    Development tools:
-    - pre-commit (commit hooks)
-    - shellcheck (shell script linting)
-    - shfmt (shell script formatting)
-    - yamllint (YAML validation)
-    - hadolint (Dockerfile linting)
-    - commitizen (commit message validation)
-
-    Optional:
-    - MCP SDK (for Claude integration)
+PLATFORM:
+    Fedora ${TARGET_FEDORA}. Tools are installed as Fedora RPMs with dnf:
+      $(printf '%s ' "${FEDORA_TOOLS[@]#*:}")
+    Optional: ${OPTIONAL_RPMS[*]} (for the Claude MCP server)
+    On rpm-ostree hosts, run inside a fedora-toolbox:${TARGET_FEDORA} toolbox.
 
 EOF
 }
 
-# Detect OS
-detect_os() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        echo "${ID:-unknown}"
-    else
-        uname -s | tr '[:upper:]' '[:lower:]'
-    fi
-}
+# Parse arguments
+while (($# > 0)); do
+    case "$1" in
+        --skip-optional)
+            SKIP_OPTIONAL=1
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        -h | --help)
+            show_help
+            exit 0
+            ;;
+        *)
+            log_err "Unknown option: $1"
+            show_help
+            exit 2
+            ;;
+    esac
+done
 
-# Check if command exists
 cmd_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Install package (OS-specific)
-install_package() {
-    local pkg="$1"
-    local os="$2"
-
-    case "$os" in
-        fedora)
-            log_info "Installing $pkg with dnf..."
-            if (( DRY_RUN )); then
-                echo "  Would run: sudo dnf install -y $pkg"
-            else
-                sudo dnf install -y "$pkg"
-            fi
-            ;;
-        ubuntu|debian)
-            log_info "Installing $pkg with apt..."
-            if (( DRY_RUN )); then
-                echo "  Would run: sudo apt-get install -y $pkg"
-            else
-                sudo apt-get install -y "$pkg"
-            fi
-            ;;
-        arch)
-            log_info "Installing $pkg with pacman..."
-            if (( DRY_RUN )); then
-                echo "  Would run: sudo pacman -S $pkg"
-            else
-                sudo pacman -S "$pkg"
-            fi
-            ;;
-        *)
-            log_warn "Unknown OS: $os - Please install $pkg manually"
-            return 1
-            ;;
-    esac
+# Run a command, or print it in --dry-run mode.
+do_run() {
+    if ((DRY_RUN)); then
+        echo "  Would run: $*"
+        return 0
+    fi
+    "$@"
 }
 
-# Main setup
+# Use sudo only when not already root.
+as_root() {
+    if ((EUID == 0)); then
+        do_run "$@"
+    else
+        do_run sudo "$@"
+    fi
+}
+
+verify_tool() {
+    local cmd="$1" name="$2"
+    if cmd_exists "$cmd"; then
+        log_ok "$name: available"
+        return 0
+    fi
+    log_warn "$name: not found"
+    return 1
+}
+
+python_version_ok() {
+    python3 - "$PYTHON_MIN_VERSION" <<'PY'
+import sys
+want = tuple(int(x) for x in sys.argv[1].split("."))
+sys.exit(0 if sys.version_info[:len(want)] >= want else 1)
+PY
+}
+
 main() {
     log_info "Fedora Hardening - Development Environment Setup"
     log_info "=================================================="
 
-    local os
-    os="$(detect_os)"
-    log_info "Detected OS: $os"
+    local os_id="unknown" os_version="" os_name="unknown"
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck source=/dev/null
+        os_id="$(. /etc/os-release && echo "${ID:-unknown}")"
+        # shellcheck source=/dev/null
+        os_version="$(. /etc/os-release && echo "${VERSION_ID:-}")"
+        # shellcheck source=/dev/null
+        os_name="$(. /etc/os-release && echo "${PRETTY_NAME:-unknown}")"
+    fi
+    log_info "Platform: $os_name"
 
-    # Check Python version
-    if cmd_exists python3; then
-        local py_version
-        py_version="$(python3 --version | awk '{print $2}')"
-        log_ok "Python 3 found: $py_version"
-    else
-        log_err "Python 3 not found"
-        log_info "Installing Python 3..."
-        install_package "python3" "$os"
+    if [[ -e /run/ostree-booted ]]; then
+        log_err "This is an rpm-ostree host; development tools are not layered onto it."
+        log_info "Create and enter a Fedora ${TARGET_FEDORA} toolbox, then re-run this script:"
+        log_info "  toolbox create --image registry.fedoraproject.org/fedora-toolbox:${TARGET_FEDORA} fh-dev"
+        log_info "  toolbox enter fh-dev"
+        exit 1
+    fi
+    if [[ "$os_id" != fedora ]]; then
+        log_err "Unsupported platform '$os_id'. The development platform is Fedora ${TARGET_FEDORA}."
+        log_info "Use a Fedora ${TARGET_FEDORA} machine, VM, or container (registry.fedoraproject.org/fedora:${TARGET_FEDORA})."
+        exit 1
+    fi
+    if [[ "$os_version" != "$TARGET_FEDORA" ]]; then
+        log_warn "Fedora $os_version detected; the project targets Fedora ${TARGET_FEDORA}."
+        log_warn "Tool versions (e.g. shfmt) may differ from CI. tests/run-suite.sh always runs"
+        log_warn "the static tier in a Fedora ${TARGET_FEDORA} container for that reason."
     fi
 
-    # Core requirements
+    # Toolchain RPMs (single dnf transaction for everything missing)
     log_info ""
-    log_info "Checking core requirements..."
-
-    local tools=(
-        "bash:Bash shell"
-        "git:Git version control"
-        "podman:Container runtime"
-    )
-
-    for tool_spec in "${tools[@]}"; do
-        local tool="${tool_spec%%:*}"
-        local desc="${tool_spec##*:}"
-
-        if cmd_exists "$tool"; then
-            log_ok "$desc: installed"
+    log_info "Checking Fedora toolchain..."
+    local spec cmd rpm missing=()
+    for spec in "${FEDORA_TOOLS[@]}"; do
+        cmd="${spec%%:*}" rpm="${spec#*:}"
+        if cmd_exists "$cmd"; then
+            log_ok "$rpm: installed"
         else
-            log_warn "$desc: not found"
-            log_info "Installing $tool..."
-            install_package "$tool" "$os"
+            missing+=("$rpm")
         fi
     done
-
-    # Development tools with pip
-    log_info ""
-    log_info "Installing Python development tools..."
-
-    local py_tools=(
-        "pre-commit"
-        "shellcheck-py"
-        "yamllint"
-        "commitizen"
-    )
-
-    if (( DRY_RUN )); then
-        echo "  Would run: pip install ${py_tools[*]}"
-    else
-        if pip install "${py_tools[@]}" >/dev/null 2>&1; then
-            log_ok "Development tools installed"
-        else
-            log_warn "Some tools failed to install - trying individually"
-            for tool in "${py_tools[@]}"; do
-                if pip install "$tool" >/dev/null 2>&1; then
-                    log_ok "  $tool: installed"
-                else
-                    log_warn "  $tool: installation failed"
-                fi
-            done
+    if ((!SKIP_OPTIONAL)); then
+        for rpm in "${OPTIONAL_RPMS[@]}"; do
+            rpm -q "$rpm" >/dev/null 2>&1 || missing+=("$rpm")
+        done
+    fi
+    if ((${#missing[@]})); then
+        log_info "Installing with dnf: ${missing[*]}"
+        if ! as_root dnf install -y "${missing[@]}"; then
+            log_err "dnf install failed"
+            exit 1
         fi
     fi
 
-    # Optional tools
-    if (( !SKIP_OPTIONAL )); then
-        log_info ""
-        log_info "Installing optional tools..."
-
-        # hadolint (for Dockerfile)
-        if ! cmd_exists hadolint; then
-            log_info "Installing hadolint..."
-            if (( DRY_RUN )); then
-                echo "  Would download hadolint from GitHub"
-            else
-                local hado_url="https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64"
-                if command -v wget >/dev/null; then
-                    sudo wget -qO /usr/local/bin/hadolint "$hado_url"
-                    sudo chmod +x /usr/local/bin/hadolint
-                    log_ok "hadolint installed"
-                else
-                    log_warn "wget not found - skipping hadolint"
-                fi
-            fi
-        fi
-
-        # MCP SDK (optional)
-        log_info "Installing MCP SDK (optional)..."
-        if (( DRY_RUN )); then
-            echo "  Would run: pip install mcp"
-        else
-            if pip install mcp >/dev/null 2>&1; then
-                log_ok "MCP SDK installed"
-            else
-                log_warn "MCP SDK installation failed (optional, not critical)"
-            fi
-        fi
+    if ! ((DRY_RUN)) && ! python_version_ok; then
+        log_err "Python ${PYTHON_MIN_VERSION}+ is required"
+        exit 1
     fi
 
-    # Setup pre-commit hooks
+    # Git hooks (only inside a git checkout)
     log_info ""
     log_info "Setting up pre-commit hooks..."
-    if (( DRY_RUN )); then
-        echo "  Would run: pre-commit install"
-        echo "  Would run: pre-commit install --hook-type commit-msg"
+    if ! git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+        log_warn "$SCRIPT_DIR is not a git checkout - skipping hook installation"
+    elif ((DRY_RUN)); then
+        echo "  Would run: pre-commit install --hook-type pre-commit --hook-type commit-msg"
+    elif (cd "$SCRIPT_DIR" && pre-commit install --hook-type pre-commit --hook-type commit-msg >/dev/null); then
+        log_ok "Pre-commit and commit-msg hooks installed"
     else
-        if cd "$SCRIPT_DIR" && pre-commit install >/dev/null 2>&1; then
-            log_ok "Pre-commit hooks installed"
-        else
-            log_warn "Pre-commit installation failed"
-        fi
-
-        if pre-commit install --hook-type commit-msg >/dev/null 2>&1; then
-            log_ok "Commit message hooks installed"
-        else
-            log_warn "Commit message hook installation failed"
-        fi
+        log_warn "Pre-commit hook installation failed"
     fi
 
     # Verification
     log_info ""
     log_info "Verification..."
     local success=1
+    for spec in "${FEDORA_TOOLS[@]}"; do
+        verify_tool "${spec%%:*}" "${spec#*:}" || success=0
+    done
 
-    verify_tool "bash" "Bash" || success=0
-    verify_tool "git" "Git" || success=0
-    verify_tool "podman" "Podman" || success=0
-    verify_tool "python3" "Python 3" || success=0
-
-    if cmd_exists pre-commit; then
-        log_ok "Pre-commit: available"
-    else
-        log_warn "Pre-commit: not available"
-        success=0
-    fi
-
-    if cmd_exists shellcheck; then
-        log_ok "Shellcheck: available"
-    else
-        log_warn "Shellcheck: not available"
-        success=0
-    fi
-
-    # Final summary
     log_info ""
-    if (( success )); then
+    if ((DRY_RUN)); then
+        log_info "Dry run complete - nothing was installed."
+    elif ((success)); then
         log_ok "Development environment ready!"
         log_info ""
         log_info "Next steps:"
-        log_info "  1. Run tests: ./test-in-podman.sh --quick --dry-run"
-        log_info "  2. Make changes and commit: git commit -m 'fix: description'"
-        log_info "  3. Read DEVELOPMENT.md for full workflow guide"
-        log_info ""
-        log_info "MCP Server (optional):"
-        log_info "  python3 mcp_server_fedora_harden.py"
+        log_info "  1. Run the test suite:  ./tests/run-suite.sh"
+        log_info "  2. Quick check:         ./test-in-podman.sh --quick --dry-run"
+        log_info "  3. Read DEVELOPMENT.md for the full workflow"
     else
-        log_warn "Setup complete with some warnings. See above for details."
-        log_info ""
-        log_info "You can still develop, but some tools may not work optimally."
-        log_info "Install missing tools manually if needed."
+        log_warn "Setup finished with missing tools (see above)."
+        exit 1
     fi
 }
 
-verify_tool() {
-    local cmd="$1"
-    local name="$2"
-
-    if cmd_exists "$cmd"; then
-        log_ok "$name: available"
-        return 0
-    else
-        log_warn "$name: not found"
-        return 1
-    fi
-}
-
-# Run main
 main "$@"
