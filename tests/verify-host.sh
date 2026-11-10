@@ -3,7 +3,7 @@
 #
 # Run on the real machine AFTER a hardening run (it changes nothing):
 #   sudo ./tests/verify-host.sh            # all checks
-#   sudo ./tests/verify-host.sh --only SSH # one group (AUTO SEL FW SSH PAM SYS AUD DNS CLAM DESK PERM ROLL)
+#   sudo ./tests/verify-host.sh --only SSH # one group (AUTO SEL FW SSH PAM SYS AUD DNS CLAM DESK FLAT PERM ROLL)
 #
 # Each line carries an ID (e.g. SSH-1) that matches the "Hardening Field Check"
 # page, so results can be ticked off there. Exit status: 0 when nothing failed,
@@ -197,6 +197,16 @@ if want DESK-1; then
         verdict DESK-1 "screen lock enabled for $TARGET_USER" "$ok" "(lock-enabled: ${val:-unknown})"
     fi
 fi
+
+# --- Flatpak (13) -----------------------------------------------------------------
+group FLAT "Flatpak sandbox"
+if have flatpak; then
+    check FLAT-1 "Flatpak apps cannot read the host filesystem" "filesystems=!host... in global overrides" \
+        bash -c "flatpak override --system --show 2>/dev/null | grep -q '!host;'"
+elif want FLAT-1; then
+    skip FLAT-1 "Flatpak apps cannot read the host filesystem" "(flatpak not installed)"
+fi
+check FLAT-2 "Firejail is not installed (opt-in only)" "firejail absent" bash -c '! rpm -q firejail'
 
 # --- Permissions (20) -------------------------------------------------------------
 group PERM "File permissions"

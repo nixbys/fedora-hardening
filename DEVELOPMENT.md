@@ -1,386 +1,114 @@
-# Fedora Hardening Script - Development Guide
+# Developing fedora-harden.sh
 
-Complete guide for contributing to and developing fedora-harden.sh with integrated tooling.
+## Platform
 
-## Quick Start
+Development, tests and CI all run on **Fedora 44 and 45**, the releases the script
+targets. On a Fedora 44 machine, set up once:
 
 ```bash
-# Clone repository
-git clone https://github.com/fedora-hardening/fedora-hardening.git
+git clone https://github.com/nixbys/fedora-hardening.git
 cd fedora-hardening
+./setup-dev.sh        # Fedora RPM toolchain + git hooks
+```
 
-# Setup development environment (pre-commit hooks, shellcheck, yamllint, hadolint, ...)
+On Silverblue, Kinoite, Bazzite or another rpm-ostree system, work inside a toolbox:
+
+```bash
+toolbox create --image registry.fedoraproject.org/fedora-toolbox:44 fh-dev
+toolbox enter fh-dev
 ./setup-dev.sh
-
-# Run the full test suite (static + container tiers)
-./tests/run-suite.sh
-
-# Test your changes
-./test-in-podman.sh --quick --dry-run
-
-# Commit (will auto-check syntax, lint, format)
-git add fedora-harden.sh
-git commit -m "fix: clear description of what changed"
 ```
 
-## Development Workflow
+`setup-dev.sh` installs `ShellCheck yamllint ruff hadolint gitleaks pre-commit
+python3-mcp podman` from Fedora's repositories. shfmt is an RPM on Fedora 44; on 45 it
+is built at the same pinned version with Fedora's Go (`tests/install-shfmt.sh`).
 
-### 1. Make Changes
-```bash
-# Edit script
-nano fedora-harden.sh
+## Workflow
 
-# Verify syntax
-bash -n fedora-harden.sh
-```
+1. Branch from `main` (`main` only accepts pull requests).
+2. Edit `fedora-harden.sh`; `bash -n fedora-harden.sh` for a quick syntax check.
+3. Commit. pre-commit runs shellcheck, shfmt, yamllint, ruff, hadolint, gitleaks and
+   the generic file checks; the commit-msg hook enforces conventional commits
+   (`fix:`, `feat:`, `docs:`, ...).
+4. Test: `./tests/run-suite.sh` (all tiers) or one tier, see [TESTING.md](TESTING.md).
+5. Push and open a pull request. CI runs every tier on Fedora 44 and 45.
 
-### 2. Automated Checks (Pre-commit)
-```bash
-# Your changes are automatically checked when you commit:
-# - Syntax validation (bash -n)
-# - Linting (shellcheck)
-# - Formatting (shfmt)
-# - Trailing whitespace removal
-# - Secret detection
-# - Conventional commit message format
-# - YAML/JSON validation
+## Conventions in fedora-harden.sh
 
-git commit -m "fix: improve error handling in section 5"
-# Pre-commit hooks run automatically
-```
+These rules exist because breaking them caused real bugs:
 
-### 3. Test Changes
-```bash
-# Quick test (fast, no systemd)
-./test-in-podman.sh --quick --dry-run
+- **`set -Eeuo pipefail` is on.** Never write `((x++))` (it fails when `x` is 0); use
+  `((++x))`. Never end a function or a `case` branch with `[[ test ]] && cmd`: when
+  the test is false, the function returns 1 and the caller aborts. Use `if`.
+- **Dry run must change nothing.** Route changes through `run "..."`, or guard them
+  with `if ((!DRY_RUN))`. The quick and full tiers check that a dry run leaves the
+  filesystem untouched.
+- **Everything must be reversible.** Call `backup_file <path>` before writing a file.
+  It backs up an existing file or journals a new one, so `--rollback` restores or
+  removes it.
+- **Failures warn, they don't abort.** Commands that depend on the machine (services,
+  network, package installs) use `run ... || warn ...` plus
+  `add_action_item <section> <HIGH|MEDIUM|LOW> <TAG> "<what the user should do>"`.
+- **Check the effect, not just the file.** sshd keeps the first value it reads, so
+  drop-ins sort before Fedora's (`10-hardening.conf`). gsettings needs the user's
+  D-Bus session (`user_session_run`). Settings are edited with `set_conf_key`, never
+  with basic-regex `sed`.
+- **`confirm "question"`** answers yes under `--yes`; `confirm "question" no` answers
+  no, for options current guidance does not recommend enabling automatically.
+- **Cite sources.** Each recommendation carries a `# Source:` comment naming the
+  Privacy Guides or IntelTechniques page it comes from (listed in
+  `docs/references.json`).
+- **Formatting** comes from `.editorconfig` (tabs in the script, 4 spaces in helper
+  scripts); run `shfmt -w`.
 
-# Full test (realistic, with systemd)
-./test-in-podman.sh --dry-run
+## Keeping up with the guidance
 
-# Test specific section
-./test-in-podman.sh --only 5 --dry-run
+The weekly **Reference watch** workflow opens an issue when a source in
+`docs/references.json` changes or arkenfox publishes a new release. To act on it:
 
-# Interactive debugging
-./test-in-podman.sh --quick -it
-```
+1. Read the changed page and update the script where the advice changed.
+2. For a new arkenfox release, update `ARKENFOX_VERSION` and `ARKENFOX_SHA256`
+   (`curl -fsSL https://raw.githubusercontent.com/arkenfox/user.js/<tag>/user.js | sha256sum`).
+3. Run the tests, then record the review:
+   `python3 tests/check-references.py --update`, and commit `docs/references.json`.
 
-### 4. Verify Documentation
-```bash
-# Check all sections documented
-grep -c "^sec_" fedora-harden.sh
+## CI
 
-# Check global variables documented
-grep -c "^# ----------" fedora-harden.sh
+| Workflow | Runs | What it does |
+|---|---|---|
+| `ci.yml` | push, PR, nightly | static tier and quick/full/gui tiers on Fedora 44 and 45; gitleaks; trivy |
+| `workflow-security.yml` | push, PR | actionlint and zizmor audit of every workflow |
+| `reference-watch.yml` | weekly | checks the guidance sources and the pinned arkenfox release |
 
-# Verify function docstrings
-grep "^# [a-z_]*() -" fedora-harden.sh
-```
+Every job runs in a `registry.fedoraproject.org/fedora` container. Actions are pinned
+to commit SHAs; Dependabot proposes grouped updates weekly.
 
-### 5. Push & Create PR
-```bash
-# Push to your fork
-git push origin feature-branch
+## MCP server (optional)
 
-# Create pull request on GitHub
-# CI/CD automatically runs full test suite
-```
-
-## MCP Server Development Integration
-
-The MCP Server provides Claude-integrated development tools for maximum efficiency.
-
-### Setup MCP Server
+`mcp_server_fedora_harden.py` exposes lint, test and docs checks as MCP tools for
+Claude while you work on the script. It is not used by `fedora-harden.sh`.
 
 ```bash
-# Install MCP (when available in Claude Code)
-# Or use Python directly:
-sudo dnf install python3-mcp   # Fedora 44 RPM
-
-# Run server
-python3 mcp_server_fedora_harden.py
+sudo dnf install python3-mcp
+claude mcp add fedora-harden-dev -- python3 "$PWD/mcp_server_fedora_harden.py"
 ```
 
-### Using in Claude
+Tools: `verify-script`, `lint-script`, `test-script`, `check-security`,
+`validate-docs`, `analyze-performance`, `generate-changelog`, `quality-report`,
+`setup-dev-environment`.
 
-```
-# One-command verification
-/mcp fedora-harden verify-script
+## Releasing
 
-# Run tests
-/mcp fedora-harden test-script --mode quick
-
-# Check security
-/mcp fedora-harden check-security
-
-# Generate report
-/mcp fedora-harden quality-report
-
-# Setup environment
-/mcp fedora-harden setup-dev-environment --dry-run false
-```
-
-### MCP Tools Available
-
-1. **verify-script** - Comprehensive syntax, lint, test, security, docs check
-2. **lint-script** - Run shellcheck and shfmt
-3. **test-script** - Run test suite (quick/full, specific sections)
-4. **check-security** - Detect verified secrets (trufflehog or gitleaks)
-5. **validate-docs** - Check documentation completeness
-6. **analyze-performance** - Complexity and performance metrics
-7. **generate-changelog** - List commits since the last tag
-8. **quality-report** - Syntax, lint and docs summary (no containers)
-9. **setup-dev-environment** - Run ./setup-dev.sh (dry-run by default)
-
-## Commit Message Format
-
-Uses conventional commits for automatic changelog generation:
-
-```
-<type>(<scope>): <subject>
-
-<body>
-
-<footer>
-```
-
-Types:
-- **feat**: New feature
-- **fix**: Bug fix
-- **docs**: Documentation changes
-- **style**: Code style (formatting, missing semicolons)
-- **refactor**: Code refactoring without feature changes
-- **perf**: Performance improvements
-- **test**: Test additions/changes
-- **chore**: Build, dependencies, etc.
-
-Examples:
-```bash
-# Good
-git commit -m "fix(sec_05): improve firewalld error handling"
-git commit -m "feat: add GUI-full single-window mode"
-git commit -m "docs: update testing guide with MCP examples"
-
-# Bad
-git commit -m "updated stuff"
-git commit -m "fix bugs"
-```
-
-## Testing Strategies
-
-### Unit Testing (Syntax)
-```bash
-bash -n fedora-harden.sh  # Validates syntax, no execution
-```
-
-### Integration Testing (Container)
-```bash
-# Quick variant (fast, for rapid iteration)
-./test-in-podman.sh --quick --dry-run
-
-# Full variant (realistic, with systemd)
-./test-in-podman.sh --dry-run
-```
-
-### Specific Section Testing
-```bash
-# Test one section
-./test-in-podman.sh --quick --only 5 --dry-run
-
-# Test multiple sections
-./test-in-podman.sh --quick --only 5,7,10 --dry-run
-```
-
-### Performance Testing
-```bash
-# Measure complexity
-grep -c "^[a-z_]*() {" fedora-harden.sh  # Function count
-wc -l fedora-harden.sh  # Line count
-
-# Time execution
-time ./test-in-podman.sh --quick --dry-run
-```
-
-### Security Testing
-```bash
-# Check for hardcoded secrets
-trufflehog filesystem . --only-verified
-
-# Scan for suspicious patterns
-grep -E "eval |rm -rf /|dd if=" fedora-harden.sh
-```
-
-## CI/CD Pipeline
-
-Automated on every push:
-
-1. **Syntax Check** - Validate script can be parsed
-2. **Linting** - shellcheck for issues
-3. **Format Check** - shfmt for consistency
-4. **Container Build** - Build test images
-5. **Test Suite** - Run in isolated containers
-6. **Security Scan** - Secret and vulnerability detection
-7. **Quality Metrics** - Complexity, documentation coverage
-8. **Docker Linting** - hadolint for Dockerfile quality
-
-View results: GitHub Actions tab → CI workflow
-
-## Documentation Standards
-
-### Script Header
-```bash
-#!/usr/bin/env bash
-# =============================================================================
-#  Fedora 44+ Security Hardening Script (multi-release + desktop aware)
-#  Based on: [Reference document]
-#
-#  FEATURES:
-#    • Feature description
-#    • Another feature
-#
-#  USAGE:
-#    sudo ./fedora-harden.sh [options]
-#
-#  OPTIONS:
-#    -u, --user <name>      Description
-#
-#  SECTIONS:
-#     2  Section name
-#     3  Another section
-# =============================================================================
-```
-
-### Function Documentation
-```bash
-# function_name() - Brief description of what it does
-# Longer explanation if needed: side effects, return values, etc.
-# Usage: function_name <param1> <param2>
-function_name() {
-    # Implementation
-}
-```
-
-### Global Variable Documentation
-```bash
-# ---------- Logical group name -------------------------------------------
-VARIABLE_NAME=""  # What this variable tracks/stores
-ANOTHER_VAR=0     # When it's set to 1, what it means
-```
-
-## Performance Optimization
-
-### Profiling
-```bash
-# Bash execution tracing
-bash -x fedora-harden.sh --dry-run 2>&1 | tee profile.log
-
-# Time specific sections
-time ./fedora-harden.sh --dry-run --only 5
-```
-
-### Optimization Patterns
-- **Batch operations**: Multiple sed patterns in one pass
-- **Caching**: Store command results, reuse
-- **Avoid loops**: Use built-in bash operations
-- **Minimize forks**: Reduce external command calls
-
-## Security Considerations
-
-### When Developing
-1. **Never hardcode secrets** - Use environment variables
-2. **Validate input** - Check user-provided values
-3. **Escape variables** - Quote ${var} in most contexts
-4. **Avoid eval** - Never use eval with user input
-5. **Check permissions** - Don't run as root unnecessarily
-
-### Pre-commit Secrets Detection
-```bash
-# Automatically scans for:
-# - AWS keys, API tokens
-# - Private keys
-# - Database credentials
-# - Other sensitive patterns
-
-# If detected, commit is blocked:
-git commit ...
-# trufflehog: Detected secret patterns
-# Commit aborted
-```
+Changes land through pull requests with green CI. Before a large change, tag the
+current `main` so users can return to it (for example `pre-fedora44-overhaul`), and
+record user-visible changes in [CHANGELOG.md](CHANGELOG.md).
 
 ## Troubleshooting
 
-### Pre-commit hooks not running
-```bash
-# Reinstall hooks
-pre-commit uninstall
-pre-commit install
-pre-commit install --hook-type commit-msg
-```
-
-### shellcheck not found
-```bash
-# Install
-sudo dnf install ShellCheck
-# Or: sudo apt-get install shellcheck
-```
-
-### Test container won't start
-```bash
-# Check podman
-podman --version
-podman ps
-
-# Rebuild images
-podman image rm fedora-harden:* 2>/dev/null || true
-./test-in-podman.sh --quick --dry-run
-```
-
-### Commit message rejected
-```bash
-# Check format (must follow conventional commits)
-git commit -m "fix: brief description"  # Good
-git commit -m "updated stuff"           # Bad - rejected
-
-# View rules
-cat .pre-commit-config.yaml | grep -A5 commitizen
-```
-
-## Release Process
-
-### Manual Release
-```bash
-# 1. Update version (in script header)
-# 2. Update CHANGELOG.md
-# 3. Create tag
-git tag -a v2.0.0 -m "Release version 2.0.0"
-git push origin v2.0.0
-
-# GitHub automatically creates release
-```
-
-## Resources
-
-- **Script Help**: `./fedora-harden.sh --help`
-- **Testing Guide**: `TESTING.md`
-- **Quick Start**: `QUICKSTART-TESTING.md`
-- **Container Config**: `Dockerfile.test`
-- **Pre-commit**: `.pre-commit-config.yaml`
-- **CI/CD**: `.github/workflows/ci.yml`
-
-## Contributing
-
-1. Fork the repository
-2. Create feature branch: `git checkout -b feature/my-feature`
-3. Make changes with tests
-4. Pre-commit hooks validate automatically
-5. Push and create pull request
-6. CI/CD pipeline runs automatically
-7. Review and merge!
-
-## Code of Conduct
-
-- Be respectful and inclusive
-- Focus on code quality and security
-- Write clear commit messages
-- Test your changes thoroughly
-- Document new features
-- Review others' contributions constructively
+- **A hook fails with "command not found"**: re-run `./setup-dev.sh`; on an rpm-ostree
+  host, make sure you are inside the toolbox.
+- **Container builds fail with "mounting an overlay over build context"**: you are
+  running podman inside a container on Fedora 45+; the suite handles this, for manual
+  builds set `TMPDIR` to a directory on a real filesystem.
+- **SELinux denials on bind mounts**: use `:z`, not `:Z`, when mounting the repository
+  into containers while tests run.

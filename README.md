@@ -40,7 +40,7 @@ This is a personal hardening script that has grown a substantial feature set and
 | 2 | System updates | `dnf upgrade` + fwupd firmware/microcode + optional HW security key |
 | 3 | Automatic updates | `dnf5-plugin-automatic` (security-only) or `rpm-ostreed` |
 | 4 | SELinux | Enforcing; a disabled system goes permissive + full relabel first (safe path) |
-| 5 | firewalld | Drop-default zone policy |
+| 5 | firewalld | Drop-default zone policy (OpenSnitch suggested for outbound control) |
 | 6 | Secure Boot | Verification (GRUB password is manual — printed as an action item) |
 | 7 | SSH hardening | Key-based auth, hardened ciphers via `sshd_config.d/10-hardening.conf` (takes precedence over Fedora's defaults); never restarts sshd on an invalid config |
 | 8 | USBGuard | Interactive — plug in devices before this section runs |
@@ -48,15 +48,15 @@ This is a personal hardening script that has grown a substantial feature set and
 | 10 | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941) |
 | 11 | auditd | Identity, privilege escalation, module, time/network/mount/delete syscalls |
 | 12 | rkhunter + AIDE | Rootkit detection + file integrity monitoring |
-| 13 | Flatpak / Flathub | App sandboxing + optional Firejail |
+| 13 | Flatpak / Flathub | Blocks Flatpak apps from the host filesystem; mat2; Firejail opt-in only |
 | 14 | DNS over TLS | systemd-resolved with Quad9 + Cloudflare (installed if missing; warns if DNS bypasses it) |
 | 14b | MAC randomization | NetworkManager network-layer privacy |
 | 15 | Desktop settings | Screen lock, recent docs, Bluetooth, location, mic — per DE, verified after applying |
-| 16 | Firefox | Flatpak + arkenfox + extensions + VPN detection |
+| 16 | Firefox | Flatpak + pinned arkenfox + GPC/DNT + DNS-over-HTTPS (ECH) + extensions + VPN detection |
 | 17 | WireGuard | Tool install (tunnel config is manual) |
 | 18 | Fail2Ban | Intrusion detection + auto-ban |
 | 19 | Service cleanup | Disable avahi, cups, bluetooth, modemmanager |
-| 20 | File permissions | shadow, /tmp, compilers, umask 077, core dumps, hostname privacy |
+| 20 | File permissions | shadow, /tmp, compilers, umask 077, core dumps, hostname privacy, unencrypted-swap check |
 | 21 | ClamAV | clamd + freshclam + on-access scanning of /home (clamonacc) |
 | 22 | OpenSCAP | Scanner install + initial compliance scan |
 | 23 | Container security | Rootless Podman + Toolbox, image policy, seccomp, registry hardening |
@@ -229,7 +229,7 @@ Check that the hardening is really in effect. This only reads state and changes 
 
 ```bash
 sudo ./tests/verify-host.sh            # every check, with PASS / FAIL / SKIP
-sudo ./tests/verify-host.sh --only SSH # one area: AUTO SEL FW SSH PAM SYS AUD DNS CLAM DESK PERM ROLL
+sudo ./tests/verify-host.sh --only SSH # one area: AUTO SEL FW SSH PAM SYS AUD DNS CLAM DESK FLAT PERM ROLL
 ```
 
 The script generates a session report in `./sessions/` and prints a prioritized **actionable items** list at the end (HIGH / MEDIUM / LOW). Items that require manual steps (GRUB password, WireGuard tunnel config, etc.) are called out explicitly with instructions.
@@ -280,7 +280,7 @@ mcp_server_fedora_harden.py    # optional, contributor-only: exposes lint/test w
 .github/workflows/             # CI (Fedora 44 + 45 containers): tests, gitleaks, trivy,
                                # workflow-security (actionlint + zizmor)
 SECURITY.md / THREAT_MODEL.md  # responsible-use policy and trust boundary
-DEVELOPMENT.md / TOOLCHAIN.md  # contributor setup and the dev-tooling pipeline
+DEVELOPMENT.md                 # contributor setup, conventions, CI, keeping up with guidance
 TESTING.md / QUICKSTART-TESTING.md  # how to exercise the script in Podman
 ```
 
@@ -307,6 +307,29 @@ this script as root.
 
 ---
 
+## Sources and staying current
+
+Each recommendation cites its source in the script (`# Source:` comments). The
+sources are listed in [`docs/references.json`](docs/references.json) with the
+sections they inform and when they were last reviewed:
+
+- Privacy Guides: Linux Overview, Desktop/PC, Linux Application Sandboxing, DNS
+  Resolvers, Desktop Browsers
+- IntelTechniques: 2026 OS Telemetry Guide, Extreme Privacy Linux commands
+- arkenfox `user.js` (pinned release, checksum-verified)
+
+The **Reference watch** workflow runs every Monday. It fetches each source,
+compares its main content with the last review, checks for a newer arkenfox
+release, and opens one tracking issue when something changed. After updating the
+script, refresh the fingerprints:
+
+```bash
+python3 tests/check-references.py           # what changed since the last review
+python3 tests/check-references.py --update  # after review: record the new state
+```
+
+---
+
 ## Changes
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed and why.
@@ -315,11 +338,14 @@ See [CHANGELOG.md](CHANGELOG.md) for what changed and why.
 
 ## References
 
-- [privacyguides.org — Linux hardening](https://www.privacyguides.org/en/os/linux-overview/)
-- [inteltechniques.com — Linux privacy](https://inteltechniques.com/blog/2022/04/15/the-linux-privacy-guide/)
-- [Fedora Security Guide](https://docs.fedoraproject.org/en-US/fedora/latest/system-administrators-guide/security/)
-- [CIS Fedora Benchmark](https://www.cisecurity.org/benchmark/red_hat_linux)
+- [Privacy Guides — Linux Overview](https://www.privacyguides.org/en/os/linux-overview/)
+- [Privacy Guides — Linux Application Sandboxing](https://www.privacyguides.org/articles/2022/04/22/linux-application-sandboxing/)
+- [IntelTechniques — 2026 OS Telemetry Guide](https://inteltechniques.com/2026.telemetry.html) (Extreme Privacy, 5th edition)
+- [Fedora Quick Docs](https://docs.fedoraproject.org/en-US/quick-docs/) (SELinux, firewalld, Atomic desktops)
+- [CIS Red Hat Enterprise Linux Benchmarks](https://www.cisecurity.org/benchmark/red_hat_linux)
 - [arkenfox user.js](https://github.com/arkenfox/user.js)
+
+The full, machine-checked list is [`docs/references.json`](docs/references.json).
 
 ---
 
