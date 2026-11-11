@@ -116,7 +116,7 @@ works again.
 Runs `tests/gui-test.sh` on a virtual X display, as root with no UTF-8 locale (as
 under `sudo -i`/`pkexec`):
 
-- `--gui-full --dry-run --yes` exits 0 and never waits on a dialog
+- `--gui --dry-run --yes` exits 0 and never waits on a dialog
 - the progress window is closed, not orphaned, when the script exits
 - exactly one end-of-run window remains, and a sampled pixel proves the
   Material-dark theme was applied (`#2B2930` surface)
