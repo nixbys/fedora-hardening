@@ -22,7 +22,7 @@
 #             applied hardening, idempotent re-run, --list-sessions, --rollback all,
 #             journal logging, --report/--resume, and section 17 against a real
 #             WireGuard peer (tests/wireguard-test.sh: kill switch, DNS, rollback)
-#   gui     - --gui-full on a virtual display: no hang, progress window closed,
+#   gui     - --gui on a virtual display: no hang, progress window closed,
 #             one Material-dark end-of-run window, Cancel exits 130
 #   atomic  - image-based behaviour with the images' own rpm-ostree, Flatpak, Podman
 #             quadlets, distrobox/toolbox: nothing layered, real Flathub installs, a
@@ -384,6 +384,7 @@ tier_quick() {
     expect_rc "quick: --help exits 0" 0 quick_run --help
     expect_rc "quick: --list exits 0" 0 quick_run --list
     expect_rc "quick: unknown option exits 2" 2 quick_run --bogus
+    expect_rc "quick: --gui-full is gone (one GUI mode: --gui)" 2 quick_run --gui-full
     expect_rc "quick: --only without value exits 2" 2 quick_run --only
     expect_rc "quick: --user without value exits 2" 2 quick_run --user
 

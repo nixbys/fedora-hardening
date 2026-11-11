@@ -29,7 +29,7 @@ This is a personal hardening script that has grown a substantial feature set and
 - **Logs in the system journal** — `journalctl -t fedora-harden`; failed services are reported with their own log lines
 - **Reports and follow-ups** — `--report` writes one HTML page per session; `--resume` brings back open follow-ups
 - **Dry-run mode** — preview all changes without touching the system
-- **GUI frontend** — optional dialogs and progress window via `--gui` / `--gui-full`, in a Material Design dark theme (see [GUI](#gui))
+- **GUI frontend** — an optional progress window, dialogs and summary via `--gui`, in a Material Design dark theme (see [GUI](#gui))
 - **4-layer caching** — memoized command checks, package status, user home dirs, and rpm-ostree pending layers
 
 ---
@@ -115,8 +115,7 @@ sudo ./fedora-harden.sh [options]
   -u, --user <name>       Target username for SSH/chage/home-dir hardening
   -y, --yes               Assume "yes" to all prompts (non-interactive)
   -n, --dry-run           Print what would run; make no changes
-      --gui               Enable graphical prompts (zenity, kdialog fallback) when available
-      --gui-full          Full windowed frontend: GUI progress + GUI status output
+      --gui               Windowed frontend: progress window, dialogs and summary
       --report [file]     Write an HTML report of the last session and exit
       --resume            Review the last session's open follow-ups and exit
       --wireguard-config <file>  Install this WireGuard config with a kill switch (section 17)
@@ -136,8 +135,7 @@ sudo ./fedora-harden.sh [options]
 ## GUI
 
 ```bash
-sudo ./fedora-harden.sh --gui          # questions as dialogs, output in the terminal
-sudo ./fedora-harden.sh --gui-full     # progress window + dialogs, no terminal output
+sudo ./fedora-harden.sh --gui          # progress window, dialogs and summary; no terminal output
 ```
 
 - **Theme:** dialogs use a Material Design 3 dark theme (surfaces, pill buttons,
@@ -148,7 +146,7 @@ sudo ./fedora-harden.sh --gui-full     # progress window + dialogs, no terminal 
   titlebar and the theme can cover the whole window. kdialog is the fallback; it
   gets Material-dark colours, but its titlebar is drawn by KWin and follows your
   Plasma window decoration.
-- **Progress window (`--gui-full`):** shows the current section and status;
+- **Progress window:** shows the current section and status;
   **Cancel** stops the run (exit code 130). At the end, a single window shows the
   summary and follow-up items grouped by priority, as selectable text so commands
   can be copied. It does not block the script from exiting.
@@ -156,7 +154,7 @@ sudo ./fedora-harden.sh --gui-full     # progress window + dialogs, no terminal 
   shown (no usable display), the script falls back to terminal prompts instead
   of treating every question as "No".
 
-| Progress window (`--gui-full`) | Question |
+| Progress window | Question |
 |---|---|
 | ![Progress window](docs/screenshots/progress.png) | ![Yes/No question](docs/screenshots/question.png) |
 | **Text input** | **End-of-run summary** |
@@ -374,7 +372,7 @@ host is never modified:
 ./tests/run-suite.sh --tier static    # shellcheck, shfmt, yamllint, hadolint, ruff
 ./tests/run-suite.sh --tier quick     # CLI, dry-run makes no changes, desktop settings
 ./tests/run-suite.sh --tier full      # real run under systemd, idempotency, rollback
-./tests/run-suite.sh --tier gui       # --gui-full on a virtual display, theme, Cancel
+./tests/run-suite.sh --tier gui       # --gui on a virtual display, theme, Cancel
 ./tests/run-suite.sh --tier atomic    # real Silverblue + Universal Blue images (systemd containers)
 ./tests/run-suite.sh --tier vm        # the same images installed and booted in a VM (KVM)
 ./tests/run-suite.sh --tier fault     # fault injection: no network, full disks, kills, ...

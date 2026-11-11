@@ -52,8 +52,8 @@
 #    -u, --user <name>      Target username for SSH/chage/home-dir hardening
 #    -y, --yes              Assume "yes" to all prompts (non-interactive)
 #    -n, --dry-run          Print what would run; make no changes
-#        --gui              Enable graphical prompts (kdialog/zenity) when available
-#        --gui-full         Full windowed frontend: GUI progress + GUI status output
+#        --gui              Windowed frontend: progress window, dialogs and summary
+#                           (zenity, kdialog fallback; Material dark theme)
 #        --report [file]    Write an HTML report of the last session and exit
 #        --resume           Review the last session's open follow-ups and exit
 #        --wireguard-config <f> Install this WireGuard config with a kill switch (section 17)
@@ -243,12 +243,10 @@ ONLY_LIST=""     # Comma-separated sections to run exclusively (--only)
 REPORT_MODE=0    # Write an HTML report of the last session (--report)
 REPORT_FILE=""   # Where to write it (--report FILE)
 RESUME_MODE=0    # Review the last session's open follow-ups (--resume)
-FORCE_GUI=0      # Request graphical prompts (--gui)
-FORCE_GUI_FULL=0 # Full GUI frontend with progress (--gui-full)
+FORCE_GUI=0      # Windowed frontend: progress window, dialogs, summary (--gui)
 
 # ---------- GUI mode state ------------------------------------------------
-GUI_MODE=0               # Set to 1 if kdialog/zenity available and enabled
-GUI_FULL_MODE=0          # Set to 1 if --gui-full requested and display available
+GUI_FULL_MODE=0          # Set to 1 when --gui is active (a display and a dialog tool)
 GUI_TOOL=""              # Selected dialog tool: "kdialog" or "zenity"
 GUI_PROGRESS_REF=""      # D-Bus reference for kdialog progress tracking
 QDBUS_CMD=""             # qdbus binary name (qdbus-qt6 / qdbus-qt5 / qdbus)
@@ -757,16 +755,15 @@ gui_kdialog() {
 # setup_ui_mode() - Configure GUI prompt mode if requested and available.
 # Prefers kdialog on KDE systems, then zenity, otherwise falls back to TTY prompts.
 setup_ui_mode() {
-	local has_display=0
-	local prefers_kde=0
+	local has_display=0 prefers_kde=0
 	[[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] && has_display=1
 	[[ "${XDG_CURRENT_DESKTOP:-}${DESKTOP_SESSION:-}" =~ ([Kk][Dd][Ee]|[Pp]lasma) ]] && prefers_kde=1
 	GUI_SINGLE_WINDOW_MODE=0
 
-	# If GUI mode is requested, try to satisfy missing GUI dialog dependencies.
-	# zenity is preferred on every desktop: it draws its own titlebar, so the
-	# Material-dark theme covers the whole window. kdialog is the fallback.
-	if ((has_display && (FORCE_GUI || FORCE_GUI_FULL))); then
+	# --gui: install a dialog tool if none is present. zenity is preferred on every
+	# desktop: it draws its own titlebar, so the Material-dark theme covers the whole
+	# window. kdialog is the fallback.
+	if ((has_display && FORCE_GUI)); then
 		if ! cmd_exists zenity && ! cmd_exists kdialog; then
 			ensure_command_dep zenity "GUI dialogs" zenity ||
 				{ ((prefers_kde)) && ensure_command_dep kdialog "GUI dialog fallback" kdialog; } || true
@@ -779,51 +776,32 @@ setup_ui_mode() {
 		GUI_TOOL="kdialog"
 	fi
 
-	if ((FORCE_GUI)); then
-		if [[ -n "$GUI_TOOL" ]]; then
-			GUI_MODE=1
-			gui_theme_init
-			info "GUI mode enabled using $GUI_TOOL dialogs (Material dark theme)."
+	((FORCE_GUI)) || return 0
+	if [[ -z "$GUI_TOOL" ]]; then
+		warn "--gui requested, but no supported GUI dialog tool was found. Falling back to the terminal."
+		warn "Install 'zenity' (recommended) or 'kdialog' and rerun with --gui."
+		return 0
+	fi
+	if [[ "$GUI_TOOL" == "kdialog" ]]; then
+		# Fedora 44+ ships qdbus-qt6; older releases use qdbus-qt5 or qdbus.
+		if ! cmd_exists qdbus-qt6 && ! cmd_exists qdbus-qt5 && ! cmd_exists qdbus; then
+			install_dep_candidates qt6-qttools qt5-qttools 2>/dev/null || true
+		fi
+		if cmd_exists qdbus-qt6; then
+			QDBUS_CMD="qdbus-qt6"
+		elif cmd_exists qdbus-qt5; then
+			QDBUS_CMD="qdbus-qt5"
+		elif cmd_exists qdbus; then
+			QDBUS_CMD="qdbus"
 		else
-			GUI_MODE=0
-			warn "--gui requested, but no supported GUI dialog tool was found. Falling back to terminal prompts."
-			warn "Install 'zenity' (recommended: fully themed) or 'kdialog' to use GUI prompts."
+			QDBUS_CMD=""
+			warn "qdbus not found; kdialog progress updates will be limited."
 		fi
 	fi
-
-	if ((FORCE_GUI_FULL)); then
-		FORCE_GUI=1
-		if [[ -n "$GUI_TOOL" ]]; then
-			if [[ "$GUI_TOOL" == "kdialog" ]]; then
-				# Fedora 44+ ships qdbus-qt6; older releases use qdbus-qt5 or qdbus.
-				# Install the package if needed, then probe all known binary names.
-				if ! cmd_exists qdbus-qt6 && ! cmd_exists qdbus-qt5 && ! cmd_exists qdbus; then
-					install_dep_candidates qt6-qttools qt5-qttools 2>/dev/null || true
-				fi
-				if cmd_exists qdbus-qt6; then
-					QDBUS_CMD="qdbus-qt6"
-				elif cmd_exists qdbus-qt5; then
-					QDBUS_CMD="qdbus-qt5"
-				elif cmd_exists qdbus; then
-					QDBUS_CMD="qdbus"
-				else
-					QDBUS_CMD=""
-					warn "qdbus not found; kdialog progress updates will be limited."
-				fi
-			fi
-			GUI_MODE=1
-			GUI_FULL_MODE=1
-			GUI_SINGLE_WINDOW_MODE=1
-			[[ ${#GUI_ZENITY_ENV[@]} -gt 0 ]] || gui_theme_init
-			info "Full GUI frontend enabled using $GUI_TOOL (single-window mode)."
-		else
-			GUI_MODE=0
-			GUI_FULL_MODE=0
-			GUI_SINGLE_WINDOW_MODE=0
-			warn "--gui-full requested, but no supported GUI dialog tool was found. Falling back to terminal output."
-			warn "Install 'zenity' (recommended) or 'kdialog' and rerun with --gui-full."
-		fi
-	fi
+	GUI_FULL_MODE=1
+	GUI_SINGLE_WINDOW_MODE=1
+	gui_theme_init
+	info "GUI enabled using $GUI_TOOL: progress window, dialogs and summary (Material dark theme)."
 }
 
 # calc_section_total() - Estimate number of sections that will run for progress display.
@@ -850,7 +828,7 @@ gui_markup_escape() {
 	printf '%s' "$t"
 }
 
-# gui_progress_active() - True while the --gui-full progress window is open.
+# gui_progress_active() - True while the --gui progress window is open.
 gui_progress_active() {
 	case "$GUI_TOOL" in
 	zenity) [[ -n "$GUI_PROGRESS_PIPE_FD" ]] ;;
@@ -872,13 +850,13 @@ gui_kdialog_dbus() {
 }
 
 # gui_alert() - Show concise GUI notifications for summary and fatal errors.
-# While the --gui-full progress window is open, messages go into that window.
+# While the --gui progress window is open, messages go into that window.
 # Afterwards (end of run, aborts) they are shown as dialogs that do not block the
 # script, so it can finish and exit while the user reads them.
 # Usage: gui_alert <info|warning|error> <message>
 gui_alert() {
 	local level="$1" message="$2"
-	((GUI_MODE)) || return 0
+	((GUI_FULL_MODE)) || return 0
 
 	if ((GUI_FULL_MODE && GUI_SINGLE_WINDOW_MODE)) && gui_progress_active; then
 		local one_line="$message"
@@ -892,7 +870,7 @@ gui_alert() {
 		return 0
 	fi
 
-	# Interactive --gui mode keeps modal dialogs; --gui-full end-of-run dialogs are detached.
+	# End-of-run dialogs are detached in --gui mode.
 	local -a dlg=()
 	case "$GUI_TOOL" in
 	kdialog)
@@ -924,12 +902,12 @@ gui_alert() {
 
 # gui_final_summary() - One end-of-run window. With follow-up items (zenity) it is
 # a sortable list (HIGH first) with the summary as its header; otherwise a message.
-# Non-blocking in --gui-full so the script can exit while the user reads it.
+# Non-blocking in --gui so the script can exit while the user reads it.
 # Usage: gui_final_summary <headline> <details>
 GUI_SUMMARY_SHOWN=0
 gui_final_summary() {
 	local headline="$1" details="$2"
-	((GUI_MODE)) || return 0
+	((GUI_FULL_MODE)) || return 0
 	GUI_SUMMARY_SHOWN=1
 	if ((${#ACTIONABLE_ITEMS[@]} == 0)) || [[ "$GUI_TOOL" != zenity ]]; then
 		local body="${headline}\n\n${details}"
@@ -983,7 +961,6 @@ gui_final_summary() {
 # Usage: gui_dialog_failed <exit-code>
 gui_dialog_failed() {
 	warn "GUI dialog failed (exit $1, display unusable?) — falling back to terminal prompts."
-	GUI_MODE=0
 	GUI_FULL_MODE=0
 	GUI_SINGLE_WINDOW_MODE=0
 }
@@ -1001,7 +978,7 @@ prompt_input() {
 		return 0
 	fi
 
-	if ((GUI_MODE)); then
+	if ((GUI_FULL_MODE)); then
 		local rc=0
 		case "$GUI_TOOL" in
 		kdialog)
@@ -1024,7 +1001,7 @@ prompt_input() {
 	printf '%s' "$value"
 }
 
-# gui_progress_start() - Open the --gui-full progress window.
+# gui_progress_start() - Open the --gui progress window.
 gui_progress_start() {
 	((GUI_FULL_MODE)) || return 0
 
@@ -1774,7 +1751,7 @@ confirm() {
 		return 0
 	fi
 
-	if ((GUI_MODE)); then
+	if ((GUI_FULL_MODE)); then
 		local rc=0
 		case "$GUI_TOOL" in
 		kdialog)
@@ -3402,7 +3379,7 @@ EOF
 }
 
 # parse_args() - Parse command-line arguments and set global flags.
-# Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui, --gui-full,
+# Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui,
 # --report, --resume, --wireguard-config, --skip, --only, --list, -h/--help
 # Validates option syntax and applies settings globally for use throughout script.
 # Usage: parse_args "$@" (called in main before preflight)
@@ -3457,10 +3434,6 @@ parse_args() {
 			;;
 		--gui)
 			FORCE_GUI=1
-			shift
-			;;
-		--gui-full)
-			FORCE_GUI_FULL=1
 			shift
 			;;
 		--report)
@@ -3579,7 +3552,7 @@ release_run_lock() {
 # Usage: preflight (called in main after parse_args)
 preflight() {
 	local privilege_source="direct root login/session"
-	((FORCE_GUI_FULL)) || draw_banner
+	((FORCE_GUI)) || draw_banner
 	setup_ui_mode
 	if ((EUID != 0)); then
 		err "This script must be run as root (use sudo)."
@@ -8309,7 +8282,7 @@ main() {
 
 	# --list-sessions: show past sessions without running a full preflight
 	if ((LIST_SESSIONS_MODE)); then
-		((FORCE_GUI_FULL)) || draw_banner
+		((FORCE_GUI)) || draw_banner
 		list_sessions_cmd
 		EXPECTED_ABORT=1
 		exit 0
