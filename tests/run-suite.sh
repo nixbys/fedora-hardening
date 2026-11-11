@@ -699,6 +699,7 @@ tier_full() {
     while IFS= read -r line; do
         case "$line" in
             "PASS: "*) record PASS "full: wireguard: ${line#PASS: }" ;;
+            "SKIP: "*) record SKIP "full: wireguard: ${line#SKIP: }" ;;
             "FAIL: "*) record FAIL "full: wireguard: ${line#FAIL: }" "logs in $wg_out" ;;
         esac
     done <"$wg_out/results.txt"
