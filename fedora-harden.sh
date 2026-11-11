@@ -109,6 +109,9 @@
 #    21  ClamAV install + freshclam + on-access scanning for /home;
 #        image-based: weekly scan in a locked-down container (Podman quadlet)
 #    22  OpenSCAP compliance scan (image-based: from a throwaway container)
+#    24  Your routine: timers for cleanup, disk health, Btrfs scrub, free space, a
+#        weekly check that the hardening is still in effect, a weekly summary and a
+#        90-day relevance review — only what the machine's use cases need (--profile)
 #    23  Container security — rootless Podman + toolbox/distrobox (containerized-mindset
 #        setup: image policy hardening, no-new-privileges, seccomp, subuid/subgid,
 #        unqualified-registry block, optional buildah/skopeo/podman-compose; on
@@ -227,8 +230,11 @@ fi
 [[ -z "$KERNEL_LABEL" ]] && KERNEL_LABEL="$(uname -r 2>/dev/null || echo unknown)"
 
 # ---------- Command-line option flags -----------------------------------------
-TARGET_USER=""   # Target username for SSH/home-dir hardening (--user)
-WG_CONFIG=""     # WireGuard config to install with kill switch (--wireguard-config)
+TARGET_USER="" # Target username for SSH/home-dir hardening (--user)
+WG_CONFIG=""   # WireGuard config to install with kill switch (--wireguard-config)
+PROFILE_ARG="" # Use cases for section 24 (--profile everyday,gaming,creative,dev,laptop)
+ROUTINE_HELPER="/usr/local/libexec/fedora-harden-routine"
+ROUTINE_ACTIVE=0 # Section 24 ran: record the managed state for the drift check
 ASSUME_YES=0     # Non-interactive mode (--yes)
 DRY_RUN=0        # Print what would run without making changes (--dry-run)
 SKIP_LIST=""     # Comma-separated section numbers to skip (--skip)
@@ -252,7 +258,7 @@ GUI_CANCEL_REQUESTED=0   # Set to 1 if user cancels via GUI
 GUI_SINGLE_WINDOW_MODE=0 # Set to 1 to keep GUI-full updates in one window
 
 # Sections in execution order (dependency flow; see main). --only/--skip accept these.
-SECTIONS=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 23 12 19 20 8)
+SECTIONS=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 23 24 12 19 20 8)
 
 # ---------- Execution state flags -------------------------------------------
 LOG_READY=0       # Set to 1 after log file initialized
@@ -2636,6 +2642,20 @@ _apply_rollback_journal() {
 			fi
 			;;
 
+		SYSFS)
+			# path=old value written by the run (e.g. a battery charge limit)
+			local sp="${detail%%=*}" sv="${detail#*=}"
+			if ((DRY_RUN)); then
+				info "Would restore $sp to $sv"
+			elif printf '%s' "$sv" 2>/dev/null >"$sp"; then
+				ok "Restored $sp"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not restore $sp"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
 		WG_TUNNEL)
 			if ((DRY_RUN)); then
 				info "Would stop and disable wg-quick@$detail"
@@ -2743,17 +2763,19 @@ _apply_rollback_journal() {
 # Audit rules are loaded from the restored file (auditctl -R), not regenerated.
 _rollback_reload() {
 	((DRY_RUN)) && return 0
-	local p sysctl=0 audit=0 fw=0 ssh=0 units=0
+	local p sysctl=0 audit=0 fw=0 ssh=0 units=0 journald=0
 	for p in "$@"; do
 		case "$p" in
 		/etc/sysctl.d/* | /etc/sysctl.conf) sysctl=1 ;;
 		/etc/audit/*) audit=1 ;;
 		/etc/firewalld/*) fw=1 ;;
 		/etc/ssh/*) ssh=1 ;;
+		/etc/systemd/journald.conf.d/*) units=1 journald=1 ;;
 		/etc/systemd/* | /etc/containers/systemd/*) units=1 ;;
 		esac
 	done
 	((units)) && { systemctl daemon-reload 2>/dev/null || true; }
+	((journald)) && { systemctl restart systemd-journald 2>/dev/null || true; }
 	((sysctl)) && { sysctl --system >/dev/null 2>&1 || true; }
 	((audit)) && have_cmd auditctl && [[ -f /etc/audit/audit.rules ]] && { auditctl -R /etc/audit/audit.rules >/dev/null 2>&1 || true; }
 	((fw)) && systemctl is-active --quiet firewalld 2>/dev/null && { firewall-cmd --reload >/dev/null 2>&1 || true; }
@@ -3350,6 +3372,7 @@ list_sections() {
  21  ClamAV (incl. on-access scanning for /home; image-based: container scan)
  22  OpenSCAP (image-based: from a container)
  23  Container security (Podman + toolbox/distrobox / containerized-mindset setup)
+ 24  Your routine: upkeep, health and drift checks for your use cases (--profile)
 
  Optimized execution order (guide section numbers):
     2,3,6,13,4,5,7,9,10,11,14,18,15,16,17,21,22,23,12,19,20,8
@@ -3390,6 +3413,14 @@ parse_args() {
 		-y | --yes)
 			ASSUME_YES=1
 			shift
+			;;
+		--profile)
+			if [[ ! "${2:-}" =~ ^(everyday|gaming|creative|dev|laptop)(,(everyday|gaming|creative|dev|laptop))*$ ]]; then
+				err "--profile expects use cases separated by commas: everyday, gaming, creative, dev, laptop"
+				exit 2
+			fi
+			PROFILE_ARG="$2"
+			shift 2
 			;;
 		--wireguard-config)
 			if [[ -z "${2:-}" ]]; then
@@ -5793,6 +5824,515 @@ VPNEOF
 }
 
 # ============================================================================
+#  SECTION 24 — Your routine (use-case automation)
+# ============================================================================
+# sec_24_routine() - Set up the upkeep this machine's use cases need, as systemd
+# timers calling one small helper (fedora-harden-routine). Everyday: monthly cleanup,
+# daily free-space check, weekly drift check and weekly summary (with a 90-day
+# relevance review), Btrfs scrub, disk health, a journal size cap. Creative and dev
+# add box upgrades and build-cache cleanup; laptop adds an optional charge limit.
+# Heavy jobs wait for mains power and for a game to end. Desktop notifications only
+# when something needs the person. Everything is undone by --rollback.
+sec_24_routine() {
+	should_run 24 || return 0
+	section 24 "Your routine: upkeep for how this machine is used"
+
+	write_new_file "$ROUTINE_HELPER" 0755 <<'ROUTINE_EOF' || return 0
+#!/usr/bin/bash
+# fedora-harden-routine - installed by fedora-harden.sh (section 24). The timers
+# fedora-harden-*.timer call it; every run is logged to the journal under the tag
+# fedora-harden-routine. Undo everything with: sudo fedora-harden.sh --rollback
+#
+#   detect            print the use cases this machine shows (everyday gaming creative dev laptop)
+#   cleanup           unused Flatpak runtimes, dangling Podman images, old OSTree data (monthly)
+#   scrub             Btrfs scrub of every Btrfs filesystem, idle I/O priority (monthly)
+#   diskspace         warn when / or /var/home has less than 10% free (daily)
+#   drift             have managed files changed or managed services stopped? (weekly)
+#   boxes             upgrade toolbox/distrobox containers of each user (weekly)
+#   devclean          remove container build cache older than 30 days for each user (weekly)
+#   flatpak-perms     report apps whose permissions changed since last week (weekly)
+#   summary           weekly summary + relevance review every 90 days (weekly)
+#   notify-failed U   desktop notification that unit U failed (OnFailure= hook)
+set -uo pipefail
+
+STATE=/var/lib/fedora-harden
+PROFILE=/etc/fedora-harden/profile
+mkdir -p "$STATE"
+chmod 700 "$STATE" 2>/dev/null
+
+say() { # say <DONE|NOTE|ATTENTION> <message> — journal line the weekly summary counts
+    local pri=user.info
+    [[ "$1" == ATTENTION ]] && pri=user.warning
+    logger -t fedora-harden-routine -p "$pri" -- "$1 $2"
+}
+
+# notify <normal|critical> <title> <body> — desktop notification in every active
+# graphical session (there may be none: then the journal line is the record).
+notify() {
+    local urgency="$1" title="$2" body="$3" sid user uid type active sent=0
+    while read -r sid _; do
+        [[ -n "$sid" ]] || continue
+        type="$(loginctl show-session "$sid" -p Type --value 2>/dev/null)"
+        active="$(loginctl show-session "$sid" -p Active --value 2>/dev/null)"
+        user="$(loginctl show-session "$sid" -p Name --value 2>/dev/null)"
+        [[ "$active" == yes && ("$type" == wayland || "$type" == x11) && -n "$user" ]] || continue
+        uid="$(id -u "$user" 2>/dev/null)" || continue
+        [[ -S "/run/user/$uid/bus" ]] || continue
+        if command -v notify-send >/dev/null; then
+            runuser -u "$user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+                notify-send -a fedora-harden -u "$urgency" "$title" "$body" 2>/dev/null && sent=1
+        else
+            runuser -u "$user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+                gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+                --method org.freedesktop.Notifications.Notify fedora-harden 0 "" "$title" "$body" '[]' '{}' 10000 \
+                >/dev/null 2>&1 && sent=1
+        fi
+    done < <(loginctl list-sessions --no-legend 2>/dev/null)
+    ((sent)) || logger -t fedora-harden-routine -p user.notice "no desktop session to notify: $title — $body"
+}
+
+# wait_for_quiet — heavy jobs run on mains power and not while a game holds
+# gamemode; they wait (up to a day), they do not fail.
+on_mains() { # true on mains power, or when the machine reports no power supply (desktops)
+    local ps mains=0
+    for ps in /sys/class/power_supply/*; do
+        [[ "$(cat "$ps/type" 2>/dev/null)" == Mains ]] || continue
+        mains=1
+        [[ "$(cat "$ps/online" 2>/dev/null)" == 1 ]] && return 0
+    done
+    ((!mains))
+}
+game_running() { command -v gamemoded >/dev/null && gamemoded -s 2>/dev/null | grep -q "is active"; }
+wait_for_quiet() {
+    local i
+    for ((i = 0; i < 144; i++)); do
+        on_mains && ! game_running && return 0
+        sleep 600
+    done
+    say NOTE "skipped: no quiet time on mains power within a day"
+    return 1
+}
+
+human_users() { getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 && $7 !~ /(nologin|false)$/ {print $1}'; }
+
+cmd_detect() {
+    local found=(everyday) f
+    local flatpaks
+    flatpaks="$(flatpak list --app --columns=application 2>/dev/null)"
+    if grep -qiE '^(com\.valvesoftware\.Steam|net\.lutris\.Lutris|com\.heroicgameslauncher\.hgl)$' <<<"$flatpaks" ||
+        command -v steam >/dev/null || command -v gamemoded >/dev/null ||
+        grep -qs '"image-name": *"bazzite' /usr/share/ublue-os/image-info.json; then
+        found+=(gaming)
+    fi
+    if grep -qiE '^(org\.blender\.Blender|org\.kde\.kdenlive|org\.darktable\.Darktable|org\.gimp\.GIMP|org\.inkscape\.Inkscape|org\.kde\.krita)$' <<<"$flatpaks" ||
+        podman ps -a --format '{{.Names}}' 2>/dev/null | grep -qx davincibox; then
+        found+=(creative)
+    fi
+    f=0
+    grep -qiE '^(com\.visualstudio\.code|com\.vscodium\.codium|org\.gnome\.Builder|com\.jetbrains\.)' <<<"$flatpaks" && f=1
+    for u in $(human_users); do
+        [[ -d "$(getent passwd "$u" | cut -d: -f6)/.local/share/containers/storage" ]] && f=1
+    done
+    command -v code >/dev/null && f=1
+    ((f)) && found+=(dev)
+    for ps in /sys/class/power_supply/*; do
+        [[ "$(cat "$ps/type" 2>/dev/null)" == Battery ]] && {
+            found+=(laptop)
+            break
+        }
+    done
+    echo "${found[*]}"
+}
+
+free_kb() { df -k --output=avail "$1" 2>/dev/null | tail -1 | tr -d ' '; }
+
+cmd_cleanup() {
+    wait_for_quiet || return 0
+    local before after
+    before="$(free_kb /var)"
+    command -v flatpak >/dev/null && flatpak uninstall --unused -y --noninteractive >/dev/null 2>&1
+    command -v podman >/dev/null && podman image prune -f >/dev/null 2>&1
+    [[ -e /run/ostree-booted ]] && rpm-ostree cleanup -bm >/dev/null 2>&1
+    after="$(free_kb /var)"
+    local freed=$(((after - before) / 1024))
+    ((freed < 0)) && freed=0
+    printf '%s %s\n' "$(date +%s)" "$freed" >>"$STATE/cleanup.stats"
+    say DONE "cleanup freed ${freed} MiB"
+}
+
+cmd_scrub() {
+    wait_for_quiet || return 0
+    local dev mnt rc=0
+    declare -A seen=()
+    while read -r dev mnt; do
+        [[ -n "${seen[$dev]:-}" ]] && continue
+        seen[$dev]=1
+        if btrfs scrub start -B -c 3 "$mnt" >/dev/null 2>&1; then
+            say DONE "btrfs scrub of $mnt found no errors"
+        else
+            rc=1
+            say ATTENTION "btrfs scrub of $mnt reported errors: btrfs scrub status $mnt"
+            notify critical "Disk errors found" "The Btrfs scrub of $mnt reported errors. Back up your data and run: sudo btrfs scrub status $mnt"
+        fi
+    done < <(findmnt -rn -t btrfs -o SOURCE,TARGET | sed 's/\[.*\]//' | sort -u -k1,1)
+    return "$rc"
+}
+
+cmd_diskspace() {
+    local mnt pct
+    for mnt in / /var /var/home; do
+        mountpoint -q "$mnt" 2>/dev/null || [[ "$mnt" == / ]] || continue
+        pct="$(df --output=pcent "$mnt" 2>/dev/null | tail -1 | tr -dc 0-9)"
+        [[ -n "$pct" ]] || continue
+        # an image-based / is a read-only image that is always "full"
+        [[ "$mnt" == / && -e /run/ostree-booted ]] && continue
+        if ((pct >= 90)); then
+            say ATTENTION "$mnt is ${pct}% full"
+            notify critical "Disk almost full" "$mnt is ${pct}% full. Updates and saving files will start to fail."
+        fi
+    done
+}
+
+cmd_drift() {
+    local changed="" stopped="" u
+    if [[ -s "$STATE/managed.sha256" ]]; then
+        changed="$(sha256sum --quiet -c "$STATE/managed.sha256" 2>/dev/null | sed 's/: .*//' | tr '\n' ' ')"
+    fi
+    if [[ -s "$STATE/managed.units" ]]; then
+        while read -r u; do
+            [[ -n "$u" ]] || continue
+            systemctl is-active --quiet "$u" || stopped+="$u "
+        done <"$STATE/managed.units"
+    fi
+    if [[ -z "$changed$stopped" ]]; then
+        say DONE "drift check: every protection is as hardened"
+        return 0
+    fi
+    say ATTENTION "drift: changed files: ${changed:-none}; stopped services: ${stopped:-none}"
+    notify critical "A protection changed" "Changed since hardening: ${changed:-no files}${stopped:+; stopped: $stopped}. Re-run fedora-harden.sh, or accept the change by re-running it."
+    return 1
+}
+
+cmd_boxes() {
+    wait_for_quiet || return 0
+    local u
+    for u in $(human_users); do
+        if command -v distrobox >/dev/null; then
+            runuser -u "$u" -- distrobox upgrade --all >/dev/null 2>&1 && say DONE "upgraded the boxes of $u"
+        elif command -v toolbox >/dev/null; then
+            local c
+            for c in $(runuser -u "$u" -- podman ps -a --filter label=com.github.containers.toolbox=true --format '{{.Names}}' 2>/dev/null); do
+                runuser -u "$u" -- toolbox run -c "$c" sudo dnf -y -q upgrade >/dev/null 2>&1 && say DONE "upgraded toolbox $c of $u"
+            done
+        fi
+    done
+}
+
+cmd_devclean() {
+    wait_for_quiet || return 0
+    local u
+    for u in $(human_users); do
+        runuser -u "$u" -- podman system prune -f --filter until=720h >/dev/null 2>&1 && say DONE "removed old container build cache of $u"
+    done
+}
+
+cmd_flatpak_perms() {
+    command -v flatpak >/dev/null || return 0
+    local now="$STATE/flatpak-perms.new" old="$STATE/flatpak-perms" app diff
+    : >"$now"
+    for app in $(flatpak list --app --columns=application 2>/dev/null); do
+        printf '== %s\n%s\n' "$app" "$(flatpak info --show-permissions "$app" 2>/dev/null)" >>"$now"
+    done
+    if [[ -f "$old" ]] && ! diff -q "$old" "$now" >/dev/null; then
+        diff="$(diff "$old" "$now" | grep '^>' | head -5 | tr '\n' ' ')"
+        say ATTENTION "Flatpak permissions changed: $diff"
+        notify normal "App permissions changed" "An app update changed what it may access. Review in Flatseal. ($diff)"
+    else
+        say DONE "Flatpak permissions unchanged"
+    fi
+    mv -f "$now" "$old"
+}
+
+cmd_summary() {
+    local since out done=0 attention=0 line open=0 dir d
+    since="$(date -d '7 days ago' '+%F')"
+    out="$STATE/summary-$(date +%F).txt"
+    {
+        printf 'fedora-harden weekly summary, %s\n\n' "$(date '+%F')"
+        printf 'Done this week:\n'
+        while IFS= read -r line; do
+            case "$line" in
+            DONE*) ((++done)) && printf '  - %s\n' "${line#DONE }" ;;
+            esac
+        done < <(journalctl -t fedora-harden-routine --since "$since" -o cat --no-pager 2>/dev/null)
+        printf '\nNeeds you:\n'
+        while IFS= read -r line; do
+            case "$line" in
+            ATTENTION*) ((++attention)) && printf '  - %s\n' "${line#ATTENTION }" ;;
+            esac
+        done < <(journalctl -t fedora-harden-routine --since "$since" -o cat --no-pager 2>/dev/null)
+        dir=""
+        for d in /root/harden-backups-*/; do # glob order is by date; the last wins
+            [[ -f "${d}.followups" ]] && dir="$d"
+        done
+        if [[ -n "$dir" && -s "$dir.followups" ]]; then
+            open="$(grep -c . "$dir.followups")"
+            printf '\nOpen follow-ups from the last hardening run (%s): sudo fedora-harden.sh --resume\n' "$open"
+            grep -E '\|HIGH\|' "$dir.followups" | head -5 | awk -F'|' '{print "  - [HIGH] " $4}'
+        fi
+        review_due && printf '\n%s\n' "$(review_text)"
+    } >"$out"
+    chmod 600 "$out"
+    local -a old=()
+    mapfile -t old < <(printf '%s\n' "$STATE"/summary-*.txt | sort -r | tail -n +9) # keep 8 weeks
+    ((${#old[@]})) && rm -f -- "${old[@]}"
+    say NOTE "weekly summary: $done done, $attention need attention, $open open follow-ups ($out)"
+    notify normal "Weekly summary" "$done done, $((attention + open)) need you. Details: sudo less $out"
+    if review_due; then
+        notify normal "Time for a review" "$(review_text)"
+        date +%s >"$STATE/review-notified"
+    fi
+}
+
+# Relevance review: every 90 days, compare the saved use cases with what the machine
+# shows now, and point out automations that had no effect.
+review_due() {
+    local reviewed=0 notified=0 now
+    now="$(date +%s)"
+    reviewed="$(sed -n 's/^REVIEWED=//p' "$PROFILE" 2>/dev/null)"
+    reviewed="$(date -d "${reviewed:-1970-01-01}" +%s 2>/dev/null || echo 0)"
+    [[ -f "$STATE/review-notified" ]] && notified="$(cat "$STATE/review-notified")"
+    ((now - reviewed > 90 * 86400 && now - notified > 30 * 86400))
+}
+review_text() {
+    local saved detected msg freed
+    saved="$(sed -n 's/^USE_CASES=//p' "$PROFILE" 2>/dev/null | tr -d '"')"
+    detected="$(cmd_detect)"
+    msg="Review your routine (sudo fedora-harden.sh --only 24)."
+    [[ " $saved " != " $detected " ]] && msg+=" Saved use cases: $saved; this machine now looks like: $detected."
+    if [[ -s "$STATE/cleanup.stats" ]]; then
+        freed="$(awk -v t="$(($(date +%s) - 90 * 86400))" '$1 > t {s += $2} END {print s + 0}' "$STATE/cleanup.stats")"
+        ((freed == 0)) && msg+=" Cleanup freed nothing in 90 days; it could be turned off."
+    fi
+    printf '%s' "$msg"
+}
+
+cmd_notify_failed() {
+    local unit="$1"
+    say ATTENTION "$unit failed: journalctl -u $unit"
+    notify critical "Needs attention: ${unit%.service}" "$(journalctl -u "$unit" -n 2 -o cat --no-pager 2>/dev/null | tr '\n' ' ') — details: journalctl -u $unit"
+}
+
+case "${1:-}" in
+detect) cmd_detect ;;
+cleanup) cmd_cleanup ;;
+scrub) cmd_scrub ;;
+diskspace) cmd_diskspace ;;
+drift) cmd_drift ;;
+boxes) cmd_boxes ;;
+devclean) cmd_devclean ;;
+flatpak-perms) cmd_flatpak_perms ;;
+summary) cmd_summary ;;
+notify-failed) cmd_notify_failed "${2:?unit}" ;;
+*)
+    sed -n '2,15p' "$0"
+    exit 2
+    ;;
+esac
+ROUTINE_EOF
+
+	local detected uses u
+	detected="everyday"
+	((DRY_RUN)) || detected="$("$ROUTINE_HELPER" detect 2>/dev/null || echo everyday)"
+	uses="$PROFILE_ARG"
+	if [[ -z "$uses" ]]; then
+		info "This machine looks like: $detected"
+		uses="$(prompt_input "Use cases to automate for (comma-separated: everyday, gaming, creative, dev, laptop)" "${detected// /,}")"
+	fi
+	local -a chosen=(everyday)
+	for u in ${uses//,/ }; do
+		case "$u" in
+		everyday) ;;
+		gaming | creative | dev | laptop) chosen+=("$u") ;;
+		*) warn "Unknown use case '$u' — ignored." ;;
+		esac
+	done
+	uses="${chosen[*]}"
+	info "Routine for: $uses"
+	write_new_file /etc/fedora-harden/profile 0644 <<EOF || return 0
+# Written by fedora-harden.sh (section 24). Re-run section 24 to change it.
+USE_CASES="$uses"
+REVIEWED=$(date +%F)
+EOF
+
+	write_new_file /etc/systemd/system/fedora-harden-notify@.service 0644 <<EOF || return 0
+[Unit]
+Description=Tell the desktop that %i needs attention (fedora-harden)
+
+[Service]
+Type=oneshot
+ExecStart=$ROUTINE_HELPER notify-failed %i
+EOF
+
+	# Everyday
+	_routine_timer cleanup "Monthly cleanup: unused Flatpak runtimes, Podman images, OSTree data" monthly || return 0
+	_routine_timer diskspace "Daily free-space check" daily || return 0
+	_routine_timer drift "Weekly check that the hardening is still in effect" weekly || return 0
+	_routine_timer summary "Weekly summary and 90-day relevance review" "Mon *-*-* 10:00:00" || return 0
+	if findmnt -rn -t btrfs >/dev/null 2>&1; then
+		_routine_timer scrub "Monthly Btrfs scrub (finds silent corruption)" monthly || return 0
+	fi
+	write_new_file /etc/systemd/journald.conf.d/50-fedora-harden.conf 0644 <<'EOF' || return 0
+# Written by fedora-harden.sh (section 24): logs never fill the disk.
+[Journal]
+SystemMaxUse=1G
+EOF
+	((DRY_RUN)) || run "systemctl restart systemd-journald" || true
+	# Disk health: Fedora's smartd already notifies desktop users (smartdnotify).
+	pkg_install smartmontools
+	if cmd_exists smartctl; then
+		run "systemctl enable --now smartd" || info "smartd did not start (no SMART-capable disks here?)."
+	fi
+
+	# Use-case additions
+	local uupd=0
+	[[ -r /usr/share/ublue-os/image-info.json ]] && systemctl list-unit-files uupd.timer >/dev/null 2>&1 && uupd=1
+	if [[ " $uses " == *" creative "* || " $uses " == *" dev "* ]] && ((!uupd)); then
+		_routine_timer boxes "Weekly upgrade of toolbox and distrobox containers" weekly || return 0
+	fi
+	if [[ " $uses " == *" dev "* ]]; then
+		_routine_timer devclean "Weekly removal of container build cache older than 30 days" weekly || return 0
+	fi
+	if [[ " $uses " == *" creative "* ]]; then
+		if confirm "Watch Flatpak apps for permission changes after updates?" no; then
+			_routine_timer flatpak-perms "Weekly Flatpak permission watch" weekly || return 0
+		fi
+		if cmd_exists ujust && ujust --list 2>/dev/null | grep -q install-resolve; then
+			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
+				"DaVinci Resolve without layering anything: ujust install-resolve (runs it in its own container, davincibox)."
+		elif ((IS_OSTREE)); then
+			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
+				"DaVinci Resolve without layering: run it in a distrobox made for it (the davincibox project), not as layered packages."
+		fi
+	fi
+	if [[ " $uses " == *" laptop "* ]]; then
+		_battery_limit
+	fi
+	((IS_OSTREE)) && _layer_audit
+	ROUTINE_ACTIVE=1
+	ok "Routine in place for: $uses. Weekly summary every Monday; desktop notifications only when something needs you."
+}
+
+# _routine_timer <name> <description> <OnCalendar> - service + timer for one helper
+# command. Idle CPU and I/O priority; on failure, a desktop notification.
+_routine_timer() {
+	local name="$1" desc="$2" when="$3"
+	write_new_file "/etc/systemd/system/fedora-harden-${name}.service" 0644 <<EOF || return 1
+[Unit]
+Description=$desc (fedora-harden)
+OnFailure=fedora-harden-notify@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=$ROUTINE_HELPER $name
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=26h
+EOF
+	write_new_file "/etc/systemd/system/fedora-harden-${name}.timer" 0644 <<EOF || return 1
+[Unit]
+Description=$desc (fedora-harden)
+
+[Timer]
+OnCalendar=$when
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+	enable_timer "fedora-harden-${name}.timer" || warn "Could not enable fedora-harden-${name}.timer"
+	return 0
+}
+
+# _battery_limit() - Optional charge limit (80%) where the hardware supports it.
+_battery_limit() {
+	local f
+	for f in /sys/class/power_supply/BAT*/charge_control_end_threshold; do
+		[[ -w "$f" ]] || continue
+		confirm "Limit battery charging to 80% to slow battery wear?" no || return 0
+		local old
+		old="$(cat "$f" 2>/dev/null)"
+		write_new_file /etc/tmpfiles.d/fedora-harden-battery.conf 0644 <<EOF || return 0
+# Written by fedora-harden.sh (section 24): keep the battery at most 80% charged.
+w $f - - - - 80
+EOF
+		if ((!DRY_RUN)) && printf '80' 2>/dev/null >"$f"; then
+			record_change SYSFS "$f=$old"
+			ok "Battery charge limited to 80% (was $old%)."
+		fi
+		return 0
+	done
+	info "This battery has no adjustable charge limit — skipped."
+}
+
+# _layer_audit() - Image-based systems: packages layered into the image that have a
+# better home (a Flatpak, a container or a box), with how to move them.
+_layer_audit() {
+	local layered pkg hint n=0
+	layered="$(rpm-ostree status --json 2>/dev/null | python3 -c 'import json,sys
+d = json.load(sys.stdin)["deployments"]
+b = [x for x in d if x.get("booted")] or d[:1]
+print(" ".join(b[0].get("requested-packages", []) + b[0].get("requested-local-packages", [])))' 2>/dev/null)"
+	for pkg in $layered; do
+		case "$pkg" in
+		clamav* | clamtk) hint="section 21 scans in a container instead" ;;
+		mat2) hint="Metadata Cleaner is a Flatpak" ;;
+		buildah | skopeo | podman-compose | setools* | openscap* | scap-security-guide | gcc | make | golang | nodejs* | python3-*) hint="belongs in a toolbox/distrobox box" ;;
+		*) continue ;;
+		esac
+		((++n))
+		add_action_item 24 LOW "LAYER_${pkg//[^a-zA-Z0-9]/_}" \
+			"$pkg is layered into the image; $hint. Remove the layer: sudo rpm-ostree uninstall $pkg"
+	done
+	((n)) && info "$n layered package(s) have a better home — see the follow-ups."
+	return 0
+}
+
+# record_routine_state() - At the end of a run with section 24: checksums of the /etc
+# files this run manages and the services it started, for the weekly drift check.
+record_routine_state() {
+	((ROUTINE_ACTIVE)) || return 0
+	((DRY_RUN)) && return 0
+	local dir=/var/lib/fedora-harden f u
+	install -d -m 700 "$dir" 2>/dev/null || return 0
+	local -A files=()
+	if [[ -s "$dir/managed.sha256" ]]; then
+		while read -r _ f; do files[$f]=1; done <"$dir/managed.sha256"
+	fi
+	if [[ -n "$ROLLBACK_JOURNAL" && -f "$ROLLBACK_JOURNAL" ]]; then
+		while IFS='|' read -r _ ctype f; do
+			[[ "$ctype" == FILE_CREATE || "$ctype" == FILE_BACKUP ]] || continue
+			[[ "$f" == /etc/* ]] && files[$f]=1
+		done < <(grep -v '^#' "$ROLLBACK_JOURNAL")
+	fi
+	backup_file "$dir/managed.sha256" || return 0
+	for f in "${!files[@]}"; do
+		[[ -f "$f" ]] && sha256sum "$f"
+	done 2>/dev/null | sort -k2 >"$dir/managed.sha256"
+	backup_file "$dir/managed.units" || return 0
+	{
+		[[ -f "$dir/managed.units" ]] && cat "$dir/managed.units"
+		for u in "${!TOUCHED_UNITS[@]}"; do
+			[[ "$u" == *.timer || "$u" == *.socket || "$u" == *.service ]] || continue
+			systemctl is-active --quiet "$u" 2>/dev/null && echo "$u"
+		done
+	} | sort -u >"$dir/managed.units.new" 2>/dev/null && mv -f "$dir/managed.units.new" "$dir/managed.units"
+	chmod 600 "$dir"/managed.* 2>/dev/null || true
+	info "Recorded ${#files[@]} managed files and their services for the weekly drift check."
+}
+
+# ============================================================================
 #  SECTION 17 — WireGuard with kill switch
 # ============================================================================
 # sec_17_wireguard() - Install a WireGuard tunnel (--wireguard-config FILE) that
@@ -7363,11 +7903,13 @@ main() {
 	sec_21_clamav
 	sec_22_openscap
 	sec_23_containers
+	sec_24_routine
 	sec_12_ids
 	sec_19_services
 	sec_20_perms
 	sec_08_usbguard
 	record_etc_baseline
+	record_routine_state
 
 	diagnose_failures
 	gui_progress_close
