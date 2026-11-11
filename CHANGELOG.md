@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — home snapshots (section 25)
+
+- **New section 25:** snapshots of the home folder on every supported system:
+  Snapper on Bazzite, read-only Btrfs snapshots on other Btrfs systems (home is made
+  its own subvolume at boot where needed), and hard-link incremental copies with
+  `rsync` without Btrfs — to a second drive when one is configured.
+- Frequency follows how actively the machine is used; nothing is taken when nothing
+  changed; 24 recent, 7 daily and 4 weekly are kept; 15% of the disk always stays free.
+- A home index notes growth and flags large replaceable folders, which are left out
+  only with approval; each snapshot keeps a note of what changed.
+- Off-machine backup options are ranked for the machine as follow-ups.
+- Rollback never deletes snapshots or copies.
+
 ## Unreleased — your routine (section 24)
 
 - **New section 24:** detects how the machine is used (everyday, gaming, creative,

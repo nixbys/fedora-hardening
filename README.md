@@ -61,6 +61,7 @@ This is a personal hardening script that has grown a substantial feature set and
 | 21 | ClamAV | clamd + freshclam + on-access scanning of /home; image-based: weekly scan in a locked-down container |
 | 22 | OpenSCAP | Compliance scan (image-based: from a throwaway container, nothing layered) |
 | 24 | Your routine | Timers for the upkeep this machine's use cases need, a weekly drift check and summary, desktop notifications |
+| 25 | Home snapshots | Btrfs snapshots (Snapper on Bazzite) or incremental copies of home, as often as the machine is used |
 | 23 | Container security | Rootless Podman, image policy, seccomp, registry hardening; toolbox or distrobox for tools |
 
 **Sections not automated by design:** LUKS (Anaconda install-time), GRUB password (interactive key derivation), WireGuard tunnel config (requires peer keys).
@@ -120,6 +121,7 @@ sudo ./fedora-harden.sh [options]
       --resume            Review the last session's open follow-ups and exit
       --wireguard-config <file>  Install this WireGuard config with a kill switch (section 17)
       --profile <list>    Use cases for section 24: everyday,gaming,creative,dev,laptop
+      --backup-target <dir>  Second drive for home copies on systems without Btrfs (section 25)
       --skip <list>       Comma-separated sections to skip  (e.g. 7,8,17)
       --only <list>       Comma-separated sections to run exclusively
       --list              List all section numbers & names and exit
@@ -268,6 +270,32 @@ notification appears only when something needs you; the weekly summary is in
 `journalctl -t fedora-harden-routine`. Every 90 days the summary asks for a review: if
 the machine now looks different from its saved use cases, or an automation has had
 no effect, it says so. Re-run `--only 24` to change the routine; `--rollback` removes it.
+
+## Home snapshots (Section 25)
+
+Gets back a file you deleted or overwrote, on every supported system, with what the
+system already ships:
+
+| System | How |
+|--------|-----|
+| Btrfs with Snapper (Bazzite) | Snapper's own `home` config |
+| Btrfs without Snapper (Silverblue, Kinoite, Bluefin, Aurora, Workstation) | read-only Btrfs snapshots in `/home/.snapshots` |
+| Btrfs where home is a plain folder (bootc installs) | home becomes its own subvolume at the next boot, before anyone logs in; snapshots start then |
+| No Btrfs (e.g. Fedora Server on XFS) | hard-link incremental copies with `rsync`: to a second drive when configured (`--backup-target DIR`, `/backup`, `/mnt/backup`), otherwise on the same disk |
+
+- **As often as the machine is used:** 6+ active hours a day → hourly, 1–6 → every
+  6 hours, less → daily; nothing is taken when nothing changed. Kept: 24 recent,
+  7 daily, 4 weekly. Snapshots never push the disk below 15% free.
+- **Index and change notes:** the first run indexes the home folder (folders of
+  5 GB or more); each snapshot keeps a note of what changed; the weekly index notes
+  what grew and flags new large folders. Large replaceable folders (container
+  storage, caches, game libraries) are left out of snapshots only if you say yes,
+  folder by folder.
+- **Not a backup:** snapshots live on the same disk. The follow-ups rank ways to
+  keep a copy elsewhere for this machine (an external drive with Pika Backup, a
+  network share, or cloud storage with Déjà Dup); the choice is yours.
+- **Restore** by copying from `/home/.snapshots/<date>/<user>/…` (or Snapper's
+  tools on Bazzite). `--rollback` removes the timers but never deletes snapshots.
 
 ## WireGuard with a kill switch (Section 17)
 
