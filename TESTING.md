@@ -236,8 +236,8 @@ containers and VMs, and every check runs on the Fedora Atomic image under test:
 - **`podman: command not found`** — `sudo dnf install podman` (or use the toolbox above).
 - **Static tier says the lint image failed to build** — see `<artifacts>/build-lint.log`.
 - **A full-tier check failed** — the container is removed afterwards, but every log
-  is in the artifacts directory: `full_real1.log`, `full_journal.log` (the run's journal),
-  `full_journal.log`, `full_failed_units.txt`, and `etc.*` checksum snapshots.
+  is in the artifacts directory: `full_real1.log`, `full_journal.log` (the container's journal,
+  including the run's own entries), `full_failed_units.txt`, and `etc.*` checksum snapshots.
 - **SELinux denials on bind mounts** — mounts use the shared `:z` label. Avoid
   mounting the repository with `:Z` (private label) from other containers while
   tests run: it relabels the files and locks running test containers out.
