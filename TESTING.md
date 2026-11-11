@@ -96,6 +96,14 @@ enabled, the helper's drift check is clean after the run and catches a changed m
 file, and the weekly summary is written. The static tier extracts the helper embedded
 in the script and lints it with ShellCheck.
 
+Section 25 runs in the full tier without Btrfs (the rsync path): the first copy
+holds the home folder, nothing is copied when nothing changed, a changed file gives a
+new copy with a change note, unchanged files are hard links, the index and the
+off-machine options exist, and rollback keeps the copies. The vm tier covers Btrfs on
+installed systems: home is made its own subvolume (owner and SELinux label kept),
+read-only snapshots with change notes (Silverblue), Snapper snapshots (Bazzite), and
+an approved folder becoming its own subvolume with its contents intact.
+
 Section 17 is tested against a real WireGuard peer (`tests/wireguard-test.sh`, two
 containers on a private network): invalid and split-tunnel configs are refused; the
 handshake happens and traffic flows through the tunnel; DNS is routed through it;
