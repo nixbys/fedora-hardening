@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — journal logging, honest diagnosis, WireGuard kill switch
+
+- **Logs in the system journal:** every message goes to the journal with the session
+  and section as fields (`journalctl -t fedora-harden FH_SESSION=<id>`); a log file is
+  written only where there is no journald. The separate error log is gone.
+- **Diagnosis instead of "auto-remediation":** the old loop re-read its own error log
+  and could not fix anything. After the sections, the script now checks the services
+  it enabled or restarted and reports each failed one with its own journal lines.
+- **`--report` and `--resume` replace the PDF export and `--import-audit`:** one
+  self-contained HTML page per session (changes, open follow-ups, warnings, and live
+  checks when `tests/verify-host.sh` is present), and the open follow-ups of the last
+  session, with the fixes offered again. No `enscript`/`ps2pdf` dependency.
+- **Section 17 rebuilt:** with `--wireguard-config FILE` it installs the tunnel, a
+  firewalld kill switch (nothing leaves outside the tunnel, also while it is down)
+  and DNS routing through the tunnel; refuses incomplete and split-tunnel configs;
+  all of it is undone by `--rollback`. Without a config it does nothing (it used to
+  install `wireguard-tools` and print a guide).
+
 ## Unreleased — production hardening from fault injection
 
 A new `fault` test tier breaks the script's surroundings one fault at a time. Every

@@ -103,7 +103,7 @@ jobs:
     name: Container tests (Fedora ${{ matrix.fedora }}, ${{ matrix.tier }})
     runs-on: ubuntu-latest
     needs: static
-    timeout-minutes: 90  # the fault tier takes about an hour
+    timeout-minutes: 150  # the fault tier takes 80-90 minutes on GitHub runners
     # Podman runs nested in a job container of the release under test; the test
     # images are built on that release too. --privileged is needed for nesting.
     container:
