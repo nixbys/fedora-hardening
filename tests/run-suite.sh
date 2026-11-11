@@ -348,6 +348,13 @@ tier_static() {
             [[ "$(scap_results "$2" failing)" == xccdf_org.ssgproject.content_rule_aide_build_database ]]' \
         _ "$SCRIPT" "$ROOT/tests/fixtures/scap-results-sample.xml"
 
+    # Section 24 installs a helper embedded in the script; lint it like the rest.
+    if need_tool shellcheck "static: embedded routine helper"; then
+        check "static: embedded routine helper passes shellcheck" bash -c '
+            sed -n "/<<'"'"'ROUTINE_EOF'"'"'/,/^ROUTINE_EOF\$/p" "$1" | sed "1d;\$d" >"$2" &&
+            [[ -s "$2" ]] && shellcheck -s bash "$2"' _ "$SCRIPT" "$ARTIFACTS/fedora-harden-routine"
+    fi
+
     # Regression guard: under `set -e` a post-increment of a zero counter inside (( ))
     # evaluates to 0, returns status 1 and aborts the script.
     check "static: no set -e unsafe post-increments" \
@@ -654,6 +661,25 @@ tier_full() {
         record FAIL "full: --resume shows the last session's open follow-ups" "exit $rc (see $log)"
     fi
 
+    # --- section 24: routine ------------------------------------------------------
+    log="$ARTIFACTS/full_routine.log"
+    rc=0
+    fx /root/fedora-harden.sh --yes --only 24 --profile everyday,dev >"$log" 2>&1 || rc=$?
+    check "full: section 24 runs cleanly (exit $rc)" bash -c '[[ $1 == 0 ]] && ! grep -q "^\[FAIL\]" "$2"' _ "$rc" "$log"
+    check "full: section 24 saves the profile" fx grep -qx 'USE_CASES="everyday dev"' /etc/fedora-harden/profile
+    for t in cleanup diskspace drift summary devclean; do
+        check "full: routine timer fedora-harden-$t is enabled" fx systemctl is-enabled --quiet "fedora-harden-$t.timer"
+    done
+    check "full: routine helper detects use cases" fx bash -c '/usr/local/libexec/fedora-harden-routine detect | grep -qw everyday'
+    check "full: drift check is clean right after the run" fx /usr/local/libexec/fedora-harden-routine drift
+    check "full: drift check catches a changed managed file" fx bash -c '
+        f=$(awk "NR==1{print \$2}" /var/lib/fedora-harden/managed.sha256) && [[ -n "$f" ]] &&
+        cp -a "$f" /tmp/drift.bak && echo "# changed" >>"$f" &&
+        ! /usr/local/libexec/fedora-harden-routine drift; rc=$?; cp -a /tmp/drift.bak "$f"; exit $rc'
+    check "full: weekly summary is written" fx bash -c '/usr/local/libexec/fedora-harden-routine summary &&
+        grep -q "Done this week" /var/lib/fedora-harden/summary-*.txt && grep -q "Needs you" /var/lib/fedora-harden/summary-*.txt'
+    check "full: free-space check runs" fx /usr/local/libexec/fedora-harden-routine diskspace
+
     # --- sessions + rollback ------------------------------------------------------
     log="$ARTIFACTS/full_list_sessions.log"
     rc=0
@@ -678,7 +704,8 @@ tier_full() {
     local hardened_left=0 f
     for f in /etc/sysctl.d/99-hardening.conf /etc/audit/rules.d/hardening.rules /etc/ssh/sshd_config.d/10-hardening.conf \
         /etc/profile.d/99-umask.sh /etc/security/limits.d/99-coredump.conf \
-        /var/lib/flatpak/overrides/global; do
+        /var/lib/flatpak/overrides/global /usr/local/libexec/fedora-harden-routine /etc/fedora-harden/profile \
+        /etc/systemd/system/fedora-harden-drift.timer /etc/systemd/journald.conf.d/50-fedora-harden.conf; do
         fx test -e "$f" && ((++hardened_left))
     done
     if ((hardened_left == 0)) && cmp -s <(grep pwquality.conf "$ARTIFACTS/etc.0") \
