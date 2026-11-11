@@ -30,6 +30,15 @@ cleanup() {
 trap cleanup EXIT
 
 fail=0
+# tunnel_check <description> <command...> — a check that needs the tunnel to run;
+# reported as SKIP (with the reason) where this environment cannot run nft.
+tunnel_check() {
+    if ((!NFT_OK)); then
+        echo "SKIP: $1 — nft cannot run in this container ($NFT_WHY)"
+        return 0
+    fi
+    check "$@"
+}
 check() { # check <description> <command...>
     if "${@:2}"; then
         echo "PASS: $1"
@@ -79,6 +88,15 @@ ce bash -c "printf '[Interface]\nPrivateKey = %s\nAddress = 10.99.0.2/24\nDNS = 
 
 check "before hardening: the peer's web server is reachable directly" reach "$PEER_IP" 8080
 
+# wg-quick needs nft. Some CI containers cannot execute it (exit 126 on GitHub's
+# runners); record why, and skip only the checks that need a running tunnel.
+NFT_OK=1 NFT_WHY=""
+if ! ce nft --version >"$OUT/nft-probe.txt" 2>&1; then
+    NFT_OK=0
+    NFT_WHY="$(tail -1 "$OUT/nft-probe.txt")"
+    ce bash -c 'ls -l "$(command -v nft)"; getcap "$(command -v nft)"; findmnt -no OPTIONS /; id' >>"$OUT/nft-probe.txt" 2>&1
+fi
+
 # ── Refused configs ─────────────────────────────────────────────────────────────
 ce bash -c "sed 's|AllowedIPs = .*|AllowedIPs = 10.99.0.0/24|' /root/provider.conf >/root/split.conf
     grep -v '^PublicKey' /root/provider.conf >/root/broken.conf"
@@ -100,10 +118,10 @@ ce journalctl -u wg-quick@wg0 -b --no-pager >"$OUT/wg-quick.journal" 2>&1
 check "tunnel config installed with mode 600" bash -c '[[ "$(podman exec "$1" stat -c %a /etc/wireguard/wg0.conf)" == 600 ]]' _ "$CLIENT"
 sleep 6
 hs="$(ce wg show wg0 latest-handshakes 2>/dev/null | awk '{print $2}')"
-check "handshake with the peer" test "${hs:-0}" -gt 0
-check "traffic flows through the tunnel (10.99.0.1:8080)" reach 10.99.0.1 8080
+tunnel_check "handshake with the peer" test "${hs:-0}" -gt 0
+tunnel_check "traffic flows through the tunnel (10.99.0.1:8080)" reach 10.99.0.1 8080
 ce resolvectl domain wg0 >"$OUT/resolvectl.txt" 2>&1
-check "DNS is routed through the tunnel (~. on wg0)" grep -q '~\.' "$OUT/resolvectl.txt"
+tunnel_check "DNS is routed through the tunnel (~. on wg0)" grep -q '~\.' "$OUT/resolvectl.txt"
 
 # The client's route to the peer's network address goes through the tunnel when it
 # is up; the kill switch must block it when the tunnel is down.
@@ -114,7 +132,7 @@ check "tunnel down: the endpoint stays allowed (UDP 51820 rule present)" \
     bash -c 'podman exec "$1" firewall-cmd --info-policy=fedora-harden-killswitch | grep -q "port=\"51820\""' _ "$CLIENT"
 ce systemctl start wg-quick@wg0 >/dev/null 2>&1
 sleep 6
-check "tunnel back up: traffic flows again" reach 10.99.0.1 8080
+tunnel_check "tunnel back up: traffic flows again" reach 10.99.0.1 8080
 
 # ── Rollback ─────────────────────────────────────────────────────────────────────
 rc=0
