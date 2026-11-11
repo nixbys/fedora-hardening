@@ -88,13 +88,15 @@ ce bash -c "printf '[Interface]\nPrivateKey = %s\nAddress = 10.99.0.2/24\nDNS = 
 
 check "before hardening: the peer's web server is reachable directly" reach "$PEER_IP" 8080
 
-# wg-quick needs nft. Some CI containers cannot execute it (exit 126 on GitHub's
-# runners); record why, and skip only the checks that need a running tunnel.
+# wg-quick needs nft, run from a systemd service. On GitHub's runners the host
+# denies that exec ("Permission denied", exit 126) while a direct exec works, so
+# probe it the way wg-quick@ runs it; record why, and skip only the checks that
+# need a running tunnel.
 NFT_OK=1 NFT_WHY=""
-if ! ce nft --version >"$OUT/nft-probe.txt" 2>&1; then
+if ! ce systemd-run --quiet --wait --pipe --collect nft --version >"$OUT/nft-probe.txt" 2>&1; then
     NFT_OK=0
     NFT_WHY="$(tail -1 "$OUT/nft-probe.txt")"
-    ce bash -c 'ls -l "$(command -v nft)"; getcap "$(command -v nft)"; findmnt -no OPTIONS /; id' >>"$OUT/nft-probe.txt" 2>&1
+    ce bash -c 'ls -lZ "$(command -v nft)"; getcap "$(command -v nft)"; findmnt -no OPTIONS /; cat /proc/1/attr/current 2>&1; nft --version' >>"$OUT/nft-probe.txt" 2>&1
 fi
 
 # ── Refused configs ─────────────────────────────────────────────────────────────
