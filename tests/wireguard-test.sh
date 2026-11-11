@@ -34,7 +34,7 @@ fail=0
 # reported as SKIP (with the reason) where this environment cannot run nft.
 tunnel_check() {
     if ((!NFT_OK)); then
-        echo "SKIP: $1 — nft cannot run in this container ($NFT_WHY)"
+        echo "SKIP: $1 — the host denies wg-quick its nft call ($NFT_WHY)"
         return 0
     fi
     check "$@"
@@ -88,16 +88,12 @@ ce bash -c "printf '[Interface]\nPrivateKey = %s\nAddress = 10.99.0.2/24\nDNS = 
 
 check "before hardening: the peer's web server is reachable directly" reach "$PEER_IP" 8080
 
-# wg-quick needs nft, run from a systemd service. On GitHub's runners the host
-# denies that exec ("Permission denied", exit 126) while a direct exec works, so
-# probe it the way wg-quick@ runs it; record why, and skip only the checks that
-# need a running tunnel.
+# wg-quick needs nft. On GitHub's runners the host denies the exec that wg-quick@
+# makes ("/usr/bin/nft: Permission denied", exit 126) although a direct nft and a
+# systemd-run nft both work, so the denial is detected from wg-quick's own journal
+# after the run. Only that exact signature skips the tunnel checks; any other
+# tunnel failure still fails them.
 NFT_OK=1 NFT_WHY=""
-if ! ce systemd-run --quiet --wait --pipe --collect nft --version >"$OUT/nft-probe.txt" 2>&1; then
-    NFT_OK=0
-    NFT_WHY="$(tail -1 "$OUT/nft-probe.txt")"
-    ce bash -c 'ls -lZ "$(command -v nft)"; getcap "$(command -v nft)"; findmnt -no OPTIONS /; cat /proc/1/attr/current 2>&1; nft --version' >>"$OUT/nft-probe.txt" 2>&1
-fi
 
 # ── Refused configs ─────────────────────────────────────────────────────────────
 ce bash -c "sed 's|AllowedIPs = .*|AllowedIPs = 10.99.0.0/24|' /root/provider.conf >/root/split.conf
@@ -117,6 +113,11 @@ ce /opt/fh/fedora-harden.sh --yes --only 5,17 --wireguard-config /root/provider.
 check "run exits 0 (got $rc)" test "$rc" -eq 0
 check "no [FAIL] lines in the run" bash -c '! grep -q "^\[FAIL\]" "$1"' _ "$OUT/run.log"
 ce journalctl -u wg-quick@wg0 -b --no-pager >"$OUT/wg-quick.journal" 2>&1
+if grep -q 'nft: Permission denied' "$OUT/wg-quick.journal"; then
+    NFT_OK=0
+    NFT_WHY="$(grep -m1 'nft: Permission denied' "$OUT/wg-quick.journal" | sed 's/^.*wg-quick\[[0-9]*\]: //')"
+    ce bash -c 'ls -l "$(command -v nft)"; findmnt -no OPTIONS /; cat /proc/self/attr/current; nft --version' >"$OUT/nft-probe.txt" 2>&1
+fi
 check "tunnel config installed with mode 600" bash -c '[[ "$(podman exec "$1" stat -c %a /etc/wireguard/wg0.conf)" == 600 ]]' _ "$CLIENT"
 sleep 6
 hs="$(ce wg show wg0 latest-handshakes 2>/dev/null | awk '{print $2}')"
