@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# tests/gui-test.sh - GUI (--gui-full) checks; runs INSIDE the Fedora 44 "gui" image.
+# tests/gui-test.sh - GUI (--gui) checks; runs INSIDE the Fedora 44 "gui" image.
 #
 # Drives fedora-harden.sh on a virtual X display (Xvfb) with zenity and checks:
-#   - a --gui-full --dry-run --yes run exits 0 and does not hang on any dialog
+#   - a --gui --dry-run --yes run exits 0 and does not hang on any dialog
 #   - the progress window is closed (not orphaned) when the script exits
 #   - exactly one end-of-run window remains, rendered with the Material-dark theme
 #     (pixel-sampled), even though the root locale here is NOT UTF-8
@@ -34,8 +34,8 @@ progress_pids() { pgrep -f 'zenity --progress' || true; }
 
 # --- 1. dry run: completes, no hang, progress closed, one themed summary window ----
 rc=0
-timeout 180 /root/fedora-harden.sh --gui-full --dry-run --yes >"$OUT/gui-dryrun.log" 2>&1 || rc=$?
-if ((rc == 0)); then pass "--gui-full --dry-run --yes exits 0"; else bad "--gui-full --dry-run exit $rc (124 = hung)"; fi
+timeout 180 /root/fedora-harden.sh --gui --dry-run --yes >"$OUT/gui-dryrun.log" 2>&1 || rc=$?
+if ((rc == 0)); then pass "--gui --dry-run --yes exits 0"; else bad "--gui --dry-run exit $rc (124 = hung)"; fi
 sleep 3
 import -window root "$OUT/gui-summary.png" 2>/dev/null
 if [[ -z "$(progress_pids)" ]]; then pass "progress window closed on exit"; else bad "progress window orphaned: $(progress_pids)"; fi
@@ -61,7 +61,7 @@ sleep 1
 
 # --- 2. Cancel on the progress window stops the run with exit 130 ----------------
 # A real (non-dry) run of section 13 is slow enough (package + Flathub work) to cancel.
-/root/fedora-harden.sh --gui-full --yes --only 13 >"$OUT/gui-cancel.log" 2>&1 &
+/root/fedora-harden.sh --gui --yes --only 13 >"$OUT/gui-cancel.log" 2>&1 &
 pid=$!
 for _ in $(seq 1 60); do
     [[ -n "$(progress_pids)" ]] && break

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — one GUI mode
+
+- **`--gui` is now the full windowed frontend** (progress window, dialogs and the
+  end-of-run summary, Material dark theme). The former questions-only `--gui` mode is
+  gone, and `--gui-full` is removed: use `--gui`.
+
 ## Unreleased — home snapshots (section 25)
 
 - **New section 25:** snapshots of the home folder on every supported system:
