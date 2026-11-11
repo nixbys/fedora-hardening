@@ -60,6 +60,7 @@ This is a personal hardening script that has grown a substantial feature set and
 | 20 | File permissions | shadow, /tmp, compilers, umask 077, core dumps, hostname privacy, unencrypted-swap check |
 | 21 | ClamAV | clamd + freshclam + on-access scanning of /home; image-based: weekly scan in a locked-down container |
 | 22 | OpenSCAP | Compliance scan (image-based: from a throwaway container, nothing layered) |
+| 24 | Your routine | Timers for the upkeep this machine's use cases need, a weekly drift check and summary, desktop notifications |
 | 23 | Container security | Rootless Podman, image policy, seccomp, registry hardening; toolbox or distrobox for tools |
 
 **Sections not automated by design:** LUKS (Anaconda install-time), GRUB password (interactive key derivation), WireGuard tunnel config (requires peer keys).
@@ -118,6 +119,7 @@ sudo ./fedora-harden.sh [options]
       --report [file]     Write an HTML report of the last session and exit
       --resume            Review the last session's open follow-ups and exit
       --wireguard-config <file>  Install this WireGuard config with a kill switch (section 17)
+      --profile <list>    Use cases for section 24: everyday,gaming,creative,dev,laptop
       --skip <list>       Comma-separated sections to skip  (e.g. 7,8,17)
       --only <list>       Comma-separated sections to run exclusively
       --list              List all section numbers & names and exit
@@ -237,6 +239,35 @@ sudo ./fedora-harden.sh --rollback all
 ```
 
 ---
+
+## Your routine (Section 24)
+
+Hardening is not a one-time job: updates, cleanup, disk health, and noticing when a
+protection was undone. Section 24 sets that up to match how the machine is used. It
+detects the likely use cases (Steam or Bazzite: gaming; Blender, Kdenlive, Resolve:
+creative; IDEs or container storage: development; a battery: laptop), asks once
+(or takes `--profile`), saves the answer in `/etc/fedora-harden/profile`, and adds only
+the timers those use cases need:
+
+| Timer | What it does | For |
+|-------|--------------|-----|
+| `fedora-harden-cleanup` (monthly) | unused Flatpak runtimes, dangling Podman images, old OSTree data | everyone |
+| `fedora-harden-diskspace` (daily) | notifies below 10% free | everyone |
+| `fedora-harden-scrub` (monthly) | Btrfs scrub: finds silent corruption | Btrfs systems |
+| `fedora-harden-drift` (weekly) | notifies if a file the script manages changed or a service it started stopped | everyone |
+| `fedora-harden-summary` (Mondays) | what was done, what needs you, open follow-ups; a relevance review every 90 days | everyone |
+| `fedora-harden-boxes` (weekly) | upgrades toolbox/distrobox containers (Universal Blue's uupd already does) | creative, dev |
+| `fedora-harden-devclean` (weekly) | removes container build cache older than 30 days | dev |
+| `fedora-harden-flatpak-perms` (weekly, asked) | tells you when an app update widened its permissions | creative |
+
+Plus a 1 GB journal cap, `smartd` disk-health warnings, an optional 80% battery
+charge limit on laptops, and on image-based systems a list of layered packages that
+have a better home. Heavy jobs wait for mains power and for a game to end. A desktop
+notification appears only when something needs you; the weekly summary is in
+`/var/lib/fedora-harden/summary-<date>.txt`, and every run is in
+`journalctl -t fedora-harden-routine`. Every 90 days the summary asks for a review: if
+the machine now looks different from its saved use cases, or an automation has had
+no effect, it says so. Re-run `--only 24` to change the routine; `--rollback` removes it.
 
 ## WireGuard with a kill switch (Section 17)
 

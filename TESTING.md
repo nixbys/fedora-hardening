@@ -91,6 +91,11 @@ The full tier also checks that the run logs to the journal under its session (an
 writes no log file), that `--report` writes a page with the changes, follow-ups and
 live checks, and that `--resume` brings back the last session's follow-ups.
 
+Section 24 runs with `--profile everyday,dev`: the profile is saved, the timers are
+enabled, the helper's drift check is clean after the run and catches a changed managed
+file, and the weekly summary is written. The static tier extracts the helper embedded
+in the script and lints it with ShellCheck.
+
 Section 17 is tested against a real WireGuard peer (`tests/wireguard-test.sh`, two
 containers on a private network): invalid and split-tunnel configs are refused; the
 handshake happens and traffic flows through the tunnel; DNS is routed through it;
