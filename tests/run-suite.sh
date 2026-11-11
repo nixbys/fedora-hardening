@@ -680,6 +680,31 @@ tier_full() {
         grep -q "Done this week" /var/lib/fedora-harden/summary-*.txt && grep -q "Needs you" /var/lib/fedora-harden/summary-*.txt'
     check "full: free-space check runs" fx /usr/local/libexec/fedora-harden-routine diskspace
 
+    # --- section 25: home copies (no Btrfs in this image: the rsync backend) -------
+    local H=/usr/local/libexec/fedora-harden-routine C=/var/lib/fedora-harden/home-copies
+    log="$ARTIFACTS/full_snapshots.log"
+    rc=0
+    fx /root/fedora-harden.sh --yes --only 25 >"$log" 2>&1 || rc=$?
+    check "full: section 25 runs cleanly (exit $rc)" bash -c '[[ $1 == 0 ]] && ! grep -q "^\[FAIL\]" "$2"' _ "$rc" "$log"
+    check "full: without Btrfs, home copies use rsync on the same disk" \
+        fx bash -c 'grep -qx BACKEND=rsync /etc/fedora-harden/snapshots && grep -qx TARGET=/var/lib/fedora-harden/home-copies /etc/fedora-harden/snapshots'
+    check "full: snapshot and index timers are enabled" \
+        fx bash -c 'systemctl is-enabled --quiet fedora-harden-snapshot.timer && systemctl is-enabled --quiet fedora-harden-index.timer'
+    check "full: the first copy holds the home folder" fx bash -c "
+        echo one >/home/testuser/note.txt && rm -f /var/lib/fedora-harden/snapshot-last && $H snapshot &&
+        ls $C/2*[0-9]/testuser/note.txt"
+    check "full: an unchanged home gives no new copy" fx bash -c "
+        n=\$(ls -d $C/2*[0-9] | wc -l); sleep 1; rm -f /var/lib/fedora-harden/snapshot-last; $H snapshot &&
+        [[ \$(ls -d $C/2*[0-9] | wc -l) == \$n ]]"
+    check "full: a changed file gives a new copy with a change note" fx bash -c "
+        sleep 1; echo two >>/home/testuser/note.txt; rm -f /var/lib/fedora-harden/snapshot-last; $H snapshot &&
+        f=\$(ls $C/2*.changes | tail -1) && grep -q 'changed files: 1' \"\$f\" && grep -q testuser \"\$f\""
+    check "full: unchanged files are shared between copies (hard links)" fx bash -c "
+        a=\$(ls -d $C/2*[0-9] | head -1); b=\$(ls -d $C/2*[0-9] | tail -1);
+        [[ \$(stat -c %i \$a/testuser/.bashrc) == \$(stat -c %i \$b/testuser/.bashrc) ]]"
+    check "full: the home index is written" fx test -s /var/lib/fedora-harden/home-index.notes
+    check "full: off-machine backup options are offered" grep -q "Off-machine copy" "$log"
+
     # --- sessions + rollback ------------------------------------------------------
     log="$ARTIFACTS/full_list_sessions.log"
     rc=0
@@ -705,7 +730,8 @@ tier_full() {
     for f in /etc/sysctl.d/99-hardening.conf /etc/audit/rules.d/hardening.rules /etc/ssh/sshd_config.d/10-hardening.conf \
         /etc/profile.d/99-umask.sh /etc/security/limits.d/99-coredump.conf \
         /var/lib/flatpak/overrides/global /usr/local/libexec/fedora-harden-routine /etc/fedora-harden/profile \
-        /etc/systemd/system/fedora-harden-drift.timer /etc/systemd/journald.conf.d/50-fedora-harden.conf; do
+        /etc/systemd/system/fedora-harden-drift.timer /etc/systemd/journald.conf.d/50-fedora-harden.conf \
+        /etc/fedora-harden/snapshots /etc/systemd/system/fedora-harden-snapshot.timer; do
         fx test -e "$f" && ((++hardened_left))
     done
     if ((hardened_left == 0)) && cmp -s <(grep pwquality.conf "$ARTIFACTS/etc.0") \
@@ -715,6 +741,8 @@ tier_full() {
         record FAIL "full: rollback removed drop-ins and restored pwquality.conf" \
             "$hardened_left drop-in(s) remain; residual diff in $ARTIFACTS/full_rollback.residual"
     fi
+    check "full: rollback keeps home copies (the person's data) but removes their timer" \
+        fx bash -c 'ls -d /var/lib/fedora-harden/home-copies/2*[0-9] >/dev/null && ! systemctl is-enabled --quiet fedora-harden-snapshot.timer'
 
     fx journalctl --no-pager -b >"$ARTIFACTS/full_journal.log" 2>&1 || true
     fx systemctl --failed --no-pager >"$ARTIFACTS/full_failed_units.txt" 2>&1 || true
