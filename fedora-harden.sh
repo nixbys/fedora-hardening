@@ -230,9 +230,10 @@ fi
 [[ -z "$KERNEL_LABEL" ]] && KERNEL_LABEL="$(uname -r 2>/dev/null || echo unknown)"
 
 # ---------- Command-line option flags -----------------------------------------
-TARGET_USER="" # Target username for SSH/home-dir hardening (--user)
-WG_CONFIG=""   # WireGuard config to install with kill switch (--wireguard-config)
-PROFILE_ARG="" # Use cases for section 24 (--profile everyday,gaming,creative,dev,laptop)
+TARGET_USER=""   # Target username for SSH/home-dir hardening (--user)
+WG_CONFIG=""     # WireGuard config to install with kill switch (--wireguard-config)
+PROFILE_ARG=""   # Use cases for section 24 (--profile everyday,gaming,creative,dev,laptop)
+BACKUP_TARGET="" # Second drive for home copies on systems without Btrfs (--backup-target)
 ROUTINE_HELPER="/usr/local/libexec/fedora-harden-routine"
 ROUTINE_ACTIVE=0 # Section 24 ran: record the managed state for the drift check
 ASSUME_YES=0     # Non-interactive mode (--yes)
@@ -258,7 +259,7 @@ GUI_CANCEL_REQUESTED=0   # Set to 1 if user cancels via GUI
 GUI_SINGLE_WINDOW_MODE=0 # Set to 1 to keep GUI-full updates in one window
 
 # Sections in execution order (dependency flow; see main). --only/--skip accept these.
-SECTIONS=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 23 24 12 19 20 8)
+SECTIONS=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 23 24 25 12 19 20 8)
 
 # ---------- Execution state flags -------------------------------------------
 LOG_READY=0       # Set to 1 after log file initialized
@@ -2642,6 +2643,12 @@ _apply_rollback_journal() {
 			fi
 			;;
 
+		SNAPSHOT_DATA)
+			# Snapshots and copies are the person's data: never deleted by rollback.
+			info "Kept home snapshots/copies in $detail — delete them yourself if you no longer want them."
+			_rjl "  [KEEP] SNAPSHOT_DATA  $detail"
+			;;
+
 		SYSFS)
 			# path=old value written by the run (e.g. a battery charge limit)
 			local sp="${detail%%=*}" sv="${detail#*=}"
@@ -3373,6 +3380,7 @@ list_sections() {
  22  OpenSCAP (image-based: from a container)
  23  Container security (Podman + toolbox/distrobox / containerized-mindset setup)
  24  Your routine: upkeep, health and drift checks for your use cases (--profile)
+ 25  Home snapshots (Btrfs) or incremental copies, as often as the machine is used
 
  Optimized execution order (guide section numbers):
     2,3,6,13,4,5,7,9,10,11,14,18,15,16,17,21,22,23,12,19,20,8
@@ -3413,6 +3421,14 @@ parse_args() {
 		-y | --yes)
 			ASSUME_YES=1
 			shift
+			;;
+		--backup-target)
+			if [[ -z "${2:-}" || ! -d "$2" ]]; then
+				err "--backup-target needs an existing directory (on a second drive)."
+				exit 2
+			fi
+			BACKUP_TARGET="$(realpath -- "$2")"
+			shift 2
 			;;
 		--profile)
 			if [[ ! "${2:-}" =~ ^(everyday|gaming|creative|dev|laptop)(,(everyday|gaming|creative|dev|laptop))*$ ]]; then
@@ -5824,6 +5840,158 @@ VPNEOF
 }
 
 # ============================================================================
+#  SECTION 25 — Home snapshots and copies
+# ============================================================================
+# sec_25_snapshots() - Protect the home folder against deleted or overwritten files,
+# with what the system already ships: Snapper where it is installed (Bazzite),
+# read-only Btrfs snapshots on other Btrfs systems, and hard-link incremental copies
+# (rsync) elsewhere — to a second drive when one is configured. How often follows how
+# actively the machine is used; nothing is taken when nothing changed. A home index
+# flags large replaceable folders; each is left out only with approval.
+sec_25_snapshots() {
+	should_run 25 || return 0
+	section 25 "Home snapshots and copies"
+	install_routine_helper || return 0
+
+	local home backend target="" fstype
+	home="$(readlink -f /home)"
+	fstype="$(findmnt -no FSTYPE -T "$home" 2>/dev/null)"
+	local home_pending=0
+	if [[ "$fstype" == btrfs ]]; then
+		backend=btrfs
+		cmd_exists snapper && backend=snapper
+		# Installed with bootc, home is a plain folder on Btrfs: make it its own
+		# subvolume at the next boot, before anyone logs in; snapshots start then.
+		btrfs subvolume show "$home" >/dev/null 2>&1 || home_pending=1
+	else
+		backend=rsync
+		pkg_install rsync
+		if ((!DRY_RUN)) && ! cmd_exists rsync; then
+			warn "rsync is not available — home copies not set up."
+			return 0
+		fi
+		target="$(_backup_target "$home")"
+	fi
+	info "Home folder $home ($fstype): $backend$([[ -n "$target" ]] && echo " → $target")"
+
+	write_new_file /etc/fedora-harden/snapshots 0644 <<EOF || return 0
+# Written by fedora-harden.sh (section 25).
+BACKEND=$backend
+HOME_DIR=$home
+TARGET=$target
+EXCLUDES=""
+EOF
+	# The snapshot store is created by the helper on the first snapshot (Snapper's
+	# config on Bazzite: it thins to 24 recent, 7 daily, 4 weekly).
+	if ((!DRY_RUN)); then
+		if [[ "$backend" == rsync ]]; then
+			install -d -m 700 "$target" && record_change SNAPSHOT_DATA "$target"
+		else
+			record_change SNAPSHOT_DATA "$home/.snapshots"
+			if ((home_pending)); then
+				install -d -m 700 /var/lib/fedora-harden
+				grep -qx '\.' /var/lib/fedora-harden/exclude-queue 2>/dev/null ||
+					echo . >>/var/lib/fedora-harden/exclude-queue
+				add_action_item 25 MEDIUM "HOME_SUBVOLUME_PENDING" \
+					"Restart once to finish setting up home snapshots: at the next boot, before anyone logs in, $home becomes its own Btrfs subvolume (contents and permissions kept)."
+			fi
+		fi
+	fi
+
+	_routine_timer snapshot "Home snapshot when due (frequency follows how actively this machine is used)" hourly || return 0
+	_routine_timer index "Weekly home index: note what grew, flag new large folders" weekly || return 0
+	if [[ "$backend" != rsync ]]; then
+		write_new_file /etc/systemd/system/fedora-harden-exclude.service 0644 <<EOF || return 0
+[Unit]
+Description=Leave approved folders out of home snapshots (fedora-harden), before anyone logs in
+Before=systemd-user-sessions.service
+ConditionFileNotEmpty=/var/lib/fedora-harden/exclude-queue
+
+[Service]
+Type=oneshot
+ExecStart=$ROUTINE_HELPER exclude-convert
+
+[Install]
+WantedBy=multi-user.target
+EOF
+		backup_file /etc/systemd/system/multi-user.target.wants/fedora-harden-exclude.service || return 0
+		run "systemctl daemon-reload && systemctl enable fedora-harden-exclude.service" || true
+	fi
+
+	if ((!DRY_RUN)); then
+		info "Indexing the home folder (folders of 5 GB or more)..."
+		FH_NO_WAIT=1 "$ROUTINE_HELPER" index >/dev/null 2>&1 || true
+		_snapshot_exclusions "$backend"
+	fi
+	_offsite_options "$home"
+	ok "Home protection on: $backend. The first snapshot comes within the hour; how often depends on how much the machine is used."
+}
+
+# _backup_target <home> - Where copies go without Btrfs: --backup-target, or a drive
+# configured for backups (/backup, /mnt/backup) — only if it is a different device;
+# otherwise /var/lib/fedora-harden/home-copies on the same disk.
+_backup_target() {
+	local home="$1" t
+	for t in "$BACKUP_TARGET" /backup /mnt/backup; do
+		[[ -n "$t" && -d "$t" ]] || continue
+		if [[ "$(stat -c %d "$t")" != "$(stat -c %d "$home")" ]]; then
+			echo "$t/fedora-harden-home"
+			return 0
+		fi
+		[[ "$t" == "$BACKUP_TARGET" ]] && warn "$t is on the same drive as $home; using the default location."
+	done
+	add_action_item 25 MEDIUM "COPIES_SAME_DISK" \
+		"Home copies are kept on the same disk ($home): they help with deleted files, not a failed disk. With a second drive: sudo ./fedora-harden.sh --only 25 --backup-target /path/on/that/drive"
+	echo /var/lib/fedora-harden/home-copies
+}
+
+# _snapshot_exclusions <backend> - Offer to leave each large replaceable folder of
+# the index out of snapshots (asked one by one; off under --yes).
+_snapshot_exclusions() {
+	local backend="$1" index=/var/lib/fedora-harden/home-index.tsv path size class excl=""
+	[[ -s "$index" ]] || return 0
+	while IFS=$'\t' read -r path size class; do
+		[[ "$class" == replaceable ]] || continue
+		confirm "Leave $path ($size GB, replaceable) out of home snapshots?" no || continue
+		if [[ "$backend" == rsync ]]; then
+			excl+="$path "
+		else
+			printf '%s\n' "$path" >>/var/lib/fedora-harden/exclude-queue
+			info "$path will become its own subvolume at the next boot, before anyone logs in."
+		fi
+	done < <(sort -t$'\t' -k2 -rn "$index")
+	[[ -n "$excl" ]] && sed -i "s|^EXCLUDES=.*|EXCLUDES=\"${excl% }\"|" /etc/fedora-harden/snapshots
+	return 0
+}
+
+# _offsite_options <home> - Snapshots live on the same disk. Rank the ways to keep a
+# copy elsewhere by what this machine has, and let the person choose.
+_offsite_options() {
+	local usb net have_pika=0 have_dejadup=0
+	usb="$(lsblk -nrpo MOUNTPOINT,HOTPLUG 2>/dev/null | awk '$2 == 1 && $1 != "" {print $1; exit}' || true)"
+	net="$(findmnt -rn -t cifs,nfs,nfs4,smb3 -o TARGET 2>/dev/null | head -1 || true)"
+	flatpak info org.gnome.World.PikaBackup >/dev/null 2>&1 && have_pika=1
+	flatpak info org.gnome.DejaDup >/dev/null 2>&1 && have_dejadup=1
+	local n=1
+	if [[ -n "$usb" ]]; then
+		add_action_item 25 MEDIUM "OFFSITE_${n}" \
+			"Off-machine copy, best fit (external drive at $usb): Pika Backup$( ((have_pika)) && echo ' (installed)' || echo ' — flatpak install flathub org.gnome.World.PikaBackup'). Encrypted, deduplicated, runs on a schedule."
+		((++n))
+	fi
+	if [[ -n "$net" ]]; then
+		add_action_item 25 MEDIUM "OFFSITE_${n}" \
+			"Off-machine copy to the network share at $net: Pika Backup to that folder, or restic in a box for a server you reach over SSH."
+		((++n))
+	fi
+	add_action_item 25 LOW "OFFSITE_${n}" \
+		"Off-machine copy to cloud storage: Déjà Dup$( ((have_dejadup)) && echo ' (installed)' || echo ' — flatpak install flathub org.gnome.DejaDup') (Google Drive, Microsoft OneDrive, a Nextcloud/WebDAV server, or a folder), encrypted."
+	((++n))
+	[[ -z "$usb" ]] && add_action_item 25 LOW "OFFSITE_${n}" \
+		"Off-machine copy to an external drive (plug one in and re-run section 25 for a tailored suggestion): Pika Backup, flatpak install flathub org.gnome.World.PikaBackup"
+	return 0
+}
+
+# ============================================================================
 #  SECTION 24 — Your routine (use-case automation)
 # ============================================================================
 # sec_24_routine() - Set up the upkeep this machine's use cases need, as systemd
@@ -5837,7 +6005,93 @@ sec_24_routine() {
 	should_run 24 || return 0
 	section 24 "Your routine: upkeep for how this machine is used"
 
-	write_new_file "$ROUTINE_HELPER" 0755 <<'ROUTINE_EOF' || return 0
+	install_routine_helper || return 0
+
+	local detected uses u
+	detected="everyday"
+	((DRY_RUN)) || detected="$("$ROUTINE_HELPER" detect 2>/dev/null || echo everyday)"
+	uses="$PROFILE_ARG"
+	if [[ -z "$uses" ]]; then
+		info "This machine looks like: $detected"
+		uses="$(prompt_input "Use cases to automate for (comma-separated: everyday, gaming, creative, dev, laptop)" "${detected// /,}")"
+	fi
+	local -a chosen=(everyday)
+	for u in ${uses//,/ }; do
+		case "$u" in
+		everyday) ;;
+		gaming | creative | dev | laptop) chosen+=("$u") ;;
+		*) warn "Unknown use case '$u' — ignored." ;;
+		esac
+	done
+	uses="${chosen[*]}"
+	info "Routine for: $uses"
+	write_new_file /etc/fedora-harden/profile 0644 <<EOF || return 0
+# Written by fedora-harden.sh (section 24). Re-run section 24 to change it.
+USE_CASES="$uses"
+REVIEWED=$(date +%F)
+EOF
+
+	write_new_file /etc/systemd/system/fedora-harden-notify@.service 0644 <<EOF || return 0
+[Unit]
+Description=Tell the desktop that %i needs attention (fedora-harden)
+
+[Service]
+Type=oneshot
+ExecStart=$ROUTINE_HELPER notify-failed %i
+EOF
+
+	# Everyday
+	_routine_timer cleanup "Monthly cleanup: unused Flatpak runtimes, Podman images, OSTree data" monthly || return 0
+	_routine_timer diskspace "Daily free-space check" daily || return 0
+	_routine_timer drift "Weekly check that the hardening is still in effect" weekly || return 0
+	_routine_timer summary "Weekly summary and 90-day relevance review" "Mon *-*-* 10:00:00" || return 0
+	if findmnt -rn -t btrfs >/dev/null 2>&1; then
+		_routine_timer scrub "Monthly Btrfs scrub (finds silent corruption)" monthly || return 0
+	fi
+	write_new_file /etc/systemd/journald.conf.d/50-fedora-harden.conf 0644 <<'EOF' || return 0
+# Written by fedora-harden.sh (section 24): logs never fill the disk.
+[Journal]
+SystemMaxUse=1G
+EOF
+	((DRY_RUN)) || run "systemctl restart systemd-journald" || true
+	# Disk health: Fedora's smartd already notifies desktop users (smartdnotify).
+	pkg_install smartmontools
+	if cmd_exists smartctl; then
+		run "systemctl enable --now smartd" || info "smartd did not start (no SMART-capable disks here?)."
+	fi
+
+	# Use-case additions
+	local uupd=0
+	[[ -r /usr/share/ublue-os/image-info.json ]] && systemctl list-unit-files uupd.timer >/dev/null 2>&1 && uupd=1
+	if [[ " $uses " == *" creative "* || " $uses " == *" dev "* ]] && ((!uupd)); then
+		_routine_timer boxes "Weekly upgrade of toolbox and distrobox containers" weekly || return 0
+	fi
+	if [[ " $uses " == *" dev "* ]]; then
+		_routine_timer devclean "Weekly removal of container build cache older than 30 days" weekly || return 0
+	fi
+	if [[ " $uses " == *" creative "* ]]; then
+		if confirm "Watch Flatpak apps for permission changes after updates?" no; then
+			_routine_timer flatpak-perms "Weekly Flatpak permission watch" weekly || return 0
+		fi
+		if cmd_exists ujust && ujust --list 2>/dev/null | grep -q install-resolve; then
+			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
+				"DaVinci Resolve without layering anything: ujust install-resolve (runs it in its own container, davincibox)."
+		elif ((IS_OSTREE)); then
+			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
+				"DaVinci Resolve without layering: run it in a distrobox made for it (the davincibox project), not as layered packages."
+		fi
+	fi
+	if [[ " $uses " == *" laptop "* ]]; then
+		_battery_limit
+	fi
+	((IS_OSTREE)) && _layer_audit
+	ROUTINE_ACTIVE=1
+	ok "Routine in place for: $uses. Weekly summary every Monday; desktop notifications only when something needs you."
+}
+
+# install_routine_helper() - Write the helper the routine timers call (sections 24, 25).
+install_routine_helper() {
+	write_new_file "$ROUTINE_HELPER" 0755 <<'ROUTINE_EOF'
 #!/usr/bin/bash
 # fedora-harden-routine - installed by fedora-harden.sh (section 24). The timers
 # fedora-harden-*.timer call it; every run is logged to the journal under the tag
@@ -5852,6 +6106,9 @@ sec_24_routine() {
 #   devclean          remove container build cache older than 30 days for each user (weekly)
 #   flatpak-perms     report apps whose permissions changed since last week (weekly)
 #   summary           weekly summary + relevance review every 90 days (weekly)
+#   snapshot          home snapshot or copy when due (hourly check; frequency follows use)
+#   index             index the home folder; note what grew and flag new large folders (weekly)
+#   exclude-convert   at boot: make approved folders their own subvolumes (left out of snapshots)
 #   notify-failed U   desktop notification that unit U failed (OnFailure= hook)
 set -uo pipefail
 
@@ -5904,6 +6161,7 @@ on_mains() { # true on mains power, or when the machine reports no power supply 
 }
 game_running() { command -v gamemoded >/dev/null && gamemoded -s 2>/dev/null | grep -q "is active"; }
 wait_for_quiet() {
+    [[ -n "${FH_NO_WAIT:-}" ]] && return 0 # run by fedora-harden.sh itself
     local i
     for ((i = 0; i < 144; i++)); do
         on_mains && ! game_running && return 0
@@ -6123,8 +6381,298 @@ cmd_notify_failed() {
     notify critical "Needs attention: ${unit%.service}" "$(journalctl -u "$unit" -n 2 -o cat --no-pager 2>/dev/null | tr '\n' ' ') — details: journalctl -u $unit"
 }
 
+# ── Home snapshots and copies (section 25) ──────────────────────────────────────
+# Config (/etc/fedora-harden/snapshots): BACKEND=snapper|btrfs|rsync, HOME_DIR=,
+# TARGET= (rsync copies), EXCLUDES= (space-separated, relative to HOME_DIR).
+SNAPCONF=/etc/fedora-harden/snapshots
+snap_conf() { sed -n "s/^$1=//p" "$SNAPCONF" 2>/dev/null | tr -d '"'; }
+
+# Activity: the hourly run records whether anyone is actively using the machine;
+# the average over 14 days picks how often to snapshot.
+record_activity() {
+    local sid
+    while read -r sid _; do
+        [[ -n "$sid" ]] || continue
+        [[ "$(loginctl show-session "$sid" -p Active --value 2>/dev/null)" == yes ]] || continue
+        [[ "$(loginctl show-session "$sid" -p Class --value 2>/dev/null)" == user ]] || continue
+        date +%s >>"$STATE/activity"
+        break
+    done < <(loginctl list-sessions --no-legend 2>/dev/null)
+    local cutoff=$(($(date +%s) - 14 * 86400))
+    [[ -f "$STATE/activity" ]] && awk -v c="$cutoff" '$1 > c' "$STATE/activity" >"$STATE/activity.new" &&
+        mv -f "$STATE/activity.new" "$STATE/activity"
+}
+activity_tier() { # hourly (≥6 active h/day), regular (1–6), light (<1)
+    local hours=0
+    [[ -f "$STATE/activity" ]] && hours="$(wc -l <"$STATE/activity")"
+    local per_day=$((hours / 14))
+    if ((per_day >= 6)); then
+        echo hourly
+    elif ((per_day >= 1)); then
+        echo regular
+    else
+        echo light
+    fi
+}
+tier_interval() { case "$1" in hourly) echo 3600 ;; regular) echo 21600 ;; *) echo 86400 ;; esac }
+
+home_free_pct() { df --output=pcent "$1" 2>/dev/null | tail -1 | tr -dc 0-9; }
+
+# Change log: a short note of what changed, kept next to each snapshot or copy.
+write_changes() { # write_changes <file> <list of changed paths on stdin>
+    local out="$1" n
+    awk -F/ 'NF >= 3 {print $1 "/" $2 "/" $3} NF < 3 {print}' | sort | uniq -c | sort -rn >"$out.tmp"
+    n="$(awk '{s += $1} END {print s + 0}' "$out.tmp")"
+    {
+        printf 'changed files: %s\ntop folders:\n' "$n"
+        head -10 "$out.tmp"
+    } >"$out"
+    rm -f "$out.tmp"
+    chmod 600 "$out"
+    echo "$n"
+}
+
+# thin <dir> — keep the newest 24, the newest per day for 7 days and per ISO week
+# for 4 weeks; delete the rest (names are YYYYmmdd-HHMMSS).
+thin() {
+    local dir="$1" name keep_recent=24 i=0
+    declare -A keep=() days=() weeks=()
+    while read -r name; do
+        ((++i))
+        local ts d w
+        ts="$(date -d "${name:0:8} ${name:9:2}:${name:11:2}" +%s 2>/dev/null)" || continue
+        d="$(date -d "@$ts" +%F)"
+        w="$(date -d "@$ts" +%G-%V)"
+        ((i <= keep_recent)) && keep[$name]=1
+        if [[ -z "${days[$d]:-}" && ${#days[@]} -lt 7 ]]; then
+            days[$d]=1
+            keep[$name]=1
+        fi
+        if [[ -z "${weeks[$w]:-}" && ${#weeks[@]} -lt 4 ]]; then
+            weeks[$w]=1
+            keep[$name]=1
+        fi
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n' | sort -r)
+    while read -r name; do
+        [[ -n "${keep[$name]:-}" ]] && continue
+        remove_snapshot "$dir/$name"
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n')
+}
+remove_snapshot() {
+    case "$(snap_conf BACKEND)" in
+    btrfs) btrfs subvolume delete "$1" >/dev/null 2>&1 ;;
+    *) rm -rf --one-file-system -- "$1" ;;
+    esac
+    rm -f -- "$1.changes"
+}
+
+cmd_snapshot() {
+    [[ -f "$SNAPCONF" ]] || return 0
+    record_activity
+    local backend home tier interval last=0 now stamp
+    backend="$(snap_conf BACKEND)" home="$(snap_conf HOME_DIR)"
+    tier="$(activity_tier)"
+    if [[ "$tier" != "$(cat "$STATE/snapshot-tier" 2>/dev/null)" ]]; then
+        say NOTE "snapshot frequency now: $tier (from how actively this machine is used)"
+        echo "$tier" >"$STATE/snapshot-tier"
+    fi
+    interval="$(tier_interval "$tier")"
+    now="$(date +%s)"
+    [[ -f "$STATE/snapshot-last" ]] && last="$(cat "$STATE/snapshot-last")"
+    ((now - last >= interval)) || return 0
+    # Space guard: never let snapshots push the disk under 15% free.
+    local target="$home" pct
+    [[ "$backend" == rsync ]] && target="$(snap_conf TARGET)"
+    pct="$(home_free_pct "$target")"
+    if [[ -n "$pct" ]] && ((pct >= 85)); then
+        say ATTENTION "snapshot skipped: $target is ${pct}% full"
+        notify normal "Snapshot skipped" "$target is ${pct}% full; old snapshots are being removed first."
+        prune_for_space
+        return 0
+    fi
+    if [[ "$backend" != rsync ]] && ! btrfs subvolume show "$home" >/dev/null 2>&1; then
+        say NOTE "home snapshots start after the next boot (home becomes a subvolume then)"
+        return 0
+    fi
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    case "$backend" in
+    snapper) ensure_snapper "$home" && snapshot_snapper "$stamp" ;;
+    btrfs) snapshot_btrfs "$home" "$stamp" ;;
+    rsync) snapshot_rsync "$home" "$(snap_conf TARGET)" "$stamp" ;;
+    esac || return 1
+    echo "$now" >"$STATE/snapshot-last"
+}
+
+snapshot_btrfs() {
+    local home="$1" stamp="$2" dir="$1/.snapshots" lastgen gen n
+    if [[ ! -d "$dir" ]]; then
+        btrfs subvolume create "$dir" >/dev/null && chmod 700 "$dir"
+    fi
+    gen="$(btrfs subvolume show "$home" 2>/dev/null | awk '/Generation:/ {print $2; exit}')"
+    lastgen="$(cat "$STATE/snapshot-gen" 2>/dev/null || echo 0)"
+    if [[ -n "$gen" && "$gen" == "$lastgen" ]]; then
+        return 0 # nothing changed since the last snapshot
+    fi
+    btrfs subvolume snapshot -r "$home" "$dir/$stamp" >/dev/null || {
+        say ATTENTION "btrfs snapshot of $home failed"
+        return 1
+    }
+    if [[ "$lastgen" == 0 ]]; then # first snapshot: nothing to compare with
+        printf 'initial snapshot\n' >"$dir/$stamp.changes"
+        chmod 600 "$dir/$stamp.changes"
+        n=initial
+    else
+        n="$(btrfs subvolume find-new "$home" "$lastgen" 2>/dev/null | awk '/^inode/ {print $NF}' | write_changes "$dir/$stamp.changes")"
+    fi
+    echo "$gen" >"$STATE/snapshot-gen"
+    say DONE "home snapshot $stamp ($n changed files)"
+    thin "$dir"
+}
+
+ensure_snapper() { # Snapper's own config for home; it thins to 24 recent, 7 daily, 4 weekly
+    snapper -c home get-config >/dev/null 2>&1 && return 0
+    snapper -c home create-config "$1" >/dev/null 2>&1 || {
+        say ATTENTION "snapper could not set up home snapshots"
+        return 1
+    }
+    snapper -c home set-config TIMELINE_CREATE=no TIMELINE_CLEANUP=yes TIMELINE_LIMIT_HOURLY=24 \
+        TIMELINE_LIMIT_DAILY=7 TIMELINE_LIMIT_WEEKLY=4 TIMELINE_LIMIT_MONTHLY=0 TIMELINE_LIMIT_YEARLY=0 >/dev/null 2>&1
+}
+
+snapshot_snapper() {
+    local stamp="$1" num prev n
+    prev="$(snapper -c home --csvout list --columns number 2>/dev/null | tail -1)"
+    num="$(snapper -c home create -c timeline -d "fedora-harden $stamp" -p 2>/dev/null)" || {
+        say ATTENTION "snapper snapshot of home failed"
+        return 1
+    }
+    if [[ -n "$prev" && "$prev" != 0 && "$prev" != number ]]; then
+        n="$(snapper -c home status "$prev..$num" 2>/dev/null | awk '{print $2}' | write_changes "$STATE/snapper-$num.changes")"
+        if [[ "$n" == 0 ]]; then
+            snapper -c home delete "$num" >/dev/null 2>&1 # nothing changed: keep the older one
+            rm -f "$STATE/snapper-$num.changes"
+            return 0
+        fi
+    fi
+    say DONE "home snapshot $num via snapper (${n:-first} changed files)"
+    snapper -c home cleanup timeline >/dev/null 2>&1
+}
+
+snapshot_rsync() {
+    local home="$1" target="$2" stamp="$3" prev excl=() e n
+    mkdir -p "$target"
+    chmod 700 "$target"
+    for e in $(snap_conf EXCLUDES); do excl+=(--exclude "/$e"); done
+    prev="$(find "$target" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n' | sort | tail -1)"
+    local -a link=()
+    [[ -n "$prev" ]] && link=(--link-dest "$target/$prev")
+    # Nothing changed since the last copy: skip it.
+    # Extended attributes are kept, but not security labels: the copy location has
+    # its own, and some file systems cannot store them.
+    local -a opts=(-aHAX --filter='-x security.*' --delete)
+    if [[ -n "$prev" ]] && [[ -z "$(rsync "${opts[@]}" -n "${excl[@]}" --out-format='%n' "$home/" "$target/$prev/" 2>/dev/null | grep -v '/$' | head -1)" ]]; then
+        return 0
+    fi
+    local rc=0
+    rsync "${opts[@]}" "${excl[@]}" "${link[@]}" --out-format='%n' "$home/" "$target/$stamp/" >"$STATE/rsync.out" 2>"$STATE/rsync.err" || rc=$?
+    if ((rc != 0 && rc != 24)); then # 24: files vanished while copying (normal in a home folder)
+        say ATTENTION "copy of $home to $target failed: $(tail -1 "$STATE/rsync.err")"
+        return 1
+    fi
+    n="$(grep -v '/$' "$STATE/rsync.out" | write_changes "$target/$stamp.changes")"
+    say DONE "home copy $stamp to $target ($n changed files)"
+    thin "$target"
+}
+
+prune_for_space() {
+    local backend dir oldest
+    backend="$(snap_conf BACKEND)"
+    case "$backend" in
+    snapper) snapper -c home cleanup timeline >/dev/null 2>&1 ;;
+    btrfs | rsync)
+        dir="$(snap_conf HOME_DIR)/.snapshots"
+        [[ "$backend" == rsync ]] && dir="$(snap_conf TARGET)"
+        oldest="$(find "$dir" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n' | sort | head -1)"
+        [[ -n "$oldest" ]] && remove_snapshot "$dir/$oldest" && say NOTE "removed oldest snapshot $oldest to free space"
+        ;;
+    esac
+}
+
+# Index of the home folder: written once, then updated with notes when it changes.
+# Large, replaceable folders are flagged; they are excluded only with approval.
+REPLACEABLE='\.cache$|/\.local/share/containers$|/\.local/share/Steam$|/steamapps$|/\.local/share/libvirt$|/\.local/share/gnome-boxes$|/\.var/app/[^/]+/cache$'
+cmd_index() {
+    local home index="$STATE/home-index.tsv" new="$STATE/home-index.new" notes="$STATE/home-index.notes"
+    home="$(snap_conf HOME_DIR)"
+    [[ -n "$home" ]] || return 0
+    wait_for_quiet || return 0
+    du -x -k --max-depth=4 "$home" 2>/dev/null | awk -v min=$((5 * 1024 * 1024)) '$1 >= min' |
+        while read -r kb path; do
+            local class=keep
+            [[ "$path" =~ $REPLACEABLE ]] && class=replaceable
+            printf '%s\t%s\t%s\n' "${path#"$home"/}" "$((kb / 1024 / 1024))" "$class"
+        done | sort >"$new"
+    if [[ ! -f "$index" ]]; then
+        mv -f "$new" "$index"
+        printf '%s indexed %s folder(s) of 5 GB or more\n' "$(date +%F)" "$(wc -l <"$index")" >>"$notes"
+        say NOTE "home index created"
+        return 0
+    fi
+    local path size class old
+    while IFS=$'\t' read -r path size class; do
+        old="$(awk -F'\t' -v p="$path" '$1 == p {print $2}' "$index")"
+        if [[ -z "$old" ]]; then
+            printf '%s new: %s (%s GB, %s)\n' "$(date +%F)" "$path" "$size" "$class" >>"$notes"
+            [[ "$class" == replaceable ]] && say ATTENTION "new large replaceable folder $path ($size GB) — exclude it from snapshots: sudo fedora-harden.sh --only 25"
+        elif ((size > old + old / 4 + 1)); then
+            printf '%s grew: %s %s → %s GB\n' "$(date +%F)" "$path" "$old" "$size" >>"$notes"
+        fi
+    done <"$new"
+    mv -f "$new" "$index"
+    chmod 600 "$index" "$notes" 2>/dev/null
+}
+
+# exclude-convert — at boot, before anyone logs in, turn approved folders into their
+# own subvolumes so Btrfs snapshots leave them out. Verified before the old copy goes.
+cmd_exclude_convert() {
+    local queue="$STATE/exclude-queue" home path new old
+    [[ -s "$queue" ]] || return 0
+    home="$(snap_conf HOME_DIR)"
+    local dir
+    while read -r path; do
+        [[ -n "$path" ]] || continue
+        # "." is the home folder itself (Btrfs installs where home is a plain folder)
+        dir="$home/$path"
+        [[ "$path" == . ]] && dir="$home"
+        [[ -d "$dir" ]] || continue
+        btrfs subvolume show "$dir" >/dev/null 2>&1 && continue # already one
+        new="$dir.fh-new" old="$dir.fh-old"
+        if btrfs subvolume create "$new" >/dev/null &&
+            chown --reference="$dir" "$new" && chmod --reference="$dir" "$new" &&
+            { chcon --reference="$dir" "$new" 2>/dev/null || true; } &&
+            cp -a --reflink=always "$dir/." "$new/" &&
+            [[ "$(find "$dir" | wc -l)" == "$(find "$new" | wc -l)" ]] &&
+            mv "$dir" "$old" && mv "$new" "$dir"; then
+            rm -rf --one-file-system -- "$old"
+            if [[ "$path" == . ]]; then
+                say DONE "home is now its own subvolume; snapshots start"
+            else
+                say DONE "excluded $path from snapshots (now its own subvolume)"
+            fi
+        else
+            [[ -d "$new" ]] && btrfs subvolume delete "$new" >/dev/null 2>&1
+            [[ -d "$old" && ! -e "$dir" ]] && mv "$old" "$dir"
+            say ATTENTION "could not make $path its own subvolume; nothing was changed"
+        fi
+    done <"$queue"
+    : >"$queue"
+}
+
 case "${1:-}" in
 detect) cmd_detect ;;
+snapshot) cmd_snapshot ;;
+index) cmd_index ;;
+exclude-convert) cmd_exclude_convert ;;
 cleanup) cmd_cleanup ;;
 scrub) cmd_scrub ;;
 diskspace) cmd_diskspace ;;
@@ -6135,92 +6683,11 @@ flatpak-perms) cmd_flatpak_perms ;;
 summary) cmd_summary ;;
 notify-failed) cmd_notify_failed "${2:?unit}" ;;
 *)
-    sed -n '2,15p' "$0"
+    sed -n '2,18p' "$0"
     exit 2
     ;;
 esac
 ROUTINE_EOF
-
-	local detected uses u
-	detected="everyday"
-	((DRY_RUN)) || detected="$("$ROUTINE_HELPER" detect 2>/dev/null || echo everyday)"
-	uses="$PROFILE_ARG"
-	if [[ -z "$uses" ]]; then
-		info "This machine looks like: $detected"
-		uses="$(prompt_input "Use cases to automate for (comma-separated: everyday, gaming, creative, dev, laptop)" "${detected// /,}")"
-	fi
-	local -a chosen=(everyday)
-	for u in ${uses//,/ }; do
-		case "$u" in
-		everyday) ;;
-		gaming | creative | dev | laptop) chosen+=("$u") ;;
-		*) warn "Unknown use case '$u' — ignored." ;;
-		esac
-	done
-	uses="${chosen[*]}"
-	info "Routine for: $uses"
-	write_new_file /etc/fedora-harden/profile 0644 <<EOF || return 0
-# Written by fedora-harden.sh (section 24). Re-run section 24 to change it.
-USE_CASES="$uses"
-REVIEWED=$(date +%F)
-EOF
-
-	write_new_file /etc/systemd/system/fedora-harden-notify@.service 0644 <<EOF || return 0
-[Unit]
-Description=Tell the desktop that %i needs attention (fedora-harden)
-
-[Service]
-Type=oneshot
-ExecStart=$ROUTINE_HELPER notify-failed %i
-EOF
-
-	# Everyday
-	_routine_timer cleanup "Monthly cleanup: unused Flatpak runtimes, Podman images, OSTree data" monthly || return 0
-	_routine_timer diskspace "Daily free-space check" daily || return 0
-	_routine_timer drift "Weekly check that the hardening is still in effect" weekly || return 0
-	_routine_timer summary "Weekly summary and 90-day relevance review" "Mon *-*-* 10:00:00" || return 0
-	if findmnt -rn -t btrfs >/dev/null 2>&1; then
-		_routine_timer scrub "Monthly Btrfs scrub (finds silent corruption)" monthly || return 0
-	fi
-	write_new_file /etc/systemd/journald.conf.d/50-fedora-harden.conf 0644 <<'EOF' || return 0
-# Written by fedora-harden.sh (section 24): logs never fill the disk.
-[Journal]
-SystemMaxUse=1G
-EOF
-	((DRY_RUN)) || run "systemctl restart systemd-journald" || true
-	# Disk health: Fedora's smartd already notifies desktop users (smartdnotify).
-	pkg_install smartmontools
-	if cmd_exists smartctl; then
-		run "systemctl enable --now smartd" || info "smartd did not start (no SMART-capable disks here?)."
-	fi
-
-	# Use-case additions
-	local uupd=0
-	[[ -r /usr/share/ublue-os/image-info.json ]] && systemctl list-unit-files uupd.timer >/dev/null 2>&1 && uupd=1
-	if [[ " $uses " == *" creative "* || " $uses " == *" dev "* ]] && ((!uupd)); then
-		_routine_timer boxes "Weekly upgrade of toolbox and distrobox containers" weekly || return 0
-	fi
-	if [[ " $uses " == *" dev "* ]]; then
-		_routine_timer devclean "Weekly removal of container build cache older than 30 days" weekly || return 0
-	fi
-	if [[ " $uses " == *" creative "* ]]; then
-		if confirm "Watch Flatpak apps for permission changes after updates?" no; then
-			_routine_timer flatpak-perms "Weekly Flatpak permission watch" weekly || return 0
-		fi
-		if cmd_exists ujust && ujust --list 2>/dev/null | grep -q install-resolve; then
-			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
-				"DaVinci Resolve without layering anything: ujust install-resolve (runs it in its own container, davincibox)."
-		elif ((IS_OSTREE)); then
-			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
-				"DaVinci Resolve without layering: run it in a distrobox made for it (the davincibox project), not as layered packages."
-		fi
-	fi
-	if [[ " $uses " == *" laptop "* ]]; then
-		_battery_limit
-	fi
-	((IS_OSTREE)) && _layer_audit
-	ROUTINE_ACTIVE=1
-	ok "Routine in place for: $uses. Weekly summary every Monday; desktop notifications only when something needs you."
 }
 
 # _routine_timer <name> <description> <OnCalendar> - service + timer for one helper
@@ -7904,6 +8371,7 @@ main() {
 	sec_22_openscap
 	sec_23_containers
 	sec_24_routine
+	sec_25_snapshots
 	sec_12_ids
 	sec_19_services
 	sec_20_perms
