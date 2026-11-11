@@ -5901,6 +5901,12 @@ _wg_check_config() {
 			"$f is a split tunnel (AllowedIPs = $allowed). Use a full-tunnel config (AllowedIPs = 0.0.0.0/0, ::/0) for leak protection."
 		return 1
 	fi
+	if [[ ",$allowed," != *",::/0,"* ]]; then
+		# Not a leak: the kill switch rejects IPv6 outside the tunnel. But IPv6 stops working.
+		warn "The WireGuard config carries IPv4 only (no ::/0): with the kill switch, IPv6 traffic is blocked."
+		add_action_item 17 LOW "WG_NO_IPV6" \
+			"$f routes only IPv4 through the tunnel (AllowedIPs has no ::/0), so the kill switch blocks IPv6. Use your provider's config with IPv6 (AllowedIPs = 0.0.0.0/0, ::/0) if you need it."
+	fi
 	if (($(grep -ciE '^[[:space:]]*\[Peer\]' "$f") != 1)); then
 		warn "WireGuard config must have exactly one [Peer] — not installed."
 		return 1
