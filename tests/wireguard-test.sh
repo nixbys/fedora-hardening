@@ -49,7 +49,9 @@ podman network create "$NET" >/dev/null || {
 }
 
 # ── Peer: WireGuard server, a web server inside the tunnel and one outside ──────
-podman run -d --name "$PEER" --network "$NET" --cap-add NET_ADMIN \
+# apparmor=unconfined: on hosts with AppArmor (GitHub's Ubuntu runners) Podman's
+# default profile stopped wg-quick from running nft; a no-op elsewhere.
+podman run -d --name "$PEER" --network "$NET" --cap-add NET_ADMIN --security-opt apparmor=unconfined \
     "registry.fedoraproject.org/fedora:$REL" sleep infinity >/dev/null
 pe dnf -y -q install --setopt=install_weak_deps=False wireguard-tools iproute python3 >"$OUT/peer-dnf.log" 2>&1
 PEER_IP="$(podman inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$PEER")"
@@ -59,7 +61,7 @@ pe bash -c 'python3 -m http.server 8080 --bind 0.0.0.0 >/dev/null 2>&1 &'
 # ── Client: systemd + firewalld (the suite's full image) ─────────────────────────
 # Privileged: in a rootless container systemd can then start firewalld and
 # systemd-resolved with their usual sandboxing, as on a booted host.
-podman run -d --name "$CLIENT" --network "$NET" --systemd=always --privileged \
+podman run -d --name "$CLIENT" --network "$NET" --systemd=always --privileged --security-opt apparmor=unconfined \
     --memory 3g -v "$ROOT/fedora-harden.sh:/opt/fh/fedora-harden.sh:ro,z" "$IMG_FULL" >/dev/null
 for _ in $(seq 1 60); do
     s="$(ce systemctl is-system-running 2>/dev/null || true)"
