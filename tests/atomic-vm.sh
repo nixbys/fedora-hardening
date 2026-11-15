@@ -133,6 +133,8 @@ check "Fedora CoreOS builder VM boots" wait_ssh 300 || exit 1
 vm 'cat >authorized_keys' <"$work/id.pub"
 vm "sudo IMG='$IMG' bash -s" >"$OUT/install.log" 2>&1 <<'EOF'
 set -euo pipefail
+# Registry CDNs occasionally drop a multi-GB download: pull with retries first.
+podman pull -q --retry 5 --retry-delay 15s "$IMG" >/dev/null
 printf 'FROM %s\nRUN systemctl enable sshd\n' "$IMG" | podman build -q -t localhost/fh-target -f - .
 podman run --rm --privileged --pid=host --security-opt label=type:unconfined_t \
     -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v /var/home/core/authorized_keys:/keys:ro \
