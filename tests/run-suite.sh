@@ -19,7 +19,9 @@
 #   quick   - CLI contract + full dry-run in the no-systemd container, with a check
 #             that dry-run left the container filesystem untouched
 #   full    - systemd container: dry-run no-change check, REAL run, verification of
-#             applied hardening, idempotent re-run, --list-sessions, --rollback all
+#             applied hardening, idempotent re-run, --list-sessions, --rollback all,
+#             journal logging, --report/--resume, and section 17 against a real
+#             WireGuard peer (tests/wireguard-test.sh: kill switch, DNS, rollback)
 #   gui     - --gui-full on a virtual display: no hang, progress window closed,
 #             one Material-dark end-of-run window, Cancel exits 130
 #   atomic  - image-based behaviour with the images' own rpm-ostree, Flatpak, Podman
@@ -555,6 +557,15 @@ tier_full() {
     fi
     etc_snapshot "$ARTIFACTS/etc.1"
 
+    # --- logging goes to the journal ------------------------------------------
+    local session
+    session="$(grep -oE 'FH_SESSION=[0-9]{8}-[0-9]{6}' "$log" | head -1)"
+    check "full: the run logs to the journal under its session (${session:-none})" \
+        bash -c '[[ -n "$2" ]] && (($(podman exec "$1" journalctl -t fedora-harden "$2" -o cat --no-pager | wc -l) > 50))' \
+        _ "$FULL_CT" "$session"
+    check "full: no log file is written when journald is running" \
+        bash -c '! ls "$1"/harden-*.log >/dev/null 2>&1' _ "$ARTIFACTS/full-logs"
+
     # --- hardening actually applied -------------------------------------------
     check "full: sysctl drop-in written" fx test -s /etc/sysctl.d/99-hardening.conf
     check "full: firewalld default zone is drop" \
@@ -629,6 +640,20 @@ tier_full() {
             "$(wc -l <<<"$changed") file(s) changed, see $ARTIFACTS/full_idempotency.etc-changes"
     fi
 
+    # --- report and resume --------------------------------------------------------
+    check "full: --report writes one HTML page with changes, follow-ups and live checks" \
+        fx bash -c '/root/fedora-harden.sh --report /tmp/report.html >/dev/null 2>&1 &&
+            grep -q "<h2>Changes</h2>" /tmp/report.html && grep -q "<h2>Open follow-ups</h2>" /tmp/report.html &&
+            grep -q "FILE_BACKUP" /tmp/report.html'
+    log="$ARTIFACTS/full_resume.log"
+    rc=0
+    fx /root/fedora-harden.sh --resume >"$log" 2>&1 || rc=$?
+    if ((rc == 0)) && grep -q "Open follow-ups from session" "$log"; then
+        record PASS "full: --resume shows the last session's open follow-ups"
+    else
+        record FAIL "full: --resume shows the last session's open follow-ups" "exit $rc (see $log)"
+    fi
+
     # --- sessions + rollback ------------------------------------------------------
     log="$ARTIFACTS/full_list_sessions.log"
     rc=0
@@ -666,6 +691,19 @@ tier_full() {
 
     fx journalctl --no-pager -b >"$ARTIFACTS/full_journal.log" 2>&1 || true
     fx systemctl --failed --no-pager >"$ARTIFACTS/full_failed_units.txt" 2>&1 || true
+
+    # --- section 17: WireGuard with a real peer, kill switch, DNS, rollback ---------
+    local wg_out="$ARTIFACTS/wireguard" line
+    mkdir -p "$wg_out"
+    "$ROOT/tests/wireguard-test.sh" "$TARGET_FEDORA" "$wg_out" >"$wg_out/results.txt" 2>&1 || true
+    while IFS= read -r line; do
+        case "$line" in
+            "PASS: "*) record PASS "full: wireguard: ${line#PASS: }" ;;
+            "SKIP: "*) record SKIP "full: wireguard: ${line#SKIP: }" ;;
+            "FAIL: "*) record FAIL "full: wireguard: ${line#FAIL: }" "logs in $wg_out" ;;
+        esac
+    done <"$wg_out/results.txt"
+    grep -qE '^(PASS|FAIL):' "$wg_out/results.txt" || record FAIL "full: wireguard test ran" "no results, see $wg_out/results.txt"
 }
 
 # ---------------------------------------------------------------------------

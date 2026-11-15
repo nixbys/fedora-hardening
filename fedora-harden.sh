@@ -33,8 +33,10 @@
 #    • Safe firewalld service registration: auto-creates missing custom service XML
 #    • Graceful startup privilege confirmation (sudo/root context)
 #    • Approval-gated remediation with selective item implementation
-#    • Audit PDF/TXT export for later import and deferred remediation
-#    • Structured error log capture for post-run analysis and remediation loops
+#    • Logs to the system journal (journalctl -t fedora-harden FH_SESSION=<id>);
+#      a log file only where there is no journald
+#    • After the run: services it touched that failed, with their own log lines
+#    • --report: one HTML page per session; --resume: review open follow-ups later
 #    • rpm-ostree-aware Fail2Ban setup (defers activation safely until reboot)
 #    • Deterministic command exit-code capture (set -e safe for rpm-ostree and firewall-cmd)
 #    • Comprehensive file operation error handling (chmod, chown, cp, install, sed safe)
@@ -52,7 +54,9 @@
 #    -n, --dry-run          Print what would run; make no changes
 #        --gui              Enable graphical prompts (kdialog/zenity) when available
 #        --gui-full         Full windowed frontend: GUI progress + GUI status output
-#        --import-audit <p> Import a generated audit PDF/TXT and choose items later
+#        --report [file]    Write an HTML report of the last session and exit
+#        --resume           Review the last session's open follow-ups and exit
+#        --wireguard-config <f> Install this WireGuard config with a kill switch (section 17)
 #        --skip <list>      Comma-separated sections to skip (e.g. 7,8,17)
 #        --only <list>      Comma-separated sections to run exclusively
 #        --list             List all section numbers & names and exit
@@ -96,7 +100,8 @@
 #            LXQt/Lazurite (lxqt-screensaver.conf + lxqt-powermanagement.conf)
 #    16  Firefox Flatpak + arkenfox + extensions (uBlock Origin, LocalCDN,
 #        Multi-Account Containers) + VPN detection + recommendations
-#    17  WireGuard tool install (tunnel config is manual; autostart guidance)
+#    17  WireGuard tunnel from a provider config (--wireguard-config), with a kill
+#        switch and DNS through the tunnel; does nothing without a config
 #    18  Fail2Ban (intrusion detection + auto-ban)
 #    19  Disable unnecessary services (avahi, cups, bluetooth, modemmanager)
 #    20  File permission hardening (shadow files, /tmp, compiler access,
@@ -122,7 +127,7 @@
 #    15  Sway compositor: add 'exec swayidle -w' to sway config (action item)
 #    15  Hyprland: add 'exec-once = hypridle' to hyprland.conf (action item)
 #    15  i3: add lock keybind (action item)
-#    17  WireGuard tunnel config (requires peer keys & endpoint configuration)
+#    17  WireGuard: the provider config file itself (pass it with --wireguard-config)
 #    23  Ongoing maintenance checklist (scheduled human task)
 #
 #  PLATFORM SUPPORT:
@@ -162,7 +167,7 @@
 #    • ERR trap: Logs line number + failing command context + exit code
 #    • Resource safety: Guaranteed cleanup of /tmp operations
 #    • Fallback strategies: curl → wget, plus best-effort dependency install
-#    • Audit workflow: PDF/TXT export on decline, later import via --import-audit
+#    • Follow-ups: kept with the session; --resume and --report show them later
 #
 # =============================================================================
 
@@ -222,14 +227,17 @@ fi
 [[ -z "$KERNEL_LABEL" ]] && KERNEL_LABEL="$(uname -r 2>/dev/null || echo unknown)"
 
 # ---------- Command-line option flags -----------------------------------------
-TARGET_USER=""       # Target username for SSH/home-dir hardening (--user)
-ASSUME_YES=0         # Non-interactive mode (--yes)
-DRY_RUN=0            # Print what would run without making changes (--dry-run)
-SKIP_LIST=""         # Comma-separated section numbers to skip (--skip)
-ONLY_LIST=""         # Comma-separated sections to run exclusively (--only)
-IMPORT_AUDIT_PATH="" # Path to audit PDF/TXT to import (--import-audit)
-FORCE_GUI=0          # Request graphical prompts (--gui)
-FORCE_GUI_FULL=0     # Full GUI frontend with progress (--gui-full)
+TARGET_USER=""   # Target username for SSH/home-dir hardening (--user)
+WG_CONFIG=""     # WireGuard config to install with kill switch (--wireguard-config)
+ASSUME_YES=0     # Non-interactive mode (--yes)
+DRY_RUN=0        # Print what would run without making changes (--dry-run)
+SKIP_LIST=""     # Comma-separated section numbers to skip (--skip)
+ONLY_LIST=""     # Comma-separated sections to run exclusively (--only)
+REPORT_MODE=0    # Write an HTML report of the last session (--report)
+REPORT_FILE=""   # Where to write it (--report FILE)
+RESUME_MODE=0    # Review the last session's open follow-ups (--resume)
+FORCE_GUI=0      # Request graphical prompts (--gui)
+FORCE_GUI_FULL=0 # Full GUI frontend with progress (--gui-full)
 
 # ---------- GUI mode state ------------------------------------------------
 GUI_MODE=0               # Set to 1 if kdialog/zenity available and enabled
@@ -269,7 +277,6 @@ IS_CLOUD=0               # Set to 1 if Fedora Cloud
 IS_COREOS=0              # Set to 1 if Fedora CoreOS (immutable)
 IS_ATOMIC_DESKTOP=0      # Set to 1 if Atomic Desktop variant
 IS_GAMING_SPIN=0         # Set to 1 if gaming-oriented spin (Bazzite, etc.)
-IS_FEDORA=0              # Set to 1 if any Fedora detected
 HAS_KDE=0                # Set to 1 if KDE Plasma session detected
 HAS_GNOME=0              # Set to 1 if GNOME session detected
 HAS_SWAY=0               # Set to 1 if Sway/wlroots compositor detected
@@ -289,12 +296,11 @@ CURRENT_SECTION=0        # Section number currently executing (for action items)
 UI_SECTION_TOTAL=23      # Total hardening sections to execute
 
 # Error tracking & remediation infrastructure
-ERROR_LOG=""                         # Structured error log file path
-ERROR_CAPTURE_FILE=""                # Temp file for capturing command stderr
-declare -ga ERROR_DETAILS=()         # Array: "line|cmd|exit_code|stderr|timestamp"
-declare -gi LAST_ERROR_COUNT=0       # Track errors for remediation loop
-declare -gi REMEDIATION_PASS=0       # Current pass through remediation
-declare -gi MAX_REMEDIATION_PASSES=3 # Max auto-remediation attempts
+ERROR_CAPTURE_FILE=""        # Temp file for capturing command stderr
+declare -gi ERR_COUNT=0      # Steps that reported an error this run
+declare -gA TOUCHED_UNITS=() # Units this run enabled/started/restarted (diagnosis)
+LOG_JOURNAL=0                # 1 = messages go to the system journal
+LOG_WHERE=""                 # Where to read this run's log (journalctl command or file)
 # Prevents infinite loops; persistent errors typically need manual intervention
 LAST_RUN_CMD="" # Last command dispatched via run()
 
@@ -1185,43 +1191,60 @@ abort_if_cancelled() {
 }
 
 # ---------- Logging helpers -------------------------------------------------
-# init_log_target() - Ensure log destination exists, with /tmp fallback when needed.
+# init_log_target() - Choose where this run logs. On a normal system that is the
+# journal (journalctl -t fedora-harden FH_SESSION=<session>): rotation, size limits
+# and access control come with it. Without journald (minimal containers) the same
+# lines go to a file under /var/log/fedora-harden, or /tmp as a last resort.
 init_log_target() {
 	((LOG_READY)) && return 0
-
-	local d
-	d="${LOG_FILE%/*}"
-	if mkdir -p "$d" 2>/dev/null && : 2>/dev/null >>"$LOG_FILE"; then
-		chmod 640 "$LOG_FILE" 2>/dev/null || true
-		LOG_READY=1
+	if [[ -S /run/systemd/journal/socket ]] && have_cmd logger &&
+		printf 'MESSAGE=fedora-harden session %s started\nPRIORITY=6\nSYSLOG_IDENTIFIER=fedora-harden\nFH_SESSION=%s\n' \
+			"$RUN_STAMP" "$RUN_STAMP" | logger --journald 2>/dev/null; then
+		LOG_JOURNAL=1
+		LOG_WHERE="journalctl -t fedora-harden FH_SESSION=$RUN_STAMP"
 	else
-		LOG_FILE="/tmp/${SCRIPT_NAME%.*}-${RUN_STAMP}.log"
-		: 2>/dev/null >>"$LOG_FILE" || return 1
-		chmod 640 "$LOG_FILE" 2>/dev/null || true
-		LOG_READY=1
+		local d="${LOG_FILE%/*}"
+		if ! { mkdir -p "$d" 2>/dev/null && : 2>/dev/null >>"$LOG_FILE"; }; then
+			LOG_FILE="/tmp/${SCRIPT_NAME%.*}-${RUN_STAMP}.log"
+			: 2>/dev/null >>"$LOG_FILE" || return 1
+		fi
+		chmod 600 "$LOG_FILE" 2>/dev/null || true
+		LOG_WHERE="$LOG_FILE"
 	fi
-
-	# Initialize error log with same base directory
-	if ((LOG_READY)); then
-		ERROR_LOG="${LOG_FILE%.log}-errors.log"
-		: 2>/dev/null >>"$ERROR_LOG" || ERROR_LOG="/tmp/$(basename "$LOG_FILE" .log)-errors.log"
-		chmod 640 "$ERROR_LOG" 2>/dev/null || true
-
-		# Create temp file for capturing stderr from commands
-		ERROR_CAPTURE_FILE="/tmp/fedora-harden-stderr-$$.tmp"
-		register_tmp "$ERROR_CAPTURE_FILE"
-	fi
+	LOG_READY=1
+	# stderr of commands run through run(), shown when a step fails
+	ERROR_CAPTURE_FILE="/tmp/fedora-harden-stderr-$$.tmp"
+	register_tmp "$ERROR_CAPTURE_FILE"
 	return 0
 }
 
-# log() - Write timestamped message to persistent log file for audit trail.
-# All log entries are appended with date/time for complete audit history.
+# log() - Record a message: in the journal with the session and section as fields,
+# or in the log file. Priority follows the message type.
 # Usage: log "message text"
 log() {
 	init_log_target || return 0
+	local msg="${*//$'\n'/ }" prio=6
+	case "$msg" in
+	"[WARN]"*) prio=4 ;;
+	"[ERROR]"*) prio=3 ;;
+	"[OK]"*) prio=5 ;;
+	esac
+	if ((LOG_JOURNAL)); then
+		printf 'MESSAGE=%s\nPRIORITY=%s\nSYSLOG_IDENTIFIER=fedora-harden\nFH_SESSION=%s\nFH_SECTION=%s\n' \
+			"$msg" "$prio" "$RUN_STAMP" "${CURRENT_SECTION:-0}" | logger --journald 2>/dev/null || true
+		return 0
+	fi
 	local ts
 	printf -v ts '%(%F %T)T' -1 2>/dev/null || ts="$(date '+%F %T')"
-	printf '%s %s\n' "$ts" "$*" 2>/dev/null >>"$LOG_FILE" || true
+	printf '%s %s\n' "$ts" "$msg" 2>/dev/null >>"$LOG_FILE" || true
+}
+
+# log_stream() - Log every line read from stdin (command output).
+log_stream() {
+	local line
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		log "  | $line"
+	done
 }
 
 # info() - Write informational message to stdout and log (blue color).
@@ -1255,6 +1278,7 @@ warn() {
 # Indicates a problem that may prevent further execution.
 # Usage: err "message text"
 err() {
+	((++ERR_COUNT))
 	((!GUI_FULL_MODE)) && printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2
 	log "[ERROR] $*"
 	gui_status_event error "$*"
@@ -1265,31 +1289,9 @@ err() {
 # Called by trap_err and soft-fail handlers to capture full error context.
 # Usage: capture_error_context <line> <cmd> <exit_code> [stderr_file]
 capture_error_context() {
-	local line="$1" cmd="$2" ec="$3" stderr_file="${4:-}"
-	local ts stderr_content
-
-	init_log_target || return 0
-	ts=$(date '+%F %T') || ts="(date failed)"
-
-	# Read stderr if captured in file
-	if [[ -n "$stderr_file" && -f "$stderr_file" ]]; then
-		stderr_content=$(<"$stderr_file")
-		stderr_content="${stderr_content//\"/\\\"}"   # Escape quotes
-		stderr_content="${stderr_content//$'\n'/ | }" # Replace newlines with |
-	else
-		stderr_content="(no stderr captured)"
-	fi
-
-	# Store as: "line|cmd|exit_code|stderr|timestamp"
-	ERROR_DETAILS+=("${line}|${cmd}|${ec}|${stderr_content}|${ts}")
-
-	# Write to structured error log
-	{
-		printf '{"timestamp":"%s","line":%d,"exit_code":%d,"command":"%s","stderr":"%s"}\n' \
-			"$ts" "$line" "$ec" "${cmd//\"/\\\"}" "$stderr_content"
-	} 2>/dev/null >>"$ERROR_LOG" || true
-
-	log "[DEBUG] Error at line $line: cmd='$cmd' exit=$ec"
+	local line="$1" cmd="$2" ec="$3" stderr_file="${4:-}" detail=""
+	[[ -n "$stderr_file" && -s "$stderr_file" ]] && detail="$(tail -n 5 "$stderr_file" | tr '\n' ' ')"
+	log "[ERROR] line $line: '$cmd' exited $ec${detail:+ — $detail}"
 }
 
 # section() - Print formatted section header with visual divider and log entry.
@@ -1318,7 +1320,7 @@ section() {
 # run() - Execute shell command or simulate execution in --dry-run mode.
 # In dry-run mode, logs the command for preview without executing it.
 # All commands are logged to audit file regardless of execution.
-# Captures stderr from failed commands for later error analysis and remediation.
+# Captures stderr from failed commands so a failure can say why.
 # Usage: run "command" "with" "args"
 run() {
 	abort_if_cancelled
@@ -1330,13 +1332,14 @@ run() {
 		return 0
 	fi
 	log "[RUN]   $*"
+	_track_units "$*"
 	local rc=0
 	if ((GUI_FULL_MODE)); then
 		: >"$ERROR_CAPTURE_FILE" 2>/dev/null || true
 		# shellcheck disable=SC2294
-		eval "$@" >>"$LOG_FILE" 2>>"$ERROR_CAPTURE_FILE" || rc=$?
+		eval "$@" > >(log_stream) 2>>"$ERROR_CAPTURE_FILE" || rc=$?
 	else
-		# Capture stderr for error analysis
+		# Capture stderr so a failure can say why
 		: >"$ERROR_CAPTURE_FILE" 2>/dev/null || true
 		# shellcheck disable=SC2294
 		eval "$@" 2>>"$ERROR_CAPTURE_FILE" || rc=$?
@@ -1507,9 +1510,7 @@ pkg_install() {
 		out="$(rpm-ostree install "${needed[@]}" 2>&1)" || rc=$?
 		rc=${rc:-0}
 		# Logging must never abort the run (set -e), even if the log is unwritable.
-		if [[ -n "${out}" ]]; then
-			printf '%s\n' "$out" 2>/dev/null >>"$LOG_FILE" || true
-		fi
+		[[ -n "${out}" ]] && printf '%s\n' "$out" | log_stream
 
 		if ((rc != 0)); then
 			# Idempotent rpm-ostree no-op cases should not abort under strict mode.
@@ -2193,129 +2194,45 @@ should_run() {
 	return 0
 }
 
-# analyze_error_log() - Parse error log and identify patterns for auto-remediation.
-# Populates LAST_ERROR_COUNT and emits categorized findings.
-# Usage: analyze_error_log
-analyze_error_log() {
-	init_log_target || return 1
-	LAST_ERROR_COUNT=0
-
-	if [[ ! -f "$ERROR_LOG" ]]; then
-		info "No errors logged — script executed cleanly."
-		return 0
-	fi
-
-	local error_count=0 line
-	local permission_errors=0 package_errors=0 service_errors=0 connection_errors=0
-
-	while IFS= read -r line; do
-		[[ -z "$line" ]] && continue
-		((++error_count))
-
-		# Pattern matching for auto-remediation categories
-		if [[ "$line" =~ Permission\ denied || "$line" =~ not\ in\ sudoers ]]; then
-			((++permission_errors))
-		elif [[ "$line" =~ No\ such\ file\ or\ directory || "$line" =~ package.*not\ found ]]; then
-			((++package_errors))
-		elif [[ "$line" =~ service.*not\ available || "$line" =~ Unit.*not\ found ]]; then
-			((++service_errors))
-		elif [[ "$line" =~ Connection\ refused || "$line" =~ Network.*unreachable ]]; then
-			((++connection_errors))
-		fi
-	done <"$ERROR_LOG"
-
-	LAST_ERROR_COUNT=$error_count
-	if ((error_count == 0)); then
-		ok "Error analysis: No errors found."
-		return 0
-	fi
-
-	warn "Error analysis: Found $error_count error(s)"
-	((permission_errors > 0)) && warn "  ↳ Permission issues: $permission_errors"
-	((package_errors > 0)) && warn "  ↳ Package/file issues: $package_errors"
-	((service_errors > 0)) && warn "  ↳ Service issues: $service_errors"
-	((connection_errors > 0)) && warn "  ↳ Connection issues: $connection_errors"
-
-	return 0
-}
-
-# auto_remediate_errors() - Attempt to fix common errors identified in log analysis.
-# Handles permission fixes, missing files, service issues, and network problems.
-# Usage: auto_remediate_errors
-auto_remediate_errors() {
-	init_log_target || return 1
-
-	[[ ! -f "$ERROR_LOG" ]] && return 0
-	((++REMEDIATION_PASS))
-
-	if ((REMEDIATION_PASS > MAX_REMEDIATION_PASSES)); then
-		warn "Reached maximum remediation attempts ($MAX_REMEDIATION_PASSES); stopping auto-remediation."
-		return 1
-	fi
-
-	warn "Starting auto-remediation pass $REMEDIATION_PASS of $MAX_REMEDIATION_PASSES..."
-
-	# Fix 1: Log file permissions
-	if [[ -f "$LOG_FILE" ]]; then
-		chmod 640 "$LOG_FILE" 2>/dev/null || true
-		chmod 640 "$ERROR_LOG" 2>/dev/null || true
-	fi
-
-	# Fix 2: Cached package status might be stale after failures
-	unset _PKG_CACHE _CMD_CACHE 2>/dev/null || true
-	declare -gA _PKG_CACHE=()
-	declare -gA _CMD_CACHE=()
-	info "Cleared package/command caches for fresh validation"
-
-	# Fix 3: Re-initialize ostree staged packages cache
-	_OSTREE_STAGED_LOADED=0
-
-	# Fix 4: Check for permission-related errors and attempt fixes
-	if grep -q "Permission denied\|not in sudoers" "$ERROR_LOG" 2>/dev/null; then
-		warn "Detected permission errors — verifying EUID and sudo context..."
-		if ((EUID != 0)); then
-			err "Still running as non-root (EUID=$EUID) — cannot remediate."
-			return 1
-		fi
-		info "Running as root — permission errors may have been transient"
-	fi
-
-	# Fix 5: Check for missing package manager states (Fedora-specific checks)
-	if ((IS_FEDORA)) && grep -q "rpm -q.*not installed\|dnf.*not found" "$ERROR_LOG" 2>/dev/null; then
-		warn "Detected package lookup errors — refreshing package lists..."
-		run "dnf check-update -q || rpm-ostree status >/dev/null" || true
-	fi
-
-	ok "Auto-remediation pass $REMEDIATION_PASS complete"
-	return 0
-}
-
-# validate_and_remediate_loop() - Run analysis and remediation until resolved or max attempts.
-# This implements the recursive fix loop: analyze → remediate → validate → repeat.
-# Usage: validate_and_remediate_loop
-validate_and_remediate_loop() {
-	info "Starting error validation and remediation loop..."
-	REMEDIATION_PASS=0
-	LAST_ERROR_COUNT=0
-
-	while ((REMEDIATION_PASS < MAX_REMEDIATION_PASSES)); do
-		analyze_error_log
-		local error_count=$LAST_ERROR_COUNT
-
-		if ((error_count == 0)); then
-			ok "✓ All errors resolved after $REMEDIATION_PASS pass(es)"
-			return 0
-		fi
-
-		auto_remediate_errors || break
+# _track_units <command> - Remember the units a command enables, starts or restarts,
+# so diagnose_failures only reports services this run touched.
+_track_units() {
+	[[ "$1" =~ systemctl[[:space:]]+(--[a-z-]+[[:space:]]+)*(enable|start|restart|reload|reload-or-restart|try-restart)[[:space:]]+(.*) ]] || return 0
+	local w
+	local -a words
+	read -ra words <<<"${BASH_REMATCH[3]}"
+	for w in "${words[@]}"; do
+		case "$w" in
+		"||" | "&&" | ";" | "|" | ">"* | "2>"*) break ;;
+		-*) continue ;;
+		esac
+		w="${w//\'/}"
+		[[ "$w" == *.* ]] || w="$w.service"
+		TOUCHED_UNITS[$w]=1
 	done
+}
 
-	if ((LAST_ERROR_COUNT > 0)); then
-		warn "Could not fully auto-remediate errors after $MAX_REMEDIATION_PASSES pass(es)"
-		warn "Review logs for manual remediation: $LOG_FILE and $ERROR_LOG"
-		return 1
+# diagnose_failures() - After the sections: which services this run touched have
+# failed, and why, in their own words (their journal). Each becomes a follow-up.
+diagnose_failures() {
+	((DRY_RUN)) && return 0
+	local u reason n=0
+	for u in "${!TOUCHED_UNITS[@]}"; do
+		systemctl is-failed --quiet "$u" 2>/dev/null || continue
+		((++n))
+		reason="$(journalctl -u "$u" -b -p warning -n 3 --no-pager -o cat 2>/dev/null | tr '\n' ' ')"
+		warn "$u failed${reason:+: $reason}"
+		add_action_item 0 HIGH "UNIT_FAILED_${u//[^a-zA-Z0-9]/_}" \
+			"$u failed${reason:+ ($reason)}. Full log: journalctl -u $u -b"
+	done
+	((n)) || ok "Every service this run enabled or restarted is running."
+	if ((ERR_COUNT)); then
+		if ((LOG_JOURNAL)); then
+			warn "$ERR_COUNT step(s) reported errors: $LOG_WHERE -p err"
+		else
+			warn "$ERR_COUNT step(s) reported errors: grep ERROR $LOG_WHERE"
+		fi
 	fi
-	return 0
 }
 
 # trap_cleanup() - Emergency cleanup handler for EXIT/ERR traps.
@@ -2336,13 +2253,6 @@ trap_cleanup() {
 	write_session_report || true
 
 	# Ensure logs remain accessible for post-script analysis
-	if [[ -f "$LOG_FILE" ]]; then
-		chmod 640 "$LOG_FILE" 2>/dev/null || true
-	fi
-	if [[ -f "$ERROR_LOG" ]]; then
-		chmod 640 "$ERROR_LOG" 2>/dev/null || true
-	fi
-
 	return "$rc"
 }
 
@@ -2362,9 +2272,8 @@ trap_err() {
 	SESSION_STATUS="aborted"
 	trap_cleanup || true
 	capture_error_context "$line" "$cmd_ctx" "$rc" "$ERROR_CAPTURE_FILE" 2>/dev/null || true
-	err "Aborted at line $line (exit $rc). See log: $LOG_FILE"
-	warn "Error details saved to: $ERROR_LOG"
-	gui_alert error "Hardening aborted at line $line (exit $rc).\n\nSee logs:\n$LOG_FILE\n$ERROR_LOG"
+	err "Aborted at line $line (exit $rc). Log: ${LOG_WHERE:-$LOG_FILE}"
+	gui_alert error "Hardening aborted at line $line (exit $rc).\n\nLog: ${LOG_WHERE:-$LOG_FILE}"
 	exit "$rc"
 }
 # Enable error and exit traps to catch unexpected failures and clean resources.
@@ -2435,7 +2344,7 @@ init_session_dir() {
 		printf 'Status:    running\n'
 		printf 'Host:      %s\n' "$HOST_LABEL"
 		printf 'Started:   %s\n' "$RUN_STAMP_ISO"
-		printf 'Log:       %s\n' "$LOG_FILE"
+		printf 'Log:       %s\n' "$LOG_WHERE"
 		printf 'Backups:   %s\n' "$BACKUP_DIR"
 		printf '\n(Script still running — full report written on exit)\n'
 	} >"$SESSION_REPORT_FILE" 2>/dev/null || SESSION_REPORT_FILE=""
@@ -2478,7 +2387,7 @@ write_session_report() {
 		printf 'Kernel:    %s\n' "$KERNEL_LABEL"
 		printf 'Platform:  %s\n' "$plat"
 		printf 'Started:   %s\n' "$RUN_STAMP_ISO"
-		printf 'Log:       %s\n' "$LOG_FILE"
+		printf 'Log:       %s\n' "$LOG_WHERE"
 		printf 'Backups:   %s\n' "$BACKUP_DIR"
 		printf '\n'
 		printf '=== Change Summary (%d total) ===\n' "$change_count"
@@ -2528,7 +2437,7 @@ write_session_report() {
 			printf '=== Abort Information ===\n'
 			printf '  The script was aborted before completing all sections.\n'
 			printf '  Some changes may have been applied; see detailed changes above.\n'
-			printf '  Error log: %s\n\n' "$ERROR_LOG"
+			printf '  Errors: %s -p err\n\n' "$LOG_WHERE"
 		fi
 		printf '=== Rollback Instructions ===\n'
 		if ((change_count > 0)); then
@@ -2723,6 +2632,20 @@ _apply_rollback_journal() {
 			else
 				warn "Could not re-enable service: $detail"
 				_rjl "  [WARN] SERVICE_ENABLE  $detail"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		WG_TUNNEL)
+			if ((DRY_RUN)); then
+				info "Would stop and disable wg-quick@$detail"
+			elif systemctl disable --now "wg-quick@$detail" 2>/dev/null; then
+				ok "Tunnel $detail stopped and disabled"
+				_rjl "  [OK]   WG_TUNNEL  $detail"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not stop wg-quick@$detail"
+				_rjl "  [WARN] WG_TUNNEL  $detail"
 				((++_RBJ_ERRORS))
 			fi
 			;;
@@ -3204,7 +3127,7 @@ init_user_report_dirs() {
 	local user="${TARGET_USER:-${SUDO_USER:-}}"
 	USER_DOWNLOADS_DIR="$(get_user_downloads_dir 2>/dev/null || true)"
 	if [[ -z "$USER_DOWNLOADS_DIR" ]]; then
-		warn "No target user set — section reports will only appear in $LOG_FILE."
+		warn "No target user set — section reports will only appear in the log ($LOG_WHERE)."
 		return 0
 	fi
 	USER_PROJECT_DIR="${USER_DOWNLOADS_DIR}/${PROJECT_NAME}"
@@ -3218,12 +3141,12 @@ init_user_report_dirs() {
 	fi
 	install -d -m 750 -o "$user" -g "$user" "$USER_PROJECT_DIR" 2>/dev/null ||
 		{
-			warn "Could not create $USER_PROJECT_DIR — reports will only be in $LOG_FILE."
+			warn "Could not create $USER_PROJECT_DIR — reports will only be in the log ($LOG_WHERE)."
 			return 0
 		}
 	install -d -m 750 -o "$user" -g "$user" "$USER_RESULTS_DIR" 2>/dev/null ||
 		{
-			warn "Could not create $USER_RESULTS_DIR — reports will only be in $LOG_FILE."
+			warn "Could not create $USER_RESULTS_DIR — reports will only be in the log ($LOG_WHERE)."
 			return 0
 		}
 	install -d -m 750 -o "$user" -g "$user" "$USER_LOGS_DIR" 2>/dev/null || true
@@ -3274,166 +3197,18 @@ copy_to_user_results() {
 
 # copy_log_to_user() - Copy main and structured error logs to the user logs directory.
 copy_log_to_user() {
-	[[ -z "$USER_LOGS_DIR" || ! -f "$LOG_FILE" ]] && return 0
-	((DRY_RUN)) && {
-		info "Would copy log -> $USER_LOGS_DIR/"
-		return 0
-	}
-	local user="${TARGET_USER:-${SUDO_USER:-}}"
-	local dest
-	dest="${USER_LOGS_DIR}/$(basename "$LOG_FILE")"
-	cp -a "$LOG_FILE" "$dest" 2>/dev/null || true
+	[[ -n "$USER_LOGS_DIR" ]] || return 0
+	((DRY_RUN)) && return 0
+	local user="${TARGET_USER:-${SUDO_USER:-}}" dest="${USER_LOGS_DIR}/harden-${RUN_STAMP}.log"
+	if ((LOG_JOURNAL)); then
+		journalctl -t fedora-harden "FH_SESSION=$RUN_STAMP" -o short-iso --no-pager 2>/dev/null >"$dest" || return 0
+	else
+		[[ -f "$LOG_FILE" ]] || return 0
+		cp -a "$LOG_FILE" "$dest" 2>/dev/null || return 0
+	fi
 	chown "${user}:${user}" "$dest" 2>/dev/null || true
 	chmod 640 "$dest" 2>/dev/null || true
 	ok "Log copied: $dest"
-	if [[ -n "$ERROR_LOG" && -f "$ERROR_LOG" ]]; then
-		local err_dest
-		err_dest="${USER_LOGS_DIR}/$(basename "$ERROR_LOG")"
-		cp -a "$ERROR_LOG" "$err_dest" 2>/dev/null || true
-		chown "${user}:${user}" "$err_dest" 2>/dev/null || true
-		chmod 640 "$err_dest" 2>/dev/null || true
-		ok "Error log copied: $err_dest"
-	fi
-}
-
-# generate_audit_pdf() - Export a PDF audit report and importable TXT bundle.
-# Usage: generate_audit_pdf [summary_txt_path]
-generate_audit_pdf() {
-	local summary_path="${1:-}"
-	[[ -z "$USER_DOWNLOADS_DIR" ]] && {
-		warn "No Downloads directory available for PDF audit export."
-		return 1
-	}
-
-	local user="${TARGET_USER:-${SUDO_USER:-}}"
-	local pdf_path="${USER_DOWNLOADS_DIR}/fedora-hardening-audit-${REPORT_DATE}.pdf"
-	local bundle_path="${USER_DOWNLOADS_DIR}/fedora-hardening-audit-${REPORT_DATE}.txt"
-	local txt_path="/tmp/fedora-hardening-audit-${REPORT_DATE}-$$.txt"
-	local ps_path="/tmp/fedora-hardening-audit-${REPORT_DATE}-$$.ps"
-	register_tmp "$txt_path"
-	register_tmp "$ps_path"
-
-	if ((DRY_RUN)); then
-		info "Would generate audit PDF: $pdf_path"
-		info "Would write audit import bundle: $bundle_path"
-		return 0
-	fi
-
-	if [[ -n "$summary_path" && -f "$summary_path" ]]; then
-		cp -f "$summary_path" "$txt_path" 2>/dev/null || true
-	else
-		{
-			printf 'Fedora Hardening Audit Report\n'
-			printf 'Generated: %s\n' "$RUN_STAMP_HUMAN"
-			printf 'Host: %s\n' "$HOST_LABEL"
-			printf 'Log file: %s\n\n' "$LOG_FILE"
-			printf 'Actionable items: %d\n' "${#ACTIONABLE_ITEMS[@]}"
-			for item in "${ACTIONABLE_ITEMS[@]}"; do
-				local section priority tag desc
-				IFS='|' read -r section priority tag desc <<<"$item"
-				printf '  [%s][%s] %s\n' "$priority" "$section" "$desc"
-			done
-			printf '\nManual follow-up remains required. See reports/logs for full details.\n'
-		} >"$txt_path"
-	fi
-
-	{
-		printf '\n=== Importable Action Items ===\n'
-		printf 'Re-import later with: sudo %s --import-audit %s\n\n' "$SCRIPT_NAME" "$pdf_path"
-		for item in "${ACTIONABLE_ITEMS[@]}"; do
-			printf 'ACTION_ITEM|%s\n' "$item"
-		done
-	} >>"$txt_path"
-
-	{
-		[[ -f "$txt_path" ]] && cat "$txt_path"
-	} >"$bundle_path"
-	chown "${user}:${user}" "$bundle_path" 2>/dev/null || true
-	chmod 640 "$bundle_path" 2>/dev/null || true
-
-	# Attempt to install PDF generation tools (best-effort)
-	local has_enscript=0 has_ps2pdf=0
-	if cmd_exists enscript; then
-		has_enscript=1
-	else
-		ensure_command_dep enscript "audit PDF generation" enscript || true
-		cmd_exists enscript && has_enscript=1
-	fi
-
-	if cmd_exists ps2pdf; then
-		has_ps2pdf=1
-	else
-		ensure_command_dep ps2pdf "audit PDF generation" ghostscript || true
-		cmd_exists ps2pdf && has_ps2pdf=1
-	fi
-
-	if ! ((has_enscript && has_ps2pdf)); then
-		warn "PDF generation dependencies unavailable (enscript: $(cmd_exists enscript && echo 'yes' || echo 'no'), ghostscript/ps2pdf: $(cmd_exists ps2pdf && echo 'yes' || echo 'no'))"
-		warn "Audit TXT bundle saved: $bundle_path"
-		warn "To generate PDF later, install 'enscript' and 'ghostscript' packages, then manually convert:"
-		warn "  enscript -B -q -f Courier8 '$txt_path' -o - | ps2pdf - '$pdf_path'"
-		return 1
-	fi
-
-	if ! enscript -B -q -f Courier8 "$txt_path" -o "$ps_path" >/dev/null 2>&1; then
-		warn "enscript failed while building the audit PDF source."
-		return 1
-	fi
-	if ! ps2pdf "$ps_path" "$pdf_path" >/dev/null 2>&1; then
-		warn "ps2pdf failed while writing the audit PDF."
-		return 1
-	fi
-
-	chown "${user}:${user}" "$pdf_path" 2>/dev/null || true
-	chmod 640 "$pdf_path" 2>/dev/null || true
-	ok "Audit PDF saved: $pdf_path"
-	ok "Audit import bundle saved: $bundle_path"
-	return 0
-}
-
-# import_audit_items() - Load actionable items from a generated audit PDF or TXT bundle.
-# Accepts either the PDF path or the companion TXT bundle path.
-import_audit_items() {
-	local input_path="$1"
-	local source_path="$input_path"
-	local extract_path="/tmp/fedora-hardening-audit-import-${REPORT_DATE}-$$.txt"
-	register_tmp "$extract_path"
-
-	if [[ ! -f "$input_path" ]]; then
-		err "Audit import file not found: $input_path"
-		return 1
-	fi
-
-	case "$input_path" in
-	*.pdf)
-		source_path="${input_path%.pdf}.txt"
-		if [[ ! -f "$source_path" ]]; then
-			ensure_command_dep pdftotext "audit import from PDF" poppler-utils || true
-			if ! cmd_exists pdftotext; then
-				err "Cannot import audit PDF without companion TXT bundle or pdftotext."
-				return 1
-			fi
-			pdftotext "$input_path" "$extract_path" >/dev/null 2>&1 || {
-				err "Failed to extract text from audit PDF: $input_path"
-				return 1
-			}
-			source_path="$extract_path"
-		fi
-		;;
-	esac
-
-	ACTIONABLE_ITEMS=()
-	while IFS= read -r line; do
-		[[ "$line" == ACTION_ITEM\|* ]] || continue
-		ACTIONABLE_ITEMS+=("${line#ACTION_ITEM|}")
-	done <"$source_path"
-
-	if ((${#ACTIONABLE_ITEMS[@]} == 0)); then
-		warn "No importable actionable items found in: $input_path"
-		return 1
-	fi
-	ok "Imported ${#ACTIONABLE_ITEMS[@]} actionable item(s) from audit report."
-	return 0
 }
 
 # select_actionable_items() - Split actionable items into selected and deferred groups.
@@ -3483,7 +3258,7 @@ select_actionable_items() {
 }
 
 # handle_actionable_follow_up() - Gate implementation on approval and optional item selection.
-# If declined, export a PDF audit report plus TXT import bundle; if approved,
+# If declined, the items stay with the session (--resume, --report); if approved,
 # allow all or selected changes by item number and/or actionable tag.
 handle_actionable_follow_up() {
 	local summary_path="${1:-}"
@@ -3493,9 +3268,7 @@ handle_actionable_follow_up() {
 	((${#ACTIONABLE_ITEMS[@]} > 0)) || return 0
 
 	if ! confirm "Implement the recommended next steps from the final summary now?"; then
-		info "User declined implementation of recommended changes."
-		generate_audit_pdf "$summary_path" || true
-		info "Actionable items remain recorded in: ${USER_RESULTS_DIR:-$LOG_FILE}"
+		info "Follow-ups kept for later: sudo $SCRIPT_NAME --resume (or --report for a shareable page)."
 		return 0
 	fi
 
@@ -3570,7 +3343,7 @@ list_sections() {
        i3          — xss-lock + i3lock drop-in via config.d/
        LXQt/Lazurite — lxqt-screensaver.conf + lxqt-powermanagement.conf
  16  Firefox Flatpak + arkenfox + extensions (uBlock, LocalCDN, Containers) + VPN check
- 17  WireGuard
+ 17  WireGuard tunnel with kill switch (--wireguard-config FILE)
  18  Fail2Ban
  19  Service trim
  20  File permissions (incl. umask 077, core dump limits, hostname privacy)
@@ -3599,7 +3372,7 @@ EOF
 
 # parse_args() - Parse command-line arguments and set global flags.
 # Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui, --gui-full,
-# --import-audit, --skip, --only, --list, -h/--help
+# --report, --resume, --wireguard-config, --skip, --only, --list, -h/--help
 # Validates option syntax and applies settings globally for use throughout script.
 # Usage: parse_args "$@" (called in main before preflight)
 parse_args() {
@@ -3618,6 +3391,19 @@ parse_args() {
 			ASSUME_YES=1
 			shift
 			;;
+		--wireguard-config)
+			if [[ -z "${2:-}" ]]; then
+				err "Option --wireguard-config requires a file argument"
+				usage
+				exit 2
+			fi
+			if [[ ! -r "$2" ]]; then
+				err "--wireguard-config: cannot read '$2'."
+				exit 2
+			fi
+			WG_CONFIG="$(realpath -- "$2")"
+			shift 2
+			;;
 		-n | --dry-run)
 			DRY_RUN=1
 			shift
@@ -3630,14 +3416,18 @@ parse_args() {
 			FORCE_GUI_FULL=1
 			shift
 			;;
-		--import-audit)
-			if [[ -z "${2:-}" ]]; then
-				err "Option --import-audit requires a file path argument"
-				usage
-				exit 2
+		--report)
+			REPORT_MODE=1
+			if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
+				REPORT_FILE="$2"
+				shift 2
+			else
+				shift
 			fi
-			IMPORT_AUDIT_PATH="$2"
-			shift 2
+			;;
+		--resume)
+			RESUME_MODE=1
+			shift
 			;;
 		--skip)
 			if [[ -z "${2:-}" ]]; then
@@ -3758,10 +3548,7 @@ preflight() {
 		return 0
 	fi
 
-	mkdir -p "$LOG_DIR"
-	touch "$LOG_FILE"
-	chmod 600 "$LOG_FILE" 2>/dev/null || true
-	LOG_READY=1
+	init_log_target || true
 
 	# Distro check: Verify this is a Fedora system and detect variant
 	# Sources /etc/os-release to extract distribution metadata
@@ -3771,11 +3558,7 @@ preflight() {
 	fi
 	# shellcheck source=/dev/null
 	. /etc/os-release
-	if [[ "${ID:-}" == "fedora" ]]; then
-		IS_FEDORA=1
-	else
-		warn "Distro ID is '${ID:-unknown}', not 'fedora'. Proceeding anyway."
-	fi
+	[[ "${ID:-}" == "fedora" ]] || warn "Distro ID is '${ID:-unknown}', not 'fedora'. Proceeding anyway."
 	if [[ -e /run/ostree-booted ]]; then
 		IS_OSTREE=1
 	fi
@@ -3823,10 +3606,10 @@ preflight() {
 	else
 		warn "No desktop environment detected; desktop-focused sections may be skipped."
 	fi
-	info "Log file:    $LOG_FILE"
+	info "Log:         $LOG_WHERE"
 	info "Backup dir:  $BACKUP_DIR"
 	# Without a writable journal nothing this run changes could be rolled back.
-	if ! init_rollback_journal; then
+	if ((!REPORT_MODE)) && ! init_rollback_journal; then # --report only reads
 		err "Cannot write the backup folder $BACKUP_DIR (read-only, full, or missing — on image-based systems /root is /var/roothome). Nothing was changed."
 		PRECHECK_FAILED=1
 		return 0
@@ -5971,7 +5754,7 @@ EOF
 
   All three options below are audited, open-source, no-logs VPNs. They
   support WireGuard and accept anonymous payment methods (cash / Monero).
-  Section 17 installs wireguard-tools for use with any of these providers.
+  Section 17 installs a provider's WireGuard config with a kill switch.
 
   1. Mullvad VPN — https://mullvad.net
      • No account e-mail needed; each account is a random 16-digit number
@@ -5996,12 +5779,9 @@ EOF
      • Recommended by privacyguides.org AND Michael Bazzell (inteltechniques.com)
      • Install:  https://ivpn.net/apps-linux/
 
-  Quick WireGuard config (after choosing a provider):
-    sudo dnf install wireguard-tools       # section 17 handles this
-    # download provider WireGuard config, then:
-    sudo install -m 600 <provider>.conf /etc/wireguard/wg0.conf
-    sudo wg-quick up wg0
-    sudo systemctl enable wg-quick@wg0    # autostart on boot
+  WireGuard with a kill switch (after choosing a provider): download its
+  WireGuard config (full tunnel), then let section 17 install it:
+    sudo ./fedora-harden.sh --only 17 --wireguard-config <provider>.conf
 
 VPNEOF
 		else
@@ -6013,27 +5793,195 @@ VPNEOF
 }
 
 # ============================================================================
-#  SECTION 17 — WireGuard
+#  SECTION 17 — WireGuard with kill switch
 # ============================================================================
-# sec_17_wireguard() - Install WireGuard tools and print quick-start guide
-# Installs wireguard-tools (wg, wg-quick). Tunnel configuration is intentionally
-# left manual since it requires provider-specific keys and endpoints. Prints a
-# concise setup guide covering key generation, config install (chmod 600),
-# wg-quick bring-up, and systemd autostart (wg-quick@wg0). Adds an action item
-# reminding the user to complete tunnel configuration.
+# sec_17_wireguard() - Install a WireGuard tunnel (--wireguard-config FILE) that
+# cannot leak: a kill switch drops outbound traffic that does not go through the
+# tunnel (also while the tunnel is down), and DNS is routed through the tunnel.
+# Without a config file the section does nothing.
+WG_IF="wg0"
 sec_17_wireguard() {
 	should_run 17 || return 0
-	section 17 "WireGuard (tools only — tunnel config is manual)"
+	section 17 "WireGuard tunnel with kill switch and DNS leak protection"
+	if [[ -z "$WG_CONFIG" ]]; then
+		info "No WireGuard config given — nothing to do. To set up a tunnel that cannot leak, re-run with: --only 17 --wireguard-config /path/to/provider.conf"
+		return 0
+	fi
+
+	local endpoint_ip endpoint_port has_dns ks_on=0
+	_wg_check_config "$WG_CONFIG" || return 0
+	endpoint_ip="$_WG_ENDPOINT_IP" endpoint_port="$_WG_ENDPOINT_PORT" has_dns="$_WG_HAS_DNS"
+
 	pkg_install wireguard-tools
-	info "WireGuard tools installed. Quick-start guide:"
-	info "  1. Generate keys:      wg genkey | tee private.key | wg pubkey > public.key"
-	info "  2. Install config:     sudo install -m 600 <provider>.conf /etc/wireguard/wg0.conf"
-	info "  3. Bring up tunnel:    sudo wg-quick up wg0"
-	info "  4. Autostart on boot:  sudo systemctl enable wg-quick@wg0"
-	info "  5. Verify IP:          curl -s https://am.i.mullvad.net/json || curl ifconfig.me"
-	info "Most providers (Mullvad, ProtonVPN, IVPN) offer downloadable WireGuard configs."
-	add_action_item 17 MEDIUM "WIREGUARD_TUNNEL_CONFIG" \
-		"Configure WireGuard tunnel: install provider config to /etc/wireguard/wg0.conf (chmod 600) then run: sudo systemctl enable --now wg-quick@wg0"
+	if ((has_dns)); then
+		# wg-quick hands DNS to systemd-resolved (resolvconf compatibility).
+		pkg_install systemd-resolved
+		run "systemctl enable --now systemd-resolved" || true
+		if ((!DRY_RUN)) && ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+			warn "systemd-resolved is not running: wg-quick cannot apply the tunnel's DNS server and will not start the tunnel."
+			add_action_item 17 HIGH "WG_NO_RESOLVED" \
+				"systemd-resolved must run for the tunnel's DNS (journalctl -u systemd-resolved -b), then: sudo systemctl restart wg-quick@${WG_IF}"
+		fi
+	fi
+	if ((!DRY_RUN)) && ! cmd_exists wg-quick; then
+		warn "wg-quick is not available — WireGuard setup skipped."
+		return 0
+	fi
+
+	local conf="/etc/wireguard/${WG_IF}.conf"
+	backup_file "$conf" || return 0
+	if ((DRY_RUN)); then
+		info "Would install $WG_CONFIG as $conf (mode 600) with DNS routed through the tunnel"
+	else
+		install -d -m 700 /etc/wireguard
+		# The provider's file, with the endpoint pinned to the address checked above
+		# (the kill switch allows exactly that address) and DNS routed through the
+		# tunnel: "~." makes the tunnel's DNS server answer every lookup.
+		if ! awk -v ep="Endpoint = ${endpoint_ip}:${endpoint_port}" '
+			/^[ \t]*Endpoint[ \t]*=/ { print ep; next }
+			/^[ \t]*(PostUp|PreDown)[ \t]*=.*fedora-harden/ { next }
+			{ print }' "$WG_CONFIG" 2>/dev/null >"$conf.new"; then
+			warn "Could not prepare $conf"
+			rm -f "$conf.new"
+			return 0
+		fi
+		if ((has_dns)); then
+			# Insert DNS routing right after [Interface].
+			sed -i '0,/^[ \t]*\[Interface\]/s//[Interface]\nPostUp = resolvectl domain %i "~." \&\& resolvectl default-route %i yes  # fedora-harden: DNS through the tunnel/' "$conf.new"
+		fi
+		chmod 600 "$conf.new" && mv -f "$conf.new" "$conf"
+		ok "Installed the tunnel config as $conf (mode 600, endpoint ${endpoint_ip}:${endpoint_port})."
+	fi
+
+	# Kill switch (firewalld policies, permanent): outbound traffic from this host may
+	# only go into the tunnel (zone fedora-harden-vpn) or to the tunnel endpoint;
+	# everything else is rejected — also while the tunnel is down, so nothing leaks.
+	if ! cmd_exists firewall-cmd && ! cmd_exists firewall-offline-cmd; then
+		warn "firewalld is not installed — the kill switch needs it (section 5). Tunnel installed without a kill switch."
+		add_action_item 17 HIGH "WG_NO_KILLSWITCH" "Install firewalld (section 5), then re-run: sudo ./fedora-harden.sh --only 17 --wireguard-config $WG_CONFIG"
+	else
+		tool_dir_begin /etc/firewalld || return 0
+		_wg_kill_switch "$endpoint_ip" "$endpoint_port" && ks_on=1
+		tool_dir_end /etc/firewalld
+	fi
+
+	if run "systemctl enable --now wg-quick@${WG_IF}"; then
+		record_change WG_TUNNEL "$WG_IF"
+		ok "Tunnel ${WG_IF} is up and starts at boot."
+	else
+		warn "The tunnel did not come up — check: journalctl -u wg-quick@${WG_IF}"
+		local why
+		why="$(journalctl -u "wg-quick@${WG_IF}" -b --no-pager -o cat -n 3 2>/dev/null | tr '\n' ' ')"
+		add_action_item 17 HIGH "WG_TUNNEL_DOWN" \
+			"WireGuard tunnel ${WG_IF} did not start${why:+ ($why)}.$( ((ks_on)) && echo " The kill switch is active, so outbound traffic is blocked until it does.")"
+	fi
+	if ((ks_on)); then
+		add_action_item 17 LOW "WG_KILLSWITCH_INFO" \
+			"Kill switch active: without the tunnel this machine reaches only ${endpoint_ip}:${endpoint_port}. To allow your local network, add a rich rule to policy fedora-harden-killswitch; to remove everything: sudo ./fedora-harden.sh --rollback"
+	fi
+}
+
+# _wg_check_config <file> - Validate a WireGuard config for a leak-proof tunnel.
+# Sets _WG_ENDPOINT_IP, _WG_ENDPOINT_PORT, _WG_HAS_DNS. Returns 1 (with a reason)
+# when the config cannot be used.
+_wg_check_config() {
+	local f="$1" key endpoint host port allowed
+	_WG_ENDPOINT_IP="" _WG_ENDPOINT_PORT="" _WG_HAS_DNS=0
+	for key in PrivateKey Address PublicKey Endpoint AllowedIPs; do
+		if ! grep -qiE "^[[:space:]]*${key}[[:space:]]*=" "$f"; then
+			warn "WireGuard config $f has no $key — not installed."
+			add_action_item 17 MEDIUM "WG_CONFIG_INVALID" "The WireGuard config $f is incomplete (no $key). Download a complete config from your provider."
+			return 1
+		fi
+	done
+	allowed="$(grep -iE '^[[:space:]]*AllowedIPs[[:space:]]*=' "$f" | cut -d= -f2- | tr -d ' ')"
+	if [[ ",$allowed," != *",0.0.0.0/0,"* ]]; then
+		warn "WireGuard config routes only part of the traffic (AllowedIPs = $allowed) — a kill switch needs a full tunnel. Not installed."
+		add_action_item 17 MEDIUM "WG_SPLIT_TUNNEL" \
+			"$f is a split tunnel (AllowedIPs = $allowed). Use a full-tunnel config (AllowedIPs = 0.0.0.0/0, ::/0) for leak protection."
+		return 1
+	fi
+	if [[ ",$allowed," != *",::/0,"* ]]; then
+		# Not a leak: the kill switch rejects IPv6 outside the tunnel. But IPv6 stops working.
+		warn "The WireGuard config carries IPv4 only (no ::/0): with the kill switch, IPv6 traffic is blocked."
+		add_action_item 17 LOW "WG_NO_IPV6" \
+			"$f routes only IPv4 through the tunnel (AllowedIPs has no ::/0), so the kill switch blocks IPv6. Use your provider's config with IPv6 (AllowedIPs = 0.0.0.0/0, ::/0) if you need it."
+	fi
+	if (($(grep -ciE '^[[:space:]]*\[Peer\]' "$f") != 1)); then
+		warn "WireGuard config must have exactly one [Peer] — not installed."
+		return 1
+	fi
+	endpoint="$(grep -iE '^[[:space:]]*Endpoint[[:space:]]*=' "$f" | head -1 | cut -d= -f2- | tr -d ' ')"
+	port="${endpoint##*:}"
+	host="${endpoint%:*}"
+	host="${host#[}"
+	host="${host%]}"
+	if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+		warn "WireGuard endpoint '$endpoint' has no port — not installed."
+		return 1
+	fi
+	if [[ ! "$host" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+		# A hostname would need DNS before the tunnel is up, which the kill switch
+		# blocks: pin the address it resolves to now.
+		local ip
+		ip="$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR == 1 {print $1}')"
+		if [[ -z "$ip" ]]; then
+			warn "Cannot resolve the WireGuard endpoint $host — not installed."
+			return 1
+		fi
+		info "Endpoint $host resolves to $ip; the tunnel and kill switch use that address."
+		add_action_item 17 LOW "WG_ENDPOINT_PINNED" \
+			"The WireGuard endpoint $host was pinned to $ip. If your provider changes that address, re-run section 17."
+		host="$ip"
+	fi
+	grep -qiE '^[[:space:]]*DNS[[:space:]]*=' "$f" && _WG_HAS_DNS=1
+	if ((!_WG_HAS_DNS)); then
+		add_action_item 17 MEDIUM "WG_NO_DNS" \
+			"The WireGuard config sets no DNS server, so DNS lookups do not go through the tunnel. Add your provider's DNS (DNS = ...) under [Interface] and re-run section 17."
+	fi
+	_WG_ENDPOINT_IP="$host" _WG_ENDPOINT_PORT="$port"
+}
+
+# _wg_kill_switch <endpoint-ip> <port> - firewalld policies: the host may send to the
+# tunnel zone and to the endpoint; every other outbound packet is rejected.
+_wg_kill_switch() {
+	local ip="$1" port="$2" fw
+	fw="$(fw_cmd)"
+	local -a cmds=(
+		"--permanent --new-zone=fedora-harden-vpn"
+		"--permanent --zone=fedora-harden-vpn --add-interface=${WG_IF}"
+		"--permanent --new-policy=fedora-harden-vpn-out"
+		# firewall-cmd accepts one of these options per call (ingress/egress zone,
+		# target/priority cannot be combined).
+		"--permanent --policy=fedora-harden-vpn-out --add-ingress-zone=HOST"
+		"--permanent --policy=fedora-harden-vpn-out --add-egress-zone=fedora-harden-vpn"
+		"--permanent --policy=fedora-harden-vpn-out --set-target=ACCEPT"
+		"--permanent --policy=fedora-harden-vpn-out --set-priority=-200"
+		"--permanent --new-policy=fedora-harden-killswitch"
+		"--permanent --policy=fedora-harden-killswitch --add-ingress-zone=HOST"
+		"--permanent --policy=fedora-harden-killswitch --add-egress-zone=ANY"
+		"--permanent --policy=fedora-harden-killswitch --set-target=REJECT"
+		"--permanent --policy=fedora-harden-killswitch --set-priority=-100"
+		"--permanent --policy=fedora-harden-killswitch --add-service=dhcp"
+		"--permanent --policy=fedora-harden-killswitch --add-service=dhcpv6"
+		"--permanent --policy=fedora-harden-killswitch --add-rich-rule='rule family=ipv4 destination address=${ip} port port=${port} protocol=udp accept'"
+	)
+	local c failed=0 info=""
+	for c in "${cmds[@]}"; do
+		# On a re-run the objects already exist; the check below judges the result.
+		run "$fw $c >/dev/null 2>&1 || true"
+	done
+	((FW_OFFLINE)) || run "firewall-cmd --reload" || failed=1
+	if ((!DRY_RUN)); then
+		info="$($fw --permanent --info-policy=fedora-harden-killswitch 2>/dev/null || true)"
+		[[ "$info" == *"target: REJECT"* && "$info" == *"egress-zones: ANY"* && "$info" == *"address=\"${ip}\""* ]] || failed=1
+	fi
+	if ((failed)); then
+		warn "firewalld did not accept the kill switch — outbound traffic is NOT restricted."
+		add_action_item 17 HIGH "WG_KILLSWITCH_FAILED" "The kill switch could not be loaded: check 'sudo firewall-cmd --list-all-policies' and journalctl -u firewalld."
+		return 1
+	fi
+	ok "Kill switch on: outbound traffic goes through ${WG_IF} or to ${ip}:${port} only."
 }
 
 # ============================================================================
@@ -7042,7 +6990,7 @@ remediate_item() {
 		return 1
 		;;
 	AIDE_RECHECK | FAIL2BAN_REVIEW | CLAMAV_REVIEW | SCAP_NO_SCAN | CLAMAV_INFECTED)
-		info "Item [${tag}] requires manual review — see reports in: ${USER_RESULTS_DIR:-$LOG_FILE}"
+		info "Item [${tag}] requires manual review — see reports in: ${USER_RESULTS_DIR:-$LOG_WHERE}"
 		return 1
 		;;
 	*)
@@ -7096,9 +7044,134 @@ remediation_loop() {
 }
 
 # ---------- Summary ---------------------------------------------------------
+# save_followups() - Keep this run's open follow-ups with its backups, so --resume
+# and --report can show them later.
+save_followups() {
+	((DRY_RUN)) && return 0
+	[[ -d "$BACKUP_DIR" ]] || return 0
+	# The file also marks a completed hardening run (report and rollback runs have none).
+	if ((${#ACTIONABLE_ITEMS[@]})); then
+		printf '%s\n' "${ACTIONABLE_ITEMS[@]}" 2>/dev/null >"$BACKUP_DIR/.followups" || return 0
+	else
+		: 2>/dev/null >"$BACKUP_DIR/.followups" || return 0
+	fi
+	chmod 600 "$BACKUP_DIR/.followups" 2>/dev/null || true
+}
+
+# last_session_dir() - Backup folder of the most recent earlier hardening run (the
+# ones with a .followups file; --report, --resume and --rollback runs do not count).
+last_session_dir() {
+	local d latest=""
+	for d in /root/harden-backups-*/; do
+		[[ -f "${d}.followups" ]] || continue
+		[[ "$d" == "/root/harden-backups-${RUN_STAMP}/" ]] && continue
+		[[ -z "$latest" || "$d" > "$latest" ]] && latest="$d"
+	done
+	[[ -n "$latest" ]] || return 1
+	echo "${latest%/}"
+}
+
+# resume_followups() - Show the last session's open follow-ups and offer the fixes
+# again; what stays open is saved back to that session.
+resume_followups() {
+	local dir
+	if ! dir="$(last_session_dir)" || [[ ! -s "$dir/.followups" ]]; then
+		info "No open follow-ups from an earlier run."
+		return 0
+	fi
+	mapfile -t ACTIONABLE_ITEMS < <(grep -v '^$' "$dir/.followups")
+	info "Open follow-ups from session ${dir##*/harden-backups-}:"
+	handle_actionable_follow_up ""
+	if ((!DRY_RUN)); then
+		if ((${#ACTIONABLE_ITEMS[@]})); then
+			printf '%s\n' "${ACTIONABLE_ITEMS[@]}" 2>/dev/null >"$dir/.followups" || true
+		else
+			: 2>/dev/null >"$dir/.followups" || true
+		fi
+	fi
+}
+
+# _html() - Escape text for HTML.
+_html() {
+	local t="${1//&/&amp;}"
+	t="${t//</&lt;}"
+	printf '%s' "${t//>/&gt;}"
+}
+
+# write_html_report [file] - One self-contained page about the last session: what it
+# changed, what is still open, the warnings it logged, and (when tests/verify-host.sh
+# is next to the script) whether the hardening is in effect right now.
+write_html_report() {
+	local out="$1" dir session line
+	if ! dir="$(last_session_dir)"; then
+		err "No hardening session found to report on."
+		return 1
+	fi
+	session="${dir##*/harden-backups-}"
+	[[ -n "$out" ]] || out="${USER_PROJECT_DIR:-/root}/fedora-harden-report-${session}.html"
+	if ((DRY_RUN)); then
+		info "Would write the report for session $session to $out"
+		return 0
+	fi
+	local verify="$SCRIPT_DIR/tests/verify-host.sh"
+	{
+		printf '<!doctype html><meta charset="utf-8"><title>fedora-harden report %s</title>\n' "$session"
+		printf '<style>body{font:15px/1.5 system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;color:#1d2320;background:#fbfbf9}h1,h2{font-weight:600}pre{background:#eef1ee;padding:.75rem;overflow-x:auto;white-space:pre-wrap}td{padding:.2rem .6rem;vertical-align:top;border-bottom:1px solid #dde2dd}</style>\n'
+		printf '<h1>fedora-harden report</h1><p>Host <b>%s</b> · session <b>%s</b> · written %s</p>\n' \
+			"$(_html "$HOST_LABEL")" "$session" "$(date '+%F %T')"
+		printf '<h2>Changes</h2><table>\n'
+		if [[ -f "$dir/.rollback-journal" ]]; then
+			while IFS='|' read -r _ ctype detail; do
+				[[ -z "$ctype" || "$ctype" == '#'* ]] && continue
+				printf '<tr><td>%s</td><td>%s</td></tr>\n' "$(_html "$ctype")" "$(_html "$detail")"
+			done < <(grep -v '^#' "$dir/.rollback-journal")
+		fi
+		printf '</table><p>Undo: <code>sudo %s --rollback %s</code></p>\n' "$SCRIPT_NAME" "$session"
+		printf '<h2>Open follow-ups</h2><table>\n'
+		if [[ -s "$dir/.followups" ]]; then
+			while IFS='|' read -r sec prio _ desc; do
+				printf '<tr><td>%s</td><td>%s</td><td>%s</td></tr>\n' "$(_html "$prio")" "$(_html "$sec")" "$(_html "$desc")"
+			done <"$dir/.followups"
+		else
+			printf '<tr><td>None.</td></tr>\n'
+		fi
+		printf '</table>\n<h2>Warnings and errors logged</h2><pre>\n'
+		if ((LOG_JOURNAL)); then
+			journalctl -t fedora-harden "FH_SESSION=$session" -p warning -o short-iso --no-pager 2>/dev/null |
+				while IFS= read -r line; do
+					_html "$line"
+					printf '\n'
+				done
+		elif [[ -f "$LOG_DIR/harden-${session}.log" ]]; then
+			grep -E '\[(WARN|ERROR)\]' "$LOG_DIR/harden-${session}.log" | while IFS= read -r line; do
+				_html "$line"
+				printf '\n'
+			done
+		fi
+		printf '</pre>\n<h2>In effect now</h2>\n'
+		if [[ -x "$verify" ]]; then
+			printf '<pre>\n'
+			"$verify" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | while IFS= read -r line; do
+				_html "$line"
+				printf '\n'
+			done
+			printf '</pre>\n'
+		else
+			printf '<p>Live checks need tests/verify-host.sh next to the script.</p>\n'
+		fi
+	} 2>/dev/null >"$out" || {
+		err "Could not write $out"
+		return 1
+	}
+	local user="${TARGET_USER:-${SUDO_USER:-}}"
+	[[ -n "$user" && "$user" != root ]] && chown "$user:" "$out" 2>/dev/null
+	chmod 640 "$out" 2>/dev/null || true
+	ok "Report: $out"
+}
+
 # final_summary() - Analyze section 12/18/21/22/23 findings, write all reports to
 # user Downloads/<project>/results and Downloads/<project>/logs, display actionable list, and ask
-# whether to implement recommended next steps. If declined, export a PDF audit
+# whether to implement recommended next steps. If declined, they are kept for --resume
 # report plus TXT import bundle into the user's Downloads directory instead of
 # running remediation. If approved, the user can implement all or selected items.
 final_summary() {
@@ -7114,7 +7187,7 @@ final_summary() {
 			printf '=== Fedora Hardening Run Summary ===\n'
 			printf 'Generated:    %s\n' "$RUN_STAMP_HUMAN"
 			printf 'Host:         %s\n' "$HOST_LABEL"
-			printf 'Log file:     %s\n' "$LOG_FILE"
+			printf 'Log:          %s\n' "$LOG_WHERE"
 			printf 'Backups:      %s\n' "$BACKUP_DIR"
 			printf 'Target user:  %s\n' "${TARGET_USER:-<none>}"
 			printf 'Platform:     %s\n\n' "${_plat}"
@@ -7143,7 +7216,7 @@ final_summary() {
 			printf '  • GRUB password (section 6b) — run: sudo grub2-mkpasswd-pbkdf2\n'
 			printf '  • SSH keys                   — generate on CLIENT, then: ssh-copy-id user@host\n'
 			printf '  • VPN                        — if not detected in section 16b: install Mullvad, ProtonVPN, or IVPN.\n'
-			printf '  • WireGuard tunnel           — configure /etc/wireguard/wg0.conf with peer keys.\n'
+			printf '  • WireGuard tunnel           — re-run with --only 17 --wireguard-config <provider.conf>.\n'
 			printf '  • arkenfox overrides         — add exceptions in user-overrides.js as needed.\n'
 			printf '  • KDE GUI-only settings      — KWallet master password, Privacy, Activity.\n'
 			printf '  • AIDE re-init               — after any future package updates.\n'
@@ -7167,7 +7240,7 @@ final_summary() {
 		[[ -n "$USER_RESULTS_DIR" ]] && reports_line=" Reports:      $USER_RESULTS_DIR"
 		((IS_OSTREE)) && ostree_line=$'\n On rpm-ostree systems, reboot is also required to apply layered package changes and staged updates.'
 		cat <<EOF
-    Log file:     $LOG_FILE
+    Log:          $LOG_WHERE
     Backups:      $BACKUP_DIR  (empty if no changes needed)
     Target user:  ${TARGET_USER:-<none>}
     Platform:     ${_plat}
@@ -7177,7 +7250,7 @@ final_summary() {
        • GRUB password (§6b) — run 'sudo grub2-mkpasswd-pbkdf2' manually.
        • SSH keys — generate on your CLIENT machine and ssh-copy-id to this host.
        • VPN — if not detected in §16b: install Mullvad, ProtonVPN, or IVPN.
-       • WireGuard tunnel — edit /etc/wireguard/wg0.conf with your peer keys.
+       • WireGuard tunnel — re-run with: --only 17 --wireguard-config <provider.conf> (kill switch included).
        • Review arkenfox defaults and add local exceptions in user-overrides.js as needed.
        • KDE GUI-only settings: KWallet master password, Privacy, Activity tracking.
        • Re-initialize AIDE database after any legitimate package upgrade.
@@ -7186,7 +7259,7 @@ final_summary() {
 EOF
 		printf '%s═════════════════════════════════════════════════════════%s\n' "$C_GRN" "$C_RST"
 	else
-		log "Summary: log=$LOG_FILE backups=$BACKUP_DIR target_user=${TARGET_USER:-<none>}"
+		log "Summary: log=$LOG_WHERE backups=$BACKUP_DIR target_user=${TARGET_USER:-<none>}"
 		log "Summary: reboot recommended for kernel/GRUB/sysctl/PAM changes"
 		((IS_OSTREE)) && log "Summary: reboot required on rpm-ostree for staged/layered changes"
 	fi
@@ -7195,7 +7268,7 @@ EOF
 	((DRY_RUN)) && gui_headline="Dry run finished — no changes were made."
 	local gui_items="${#ACTIONABLE_ITEMS[@]} item(s) need follow-up (listed below)."
 	((${#ACTIONABLE_ITEMS[@]} == 0)) && gui_items="No follow-up items."
-	gui_final_summary "$gui_headline" "${gui_items}\nA reboot is recommended.\n\nLog: $LOG_FILE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
+	gui_final_summary "$gui_headline" "${gui_items}\nA reboot is recommended.\n\nLog: $LOG_WHERE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
 
 	# Display the actionable items from sections 12/18/21/22/23 and handle approval/selection.
 	handle_actionable_follow_up "$summary_path"
@@ -7228,7 +7301,7 @@ EOF
 # main() - Master orchestrator for fedora-harden script execution
 # Manages command-line argument parsing, permission verification, session tracking,
 # and execution of all 23 hardening sections in dependency-optimized order.
-# Includes error analysis, auto-remediation, and structured session reporting.
+# Ends with a diagnosis of failed services and the session report.
 # Exit codes: 0 = success, 1 = preflight failed, catch-all for other errors
 main() {
 	parse_args "$@"
@@ -7261,10 +7334,17 @@ main() {
 	fi
 
 	init_user_report_dirs
-	if [[ -n "$IMPORT_AUDIT_PATH" ]]; then
-		import_audit_items "$IMPORT_AUDIT_PATH" || exit 1
-		handle_actionable_follow_up ""
-		exit 0
+	if ((REPORT_MODE)); then
+		local rp_rc=0
+		write_html_report "$REPORT_FILE" || rp_rc=$?
+		EXPECTED_ABORT=1
+		exit "$rp_rc"
+	fi
+	if ((RESUME_MODE)); then
+		local rs_rc=0
+		resume_followups || rs_rc=$?
+		EXPECTED_ABORT=1
+		exit "$rs_rc"
 	fi
 	calc_section_total
 	gui_progress_start
@@ -7295,12 +7375,10 @@ main() {
 	sec_08_usbguard
 	record_etc_baseline
 
+	diagnose_failures
 	gui_progress_close
 	final_summary
-
-	# Execute error analysis and auto-remediation loop to resolve any issues detected
-	info "Running error analysis and auto-remediation cycle..."
-	validate_and_remediate_loop || warn "Some errors may require manual intervention — review logs"
+	save_followups
 
 	SESSION_STATUS="completed"
 	ok "Script execution complete. See logs for full details."
