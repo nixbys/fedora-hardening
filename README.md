@@ -26,7 +26,8 @@ This is a personal hardening script that has grown a substantial feature set and
 - **Hardware security key support** — YubiKey/FIDO2/PIV/pam-u2f packages + USBGuard integration
 - **VPN detection** — WireGuard, Mullvad, ProtonVPN, IVPN detection with recommendations when absent
 - **Full rollback** — per-session change journal; `--rollback` or `--rollback all` to undo any or every run
-- **Audit export** — PDF/TXT audit report for deferred remediation via `--import-audit`
+- **Logs in the system journal** — `journalctl -t fedora-harden`; failed services are reported with their own log lines
+- **Reports and follow-ups** — `--report` writes one HTML page per session; `--resume` brings back open follow-ups
 - **Dry-run mode** — preview all changes without touching the system
 - **GUI frontend** — optional dialogs and progress window via `--gui` / `--gui-full`, in a Material Design dark theme (see [GUI](#gui))
 - **4-layer caching** — memoized command checks, package status, user home dirs, and rpm-ostree pending layers
@@ -53,7 +54,7 @@ This is a personal hardening script that has grown a substantial feature set and
 | 14b | MAC randomization | NetworkManager network-layer privacy |
 | 15 | Desktop settings | Screen lock, recent docs, Bluetooth, location, mic — per DE, verified after applying |
 | 16 | Firefox | Flatpak + pinned arkenfox + GPC/DNT + DNS-over-HTTPS (ECH) + extensions + VPN detection |
-| 17 | WireGuard | Tool install (tunnel config is manual) |
+| 17 | WireGuard | With `--wireguard-config FILE`: the tunnel, a kill switch and DNS through the tunnel; nothing otherwise |
 | 18 | Fail2Ban | Intrusion detection + auto-ban |
 | 19 | Service cleanup | Disable avahi, cups, bluetooth, modemmanager |
 | 20 | File permissions | shadow, /tmp, compilers, umask 077, core dumps, hostname privacy, unencrypted-swap check |
@@ -114,7 +115,9 @@ sudo ./fedora-harden.sh [options]
   -n, --dry-run           Print what would run; make no changes
       --gui               Enable graphical prompts (zenity, kdialog fallback) when available
       --gui-full          Full windowed frontend: GUI progress + GUI status output
-      --import-audit <p>  Import a generated audit PDF/TXT and choose items later
+      --report [file]     Write an HTML report of the last session and exit
+      --resume            Review the last session's open follow-ups and exit
+      --wireguard-config <file>  Install this WireGuard config with a kill switch (section 17)
       --skip <list>       Comma-separated sections to skip  (e.g. 7,8,17)
       --only <list>       Comma-separated sections to run exclusively
       --list              List all section numbers & names and exit
@@ -235,6 +238,28 @@ sudo ./fedora-harden.sh --rollback all
 
 ---
 
+## WireGuard with a kill switch (Section 17)
+
+Download a WireGuard config from your VPN provider (a full tunnel:
+`AllowedIPs = 0.0.0.0/0, ::/0`) and pass it to section 17:
+
+```bash
+sudo ./fedora-harden.sh --only 17 --wireguard-config ~/Downloads/provider.conf
+```
+
+The script checks the config (complete, one peer, full tunnel; a hostname endpoint
+is pinned to its current address), installs it as `/etc/wireguard/wg0.conf`
+(mode 600) and starts `wg-quick@wg0` at boot. Two protections come with it:
+
+- **Kill switch** — firewalld policies let this machine send traffic only into the
+  tunnel or to the tunnel's own endpoint. If the tunnel drops, nothing leaks out
+  around it (the local network is blocked too; the follow-up says how to allow it).
+- **DNS through the tunnel** — systemd-resolved sends every lookup to the tunnel's
+  DNS server while it is up.
+
+`--rollback` stops the tunnel and removes the config and the kill switch. Without a
+config file, section 17 does nothing.
+
 ## Hardware Security Keys
 
 During **Section 2**, the script will ask if you use a hardware security key (YubiKey, FIDO2, PIV, etc.). If yes, it installs `pcsc-lite`, `opensc`, `libfido2`, `yubico-piv-tool`, and `yubikey-manager`, and optionally sets up `pam-u2f`. On image-based systems it layers only the drivers (and `pam-u2f`) and installs the Yubico Authenticator Flatpak instead of the management tools.
@@ -269,13 +294,13 @@ sudo ./tests/verify-host.sh            # every check, with PASS / FAIL / SKIP
 sudo ./tests/verify-host.sh --only SSH # one area: AUTO SEL FW SSH PAM SYS AUD DNS CLAM INT DESK FLAT PERM ROLL
 ```
 
-The script generates a session report in `./sessions/` and prints a prioritized **actionable items** list at the end (HIGH / MEDIUM / LOW). Items that require manual steps (GRUB password, WireGuard tunnel config, etc.) are called out explicitly with instructions.
+The script prints a prioritized list of **follow-ups** at the end (HIGH / MEDIUM / LOW), each with the command to run. If a service it enabled or restarted failed, the follow-up quotes that service's own log lines. Everything the run did is in the system journal:
 
-You can export the audit to PDF/TXT for later review:
 ```bash
-# Items declined during the run are exported automatically.
-# Re-import them later:
-sudo ./fedora-harden.sh --import-audit ./sessions/audit-20260601-143022.txt
+journalctl -t fedora-harden                         # every run
+journalctl -t fedora-harden FH_SESSION=20261110-213440 -p warning   # one run, problems only
+sudo ./fedora-harden.sh --resume                    # the last run's open follow-ups, fixes offered again
+sudo ./fedora-harden.sh --report                    # one HTML page: changes, follow-ups, warnings, live checks
 ```
 
 ---
