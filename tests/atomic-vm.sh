@@ -2,8 +2,7 @@
 # tests/atomic-vm.sh - Image-based behaviour on an INSTALLED, BOOTED Fedora Atomic
 # system (VM).
 #
-# The container test (tests/atomic-real.sh) cannot exercise what needs a booted
-# OSTree sysroot. This test installs the image under test (Silverblue, Universal
+# This test installs the image under test (Silverblue, Universal
 # Blue, ...) onto an empty virtual disk with `bootc install to-disk`, run inside a
 # Fedora CoreOS VM (CoreOS's published QEMU image, checksum-verified), boots that
 # disk and runs fedora-harden.sh on it. The only change to the image is enabling
@@ -12,8 +11,11 @@
 #
 # Checked for real: the image-signature finding (rpm-ostree status), the /etc
 # baseline and the weekly report catching a new file (ostree admin config-diff),
-# that no tool is requested as a layered package, a ClamAV scan through the
-# quadlet, distrobox on Universal Blue, verify-host.sh and --rollback.
+# that no tool is requested as a layered package, the Flatpaks installed instead,
+# the locked-down ClamAV scan container finding a planted file (and only that),
+# OpenSCAP from a throwaway container, distrobox and uupd on Universal Blue,
+# verify-host.sh and --rollback (Flatpaks included). This is the only test of the
+# Atomic images: one realistic run per image.
 #
 # QEMU runs in a Fedora container (no host packages needed; /dev/kvm required).
 # Prints PASS:/FAIL: lines; exits 1 if any check fails.
@@ -170,6 +172,7 @@ check "booted deployment is $IMG" grep -q -- "$IMG" "$OUT/booted.txt" || exit 1
 vm 'id tester >/dev/null 2>&1 || useradd -m tester'
 ublue=0
 vm test -r /usr/share/ublue-os/image-info.json && ublue=1
+vm 'grep -m1 "^AutomaticUpdatePolicy" /etc/rpm-ostreed.conf 2>/dev/null || true' >"$OUT/policy-before.txt"
 
 # ── Run the script on the booted image ─────────────────────────────────────────
 scp -q -i "$work/id" -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
@@ -188,6 +191,16 @@ for pkg in clamav clamd clamav-update aide rkhunter openscap-scanner scap-securi
     setools-console buildah skopeo podman-compose mat2 yubikey-manager yubico-piv-tool toolbox; do
     check "$pkg is not layered" bash -c '! grep -qx -- "$1" "$2"' _ "$pkg" "$OUT/requested.txt"
 done
+
+# ── Flatpaks really installed from Flathub ────────────────────────────────────
+vm flatpak list --app --columns=application >"$OUT/flatpaks.txt" 2>&1
+check "Yubico Authenticator Flatpak installed" grep -qx com.yubico.yubioath "$OUT/flatpaks.txt"
+check "Metadata Cleaner Flatpak installed" grep -qx io.gitlab.metadatacleaner.metadatacleaner "$OUT/flatpaks.txt"
+
+# ── OpenSCAP ran in a throwaway container and the summary reads real results ───
+check "OpenSCAP results written by the container scan" vm test -s /root/scap-results.xml
+check "OpenSCAP summary counts real results (pass > 0)" \
+    grep -qE 'OpenSCAP results — pass: [1-9][0-9]*  fail: [0-9]+' "$OUT/run.log"
 
 # ── Section 12 on a real sysroot ───────────────────────────────────────────────
 # Installed from a local build, the image boots from an unverified reference; some
@@ -214,13 +227,20 @@ check "the new file is logged (journalctl -t fedora-harden-etc)" grep -q fh-vm-t
 vm rm -f /etc/fh-vm-test-change
 
 # ── ClamAV through the quadlet on the booted host ─────────────────────────────
-# EICAR: the standard antivirus test string (harmless by design), in a 0600 file.
+vm systemctl cat fedora-harden-clamscan.service >"$OUT/clamscan.service" 2>&1
+for opt in "--read-only" "--network none" "--cap-drop all" "--security-opt=no-new-privileges" ":/scan:ro"; do
+    check "scan container runs with $opt" grep -q -- "$opt" "$OUT/clamscan.service"
+done
+# EICAR: the standard antivirus test string (harmless by design), in a 0600 file,
+# next to a clean file that must not be reported.
 vm 'f=/var/home/tester/eicar.com; printf "%s" "X5O!P%@AP[4\PZX54(P^)7CC)7}\$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!\$H+H*" >$f && chown tester: $f && chmod 600 $f'
+vm 'echo harmless >/var/home/tester/notes.txt && chown tester: /var/home/tester/notes.txt'
 scan_rc=0
 vm timeout 900 systemctl start fedora-harden-clamscan.service >/dev/null 2>&1 || scan_rc=$?
 vm journalctl -u fedora-harden-clamscan --no-pager -o cat >"$OUT/clamscan.journal" 2>&1
 check "real scan finds the planted test file (unit exit $scan_rc)" \
     grep -q 'eicar.com: Eicar-Test-Signature FOUND' "$OUT/clamscan.journal"
+check "the scan does not report the clean file" bash -c '! grep -q "notes.txt" "$1"' _ "$OUT/clamscan.journal"
 
 # ── Box tool and verify-host ───────────────────────────────────────────────────
 if ((ublue)); then
@@ -228,9 +248,13 @@ if ((ublue)); then
         vm runuser -u tester -- distrobox assemble create --dry-run \
         --file /var/home/tester/.config/distrobox/fedora-harden-tools.ini
     check "Universal Blue: uupd stays the only updater" grep -q 'handled by uupd.timer' "$OUT/run.log"
+    vm 'grep -m1 "^AutomaticUpdatePolicy" /etc/rpm-ostreed.conf 2>/dev/null || true' >"$OUT/policy-after.txt"
+    check "Universal Blue: rpm-ostreed policy unchanged" cmp -s "$OUT/policy-before.txt" "$OUT/policy-after.txt"
 else
     check "toolbox path: tools-box commands offered" grep -q "toolbox create --release" "$OUT/run.log"
+    check "toolbox path: no distrobox manifest" vm test ! -e /var/home/tester/.config/distrobox/fedora-harden-tools.ini
 fi
+check "box tool is not called a security boundary" grep -q 'not a security boundary' "$OUT/run.log"
 for grp in CLAM INT; do
     vm ./verify-host.sh --only "$grp" >"$OUT/verify-$grp.log" 2>&1
     check "verify-host $grp passes" bash -c 'grep -q " PASS" "$1" && ! grep -q " FAIL" "$1"' _ "$OUT/verify-$grp.log"
@@ -276,6 +300,9 @@ for f in /etc/containers/systemd/fedora-harden-clamscan.container /etc/systemd/s
     check "rollback removed $f" vm test ! -e "$f"
 done
 check "rollback keeps the home snapshots" vm test -d /var/home/.snapshots
+vm flatpak list --app --columns=application >"$OUT/flatpaks-after-rollback.txt" 2>&1
+check "rollback removed the Flatpaks it installed" \
+    bash -c '! grep -qE "^(com.yubico.yubioath|io.gitlab.metadatacleaner.metadatacleaner)$" "$1"' _ "$OUT/flatpaks-after-rollback.txt"
 
 vm systemctl poweroff >/dev/null 2>&1 || true
 wait_off 60
