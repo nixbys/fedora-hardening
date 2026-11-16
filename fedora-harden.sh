@@ -8619,7 +8619,10 @@ write_recovery_file() {
 	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo unknown)"
 	# shellcheck source=/dev/null
 	edition="$(. /etc/os-release 2>/dev/null && echo "${VARIANT_ID:-${ID:-fedora}}")"
-	write_new_file "$f" 0600 <<EOF || return 0
+	local new
+	new="$(mktemp)" || return 0
+	register_tmp "$new"
+	cat >"$new" <<EOF
 # fedora-harden recovery file: what this machine was set up with, kept up to date
 # after every run. After a reinstall or a recovery, put things back with:
 #   sudo ./fedora-harden.sh --restore $f
@@ -8646,8 +8649,15 @@ PRIVATE_BROWSING=${SETUP_CHOICES[PRIVATE_BROWSING]:-$(_recovery_get PRIVATE_BROW
 OPENSNITCH=${SETUP_CHOICES[OPENSNITCH]:-$(_recovery_get OPENSNITCH)}
 BACKUP_COPY=$copy
 # Answers to the questions (Q = the question; --restore gives the same answers).
-$(for key in "${!all[@]}"; do printf '# Q %s\nANSWER_%s=%s\n' "${text[$key]//$'\n'/ }" "$key" "${all[$key]}"; done)
+$(for key in $(printf '%s\n' "${!all[@]}" | sort); do printf '# Q %s\nANSWER_%s=%s\n' "${text[$key]//$'\n'/ }" "$key" "${all[$key]}"; done)
 EOF
+	# Rewrite only when something besides the date and session changed, so a
+	# repeated run leaves /etc as it was.
+	if [[ -f "$f" ]] && diff -q <(grep -vE '^(UPDATED|SESSION)=' "$f") <(grep -vE '^(UPDATED|SESSION)=' "$new") >/dev/null 2>&1; then
+		_recovery_backup_copy "$copy"
+		return 0
+	fi
+	write_new_file "$f" 0600 <"$new" || return 0
 	_recovery_backup_copy "$copy"
 }
 
@@ -8665,6 +8675,7 @@ _recovery_backup_copy() {
 		return 0
 	fi
 	install -d -m 700 "$home/.fedora-harden" 2>/dev/null || return 0
+	cmp -s "$RECOVERY_FILE" "$dest" && return 0
 	backup_file "$dest" || return 0
 	cp -f "$RECOVERY_FILE" "$dest" && chmod 600 "$dest" || return 0
 	info "Recovery file copied into the home backups ($dest); turn off with --recovery-backup off."
