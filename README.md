@@ -123,8 +123,11 @@ sudo ./fedora-harden.sh [options]
       --score             Show what protects this machine now (read-only) and exit
       --kernel-hardening  Add the kernel boot hardening options (section 9; opt-in)
       --wireguard-config <file>  Install this WireGuard config with a kill switch (section 15)
-      --profile <list>    Use cases for section 19: everyday,gaming,creative,dev,laptop
+      --profile <list>    Use cases for section 19: everyday,gaming,creative,dev,laptop,private
       --backup-target <dir>  Second drive for home copies on systems without Btrfs (section 20)
+      --restore <file>    Reapply a recovery file (/etc/fedora-harden/machine.conf) without questions
+      --include-setup     With --report: include the recovery file's contents
+      --recovery-backup on|off  Copy the recovery file into the home backups (default on, remembered)
       --skip <list>       Comma-separated sections to skip  (e.g. 7,8,17)
       --only <list>       Comma-separated sections to run exclusively
       --list              List all section numbers & names and exit
@@ -320,6 +323,42 @@ notification appears only when something needs you; the weekly summary is in
 `journalctl -t fedora-harden-routine`. Every 90 days the summary asks for a review: if
 the machine now looks different from its saved use cases, or an automation has had
 no effect, it says so. Re-run `--only 19` to change the routine; `--rollback` removes it.
+
+### Personal setup
+
+Section 19 also offers, once each, what fits the use cases. Each is a question; with
+`--yes` only the ones a chosen use case implies happen. `--rollback` undoes all of them.
+
+| Offer | What happens | When |
+|-------|--------------|------|
+| `dev` box | a toolbox/distrobox with gcc, make, cmake, git and Python, created for you in the background; on distrobox the build tools also work from the host's terminal | dev |
+| `davincibox` | the container the davincibox project provides for DaVinci Resolve (the NVIDIA or OpenCL build), plus the `render`/`video` groups; you add the Resolve installer you downloaded, and Resolve appears in the app menu (Bazzite: `ujust install-resolve` instead) | creative |
+| Tor Browser and Mullvad Browser | from Flathub; only Tor Browser hides who you are | `private` use case |
+| Verified Flathub apps only | Flathub shows apps published by their own developers | asked |
+| Security key for sudo and login | registers your key, then makes it a second factor (pam-u2f via authselect); keep a second key registered | asked, when section 1 installed key support |
+| Disk unlock with TPM + PIN or FIDO2 | only when the root disk is already encrypted; the passphrase keeps working | asked |
+| OpenSnitch | Fedora does not package it, so the script only points you to its signed RPMs | asked |
+
+Nothing is layered on image-based systems.
+
+### Recovery file
+
+After every run, `/etc/fedora-harden/machine.conf` records what this machine was set
+up with: Fedora release and edition, the sections run, use cases, boxes, Flatpaks the
+script installed, enabled timers, the snapshot setup, the choices above and the
+answer to every question. It is readable by root only and holds no secrets (for the
+WireGuard tunnel it notes where the config was, not the config). It is also copied
+into the home folder's backups (`/home/.fedora-harden/`), so it survives a reinstall;
+`--recovery-backup off` stops that (remembered).
+
+After a reinstall or a recovery:
+
+```bash
+sudo ./fedora-harden.sh --restore machine.conf     # same sections, same answers, no questions
+```
+
+`--report` says when the recovery file was last updated but leaves its contents out,
+so the page can be shared; `--report --include-setup` adds them.
 
 ## Home snapshots (Section 20)
 

@@ -394,6 +394,10 @@ tier_quick() {
     check "quick: --score prints the protection scorecard and exits 0" \
         bash -c 'quick_out="$(podman run --rm -v "$1:/root/fedora-harden.sh:ro,z" --entrypoint /root/fedora-harden.sh "$2" --score </dev/null 2>&1)" &&
             grep -q "Protection now" <<<"$quick_out" && grep -q "SELinux" <<<"$quick_out"' _ "$SCRIPT" "$IMG_QUICK"
+    expect_rc "quick: --profile accepts the private use case" 0 quick_run --dry-run --yes --only 19 --profile private,dev
+    expect_rc "quick: --recovery-backup needs on or off" 2 quick_run --recovery-backup maybe
+    expect_rc "quick: --restore of a missing file exits 2" 2 quick_run --restore /nonexistent
+    expect_rc "quick: --restore refuses a file that is not a recovery file" 2 quick_run --restore /etc/os-release
 
     # Non-root must be refused before anything happens.
     local log="$ARTIFACTS/quick_nonroot.log" rc=0
@@ -676,6 +680,20 @@ tier_full() {
     fx /root/fedora-harden.sh --yes --only 19 --profile everyday,dev >"$log" 2>&1 || rc=$?
     check "full: section 19 runs cleanly (exit $rc)" bash -c '[[ $1 == 0 ]] && ! grep -q "^\[FAIL\]" "$2"' _ "$rc" "$log"
     check "full: section 19 saves the profile" fx grep -qx 'USE_CASES="everyday dev"' /etc/fedora-harden/profile
+    check "full: the profile is root-only (0600)" fx bash -c '[[ $(stat -c %a /etc/fedora-harden/profile) == 600 ]]'
+    check "full: the recovery file is written, root-only, with the run's choices" fx bash -c '
+        f=/etc/fedora-harden/machine.conf && [[ $(stat -c %a "$f") == 600 ]] &&
+            grep -qx "USE_CASES=\"everyday dev\"" "$f" && grep -qE "^SECTIONS=\".*\b19\b" "$f" &&
+            grep -qE "^ANSWER_[0-9a-f]{12}=(yes|no)$" "$f"'
+    check "full: --report names the recovery file but not its contents" fx bash -c '
+        /root/fedora-harden.sh --report /tmp/r1.html >/dev/null 2>&1 && grep -q "<h2>Recovery file</h2>" /tmp/r1.html &&
+            ! grep -q "USE_CASES" /tmp/r1.html'
+    check "full: --report --include-setup adds the recovery file's contents" fx bash -c '
+        /root/fedora-harden.sh --report /tmp/r2.html --include-setup >/dev/null 2>&1 && grep -q "USE_CASES" /tmp/r2.html'
+    check "full: --restore replays the recovery file without questions (dry run)" fx bash -c '
+        /root/fedora-harden.sh --dry-run --restore /etc/fedora-harden/machine.conf </dev/null >/tmp/restore.log 2>&1 &&
+            grep -q "Restoring from /etc/fedora-harden/machine.conf" /tmp/restore.log &&
+            grep -q "Answer from the recovery file" /tmp/restore.log'
     for t in cleanup diskspace drift summary devclean; do
         check "full: routine timer fedora-harden-$t is enabled" fx systemctl is-enabled --quiet "fedora-harden-$t.timer"
     done
