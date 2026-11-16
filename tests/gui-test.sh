@@ -15,7 +15,7 @@
 # and when the run ends.
 #
 # Usage (from tests/run-suite.sh):
-#   podman run --rm -v fedora-harden.sh:/root/fedora-harden.sh:ro \
+#   podman run --rm -v .:/opt/fedora-hardening:ro \
 #     -v tests/gui-test.sh:/root/gui-test.sh:ro -v ARTIFACTS:/out IMAGE /root/gui-test.sh
 
 set -uo pipefail
@@ -61,7 +61,7 @@ close_app() {
 
 # --- 1. dry run: completes, one window with every section done and the summary ----
 rc=0
-timeout 300 /root/fedora-harden.sh --gui --dry-run --yes >"$OUT/gui-dryrun.log" 2>&1 || rc=$?
+timeout 300 /opt/fedora-hardening/fedora-harden.sh --gui --dry-run --yes >"$OUT/gui-dryrun.log" 2>&1 || rc=$?
 if ((rc == 0)); then pass "--gui --dry-run --yes exits 0"; else bad "--gui --dry-run exit $rc (124 = hung)"; fi
 wait_for 10 test -n "$(state exit)"
 sleep 2
@@ -102,7 +102,7 @@ close_app
 # --- 2. questions are answered in the window ---------------------------------------
 # Without --yes, section 19 asks for use cases (typed) and the run ends with a Yes/No
 # question about follow-ups; the user name prompt may come first.
-/root/fedora-harden.sh --gui --dry-run --only 19 >"$OUT/gui-questions.log" 2>&1 &
+/opt/fedora-hardening/fedora-harden.sh --gui --dry-run --only 19 >"$OUT/gui-questions.log" 2>&1 &
 pid=$!
 asked=0 typed=0
 for _ in $(seq 1 240); do
@@ -141,7 +141,7 @@ close_app
 # --- 3. Stop in the window ends the run with exit 130 ------------------------------
 # A real (non-dry) run of section 4 is slow enough (package + Flathub work) to stop.
 rm -f /var/log/fedora-harden/harden-*.log
-/root/fedora-harden.sh --gui --yes --only 4 >"$OUT/gui-cancel.log" 2>&1 &
+/opt/fedora-hardening/fedora-harden.sh --gui --yes --only 4 >"$OUT/gui-cancel.log" 2>&1 &
 pid=$!
 wait_for 60 test -n "$(window)"
 sleep 3
@@ -168,7 +168,7 @@ if [[ "$(state exit)" == 130 ]]; then pass "window shows the run stopped"; else 
 close_app
 
 # --- 4. a window that disappears stops the run -------------------------------------
-/root/fedora-harden.sh --gui --yes --only 4 >"$OUT/gui-killed.log" 2>&1 &
+/opt/fedora-hardening/fedora-harden.sh --gui --yes --only 4 >"$OUT/gui-killed.log" 2>&1 &
 pid=$!
 wait_for 60 test -n "$(window)"
 sleep 3

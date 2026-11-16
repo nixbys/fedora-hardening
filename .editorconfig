@@ -7,9 +7,14 @@ end_of_line = lf
 insert_final_newline = true
 trim_trailing_whitespace = true
 
-# Main hardening script: tab-indented (shfmt defaults)
-[fedora-harden.sh]
+# The hardening script and its parts: tab-indented (shfmt defaults)
+[{fedora-harden.sh,lib/*.sh,sections/*.sh}]
 indent_style = tab
+
+# The routine helper installed by section 19: 4-space indent
+[libexec/fedora-harden-routine]
+indent_style = space
+indent_size = 4
 
 # Helper scripts: 4-space indent, indented case branches
 [{setup-dev.sh,test-in-podman.sh,tests/*.sh}]

@@ -26,14 +26,37 @@ is built at the same pinned version with Fedora's Go (`tests/install-shfmt.sh`).
 ## Workflow
 
 1. Branch from `main` (`main` only accepts pull requests).
-2. Edit `fedora-harden.sh`; `bash -n fedora-harden.sh` for a quick syntax check.
+2. Edit the script (see [Layout](#layout)); `bash -n <file>` for a quick syntax check,
+   `shellcheck -x -a fedora-harden.sh` to check it with all its parts.
 3. Commit. pre-commit runs shellcheck, shfmt, yamllint, ruff, hadolint, gitleaks and
    the generic file checks; the commit-msg hook enforces conventional commits
    (`fix:`, `feat:`, `docs:`, ...).
 4. Test: `./tests/run-suite.sh` (all tiers) or one tier, see [TESTING.md](TESTING.md).
 5. Push and open a pull request. CI runs every tier on Fedora 44 and 45.
 
-## Conventions in fedora-harden.sh
+## Layout
+
+`fedora-harden.sh` holds the usage text (`--help` prints its header comment) and
+loads the rest with one `source` line per file, in this order:
+
+- `lib/01-07-*.sh`: globals, the GUI bridge, logging and package helpers, rollback,
+  preflight and option parsing.
+- `sections/NN-*.sh`: one file per section, with the helpers only that section uses.
+- `lib/30-38-*.sh`: the scorecard, helpers shared by sections (kernel boot options,
+  service sandboxing), personal setup, the recovery file, follow-ups, the summary,
+  the safety point and `main`.
+
+The order matters: files run their top-level statements (globals, traps) as they
+load. A new file needs its own `source` line (with a `# shellcheck source=` directive)
+in `fedora-harden.sh`; the static tier fails when a file in `lib/` or `sections/` is
+not loaded. Bash's own error messages and the ERR trap name the file and line
+(`sections/05-selinux.sh line 42`).
+
+`libexec/` holds programs the script installs rather than runs inline: the `--gui`
+window (`fedora-harden-gui.py`) and the routine helper (`fedora-harden-routine`). Short
+config files stay as heredocs next to the code that writes them.
+
+## Conventions in the script
 
 These rules exist because breaking them caused real bugs:
 
@@ -58,8 +81,10 @@ These rules exist because breaking them caused real bugs:
 - **Cite sources.** Each recommendation carries a `# Source:` comment naming the
   Privacy Guides or IntelTechniques page it comes from (listed in
   `docs/references.json`).
-- **Formatting** comes from `.editorconfig` (tabs in the script, 4 spaces in helper
-  scripts); run `shfmt -w`.
+- **Formatting** comes from `.editorconfig` (tabs in the script and its `lib/` and
+  `sections/` files, 4 spaces in the routine helper and the test scripts); run `shfmt -w`.
+- **Comments say why.** No header that restates the function name; document
+  arguments (`# Usage: name <arg> ...`), caveats and the reason for non-obvious code.
 
 ## Keeping up with the guidance
 
@@ -67,7 +92,8 @@ The weekly **Reference watch** workflow opens an issue when a source in
 `docs/references.json` changes or arkenfox publishes a new release. To act on it:
 
 1. Read the changed page and update the script where the advice changed.
-2. For a new arkenfox release, update `ARKENFOX_VERSION` and `ARKENFOX_SHA256`
+2. For a new arkenfox release, update `ARKENFOX_VERSION` and `ARKENFOX_SHA256` in
+   `lib/01-globals.sh`
    (`curl -fsSL https://raw.githubusercontent.com/arkenfox/user.js/<tag>/user.js | sha256sum`).
 3. Run the tests, then record the review:
    `python3 tests/check-references.py --update`, and commit `docs/references.json`.

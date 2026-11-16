@@ -1,0 +1,597 @@
+#!/usr/bin/bash
+# fedora-harden-routine - installed by fedora-harden.sh (section 19). The timers
+# fedora-harden-*.timer call it; every run is logged to the journal under the tag
+# fedora-harden-routine. Undo everything with: sudo fedora-harden.sh --rollback
+#
+#   detect            print the use cases this machine shows (everyday gaming creative dev laptop)
+#   cleanup           unused Flatpak runtimes, dangling Podman images, old OSTree data (monthly)
+#   scrub             Btrfs scrub of every Btrfs filesystem, idle I/O priority (monthly)
+#   diskspace         warn when / or /var/home has less than 10% free (daily)
+#   drift             have managed files changed or managed services stopped? (weekly)
+#   boxes             upgrade toolbox/distrobox containers of each user (weekly)
+#   devclean          remove container build cache older than 30 days for each user (weekly)
+#   flatpak-perms     report apps whose permissions changed since last week (weekly)
+#   summary           weekly summary + relevance review every 90 days (weekly)
+#   snapshot          home snapshot or copy when due (hourly check; frequency follows use)
+#   index             index the home folder; note what grew and flag new large folders (weekly)
+#   exclude-convert   at boot: make approved folders their own subvolumes (left out of snapshots)
+#   notify-failed U   desktop notification that unit U failed (OnFailure= hook)
+set -uo pipefail
+
+STATE=/var/lib/fedora-harden
+PROFILE=/etc/fedora-harden/profile
+mkdir -p "$STATE"
+chmod 700 "$STATE" 2>/dev/null
+
+say() { # say <DONE|NOTE|ATTENTION> <message> — journal line the weekly summary counts
+    local pri=user.info
+    [[ "$1" == ATTENTION ]] && pri=user.warning
+    logger -t fedora-harden-routine -p "$pri" -- "$1 $2"
+}
+
+# notify <normal|critical> <title> <body> — desktop notification in every active
+# graphical session (there may be none: then the journal line is the record).
+notify() {
+    local urgency="$1" title="$2" body="$3" sid user uid type active sent=0
+    while read -r sid _; do
+        [[ -n "$sid" ]] || continue
+        type="$(loginctl show-session "$sid" -p Type --value 2>/dev/null)"
+        active="$(loginctl show-session "$sid" -p Active --value 2>/dev/null)"
+        user="$(loginctl show-session "$sid" -p Name --value 2>/dev/null)"
+        [[ "$active" == yes && ("$type" == wayland || "$type" == x11) && -n "$user" ]] || continue
+        uid="$(id -u "$user" 2>/dev/null)" || continue
+        [[ -S "/run/user/$uid/bus" ]] || continue
+        if command -v notify-send >/dev/null; then
+            runuser -u "$user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+                notify-send -a fedora-harden -u "$urgency" "$title" "$body" 2>/dev/null && sent=1
+        else
+            runuser -u "$user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+                gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+                --method org.freedesktop.Notifications.Notify fedora-harden 0 "" "$title" "$body" '[]' '{}' 10000 \
+                >/dev/null 2>&1 && sent=1
+        fi
+    done < <(loginctl list-sessions --no-legend 2>/dev/null)
+    ((sent)) || logger -t fedora-harden-routine -p user.notice "no desktop session to notify: $title — $body"
+}
+
+# wait_for_quiet — heavy jobs run on mains power and not while a game holds
+# gamemode; they wait (up to a day), they do not fail.
+on_mains() { # true on mains power, or when the machine reports no power supply (desktops)
+    local ps mains=0
+    for ps in /sys/class/power_supply/*; do
+        [[ "$(cat "$ps/type" 2>/dev/null)" == Mains ]] || continue
+        mains=1
+        [[ "$(cat "$ps/online" 2>/dev/null)" == 1 ]] && return 0
+    done
+    ((! mains))
+}
+game_running() { command -v gamemoded >/dev/null && gamemoded -s 2>/dev/null | grep -q "is active"; }
+wait_for_quiet() {
+    [[ -n "${FH_NO_WAIT:-}" ]] && return 0 # run by fedora-harden.sh itself
+    local i
+    for ((i = 0; i < 144; i++)); do
+        on_mains && ! game_running && return 0
+        sleep 600
+    done
+    say NOTE "skipped: no quiet time on mains power within a day"
+    return 1
+}
+
+human_users() { getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 && $7 !~ /(nologin|false)$/ {print $1}'; }
+
+cmd_detect() {
+    local found=(everyday) f
+    local flatpaks
+    flatpaks="$(flatpak list --app --columns=application 2>/dev/null)"
+    if grep -qiE '^(com\.valvesoftware\.Steam|net\.lutris\.Lutris|com\.heroicgameslauncher\.hgl)$' <<<"$flatpaks" ||
+        command -v steam >/dev/null || command -v gamemoded >/dev/null ||
+        grep -qs '"image-name": *"bazzite' /usr/share/ublue-os/image-info.json; then
+        found+=(gaming)
+    fi
+    if grep -qiE '^(org\.blender\.Blender|org\.kde\.kdenlive|org\.darktable\.Darktable|org\.gimp\.GIMP|org\.inkscape\.Inkscape|org\.kde\.krita)$' <<<"$flatpaks" ||
+        podman ps -a --format '{{.Names}}' 2>/dev/null | grep -qx davincibox; then
+        found+=(creative)
+    fi
+    f=0
+    grep -qiE '^(com\.visualstudio\.code|com\.vscodium\.codium|org\.gnome\.Builder|com\.jetbrains\.)' <<<"$flatpaks" && f=1
+    for u in $(human_users); do
+        [[ -d "$(getent passwd "$u" | cut -d: -f6)/.local/share/containers/storage" ]] && f=1
+    done
+    command -v code >/dev/null && f=1
+    ((f)) && found+=(dev)
+    for ps in /sys/class/power_supply/*; do
+        [[ "$(cat "$ps/type" 2>/dev/null)" == Battery ]] && {
+            found+=(laptop)
+            break
+        }
+    done
+    echo "${found[*]}"
+}
+
+free_kb() { df -k --output=avail "$1" 2>/dev/null | tail -1 | tr -d ' '; }
+
+cmd_cleanup() {
+    wait_for_quiet || return 0
+    local before after
+    before="$(free_kb /var)"
+    command -v flatpak >/dev/null && flatpak uninstall --unused -y --noninteractive >/dev/null 2>&1
+    command -v podman >/dev/null && podman image prune -f >/dev/null 2>&1
+    [[ -e /run/ostree-booted ]] && rpm-ostree cleanup -bm >/dev/null 2>&1
+    after="$(free_kb /var)"
+    local freed=$(((after - before) / 1024))
+    ((freed < 0)) && freed=0
+    printf '%s %s\n' "$(date +%s)" "$freed" >>"$STATE/cleanup.stats"
+    say DONE "cleanup freed ${freed} MiB"
+}
+
+cmd_scrub() {
+    wait_for_quiet || return 0
+    local dev mnt rc=0
+    declare -A seen=()
+    while read -r dev mnt; do
+        [[ -n "${seen[$dev]:-}" ]] && continue
+        seen[$dev]=1
+        if btrfs scrub start -B -c 3 "$mnt" >/dev/null 2>&1; then
+            say DONE "btrfs scrub of $mnt found no errors"
+        else
+            rc=1
+            say ATTENTION "btrfs scrub of $mnt reported errors: btrfs scrub status $mnt"
+            notify critical "Disk errors found" "The Btrfs scrub of $mnt reported errors. Back up your data and run: sudo btrfs scrub status $mnt"
+        fi
+    done < <(findmnt -rn -t btrfs -o SOURCE,TARGET | sed 's/\[.*\]//' | sort -u -k1,1)
+    return "$rc"
+}
+
+cmd_diskspace() {
+    local mnt pct
+    for mnt in / /var /var/home; do
+        mountpoint -q "$mnt" 2>/dev/null || [[ "$mnt" == / ]] || continue
+        pct="$(df --output=pcent "$mnt" 2>/dev/null | tail -1 | tr -dc 0-9)"
+        [[ -n "$pct" ]] || continue
+        # an image-based / is a read-only image that is always "full"
+        [[ "$mnt" == / && -e /run/ostree-booted ]] && continue
+        if ((pct >= 90)); then
+            say ATTENTION "$mnt is ${pct}% full"
+            notify critical "Disk almost full" "$mnt is ${pct}% full. Updates and saving files will start to fail."
+        fi
+    done
+}
+
+cmd_drift() {
+    local changed="" stopped="" u
+    if [[ -s "$STATE/managed.sha256" ]]; then
+        changed="$(sha256sum --quiet -c "$STATE/managed.sha256" 2>/dev/null | sed 's/: .*//' | tr '\n' ' ')"
+    fi
+    if [[ -s "$STATE/managed.units" ]]; then
+        while read -r u; do
+            [[ -n "$u" ]] || continue
+            systemctl is-active --quiet "$u" || stopped+="$u "
+        done <"$STATE/managed.units"
+    fi
+    if [[ -z "$changed$stopped" ]]; then
+        say DONE "drift check: every protection is as hardened"
+        return 0
+    fi
+    say ATTENTION "drift: changed files: ${changed:-none}; stopped services: ${stopped:-none}"
+    notify critical "A protection changed" "Changed since hardening: ${changed:-no files}${stopped:+; stopped: $stopped}. Re-run fedora-harden.sh, or accept the change by re-running it."
+    return 1
+}
+
+cmd_boxes() {
+    wait_for_quiet || return 0
+    local u
+    for u in $(human_users); do
+        if command -v distrobox >/dev/null; then
+            runuser -u "$u" -- distrobox upgrade --all >/dev/null 2>&1 && say DONE "upgraded the boxes of $u"
+        elif command -v toolbox >/dev/null; then
+            local c
+            for c in $(runuser -u "$u" -- podman ps -a --filter label=com.github.containers.toolbox=true --format '{{.Names}}' 2>/dev/null); do
+                runuser -u "$u" -- toolbox run -c "$c" sudo dnf -y -q upgrade >/dev/null 2>&1 && say DONE "upgraded toolbox $c of $u"
+            done
+        fi
+    done
+}
+
+cmd_devclean() {
+    wait_for_quiet || return 0
+    local u
+    for u in $(human_users); do
+        runuser -u "$u" -- podman system prune -f --filter until=720h >/dev/null 2>&1 && say DONE "removed old container build cache of $u"
+    done
+}
+
+cmd_flatpak_perms() {
+    command -v flatpak >/dev/null || return 0
+    local now="$STATE/flatpak-perms.new" old="$STATE/flatpak-perms" app diff
+    : >"$now"
+    for app in $(flatpak list --app --columns=application 2>/dev/null); do
+        printf '== %s\n%s\n' "$app" "$(flatpak info --show-permissions "$app" 2>/dev/null)" >>"$now"
+    done
+    if [[ -f "$old" ]] && ! diff -q "$old" "$now" >/dev/null; then
+        diff="$(diff "$old" "$now" | grep '^>' | head -5 | tr '\n' ' ')"
+        say ATTENTION "Flatpak permissions changed: $diff"
+        notify normal "App permissions changed" "An app update changed what it may access. Review in Flatseal. ($diff)"
+    else
+        say DONE "Flatpak permissions unchanged"
+    fi
+    mv -f "$now" "$old"
+}
+
+cmd_summary() {
+    local since out done=0 attention=0 line open=0 dir d
+    since="$(date -d '7 days ago' '+%F')"
+    out="$STATE/summary-$(date +%F).txt"
+    {
+        printf 'fedora-harden weekly summary, %s\n\n' "$(date '+%F')"
+        printf 'Done this week:\n'
+        while IFS= read -r line; do
+            case "$line" in
+            DONE*) ((++done)) && printf '  - %s\n' "${line#DONE }" ;;
+            esac
+        done < <(journalctl -t fedora-harden-routine --since "$since" -o cat --no-pager 2>/dev/null)
+        printf '\nNeeds you:\n'
+        while IFS= read -r line; do
+            case "$line" in
+            ATTENTION*) ((++attention)) && printf '  - %s\n' "${line#ATTENTION }" ;;
+            esac
+        done < <(journalctl -t fedora-harden-routine --since "$since" -o cat --no-pager 2>/dev/null)
+        dir=""
+        for d in /root/harden-backups-*/; do # glob order is by date; the last wins
+            [[ -f "${d}.followups" ]] && dir="$d"
+        done
+        if [[ -n "$dir" && -s "$dir.followups" ]]; then
+            open="$(grep -c . "$dir.followups")"
+            printf '\nOpen follow-ups from the last hardening run (%s): sudo fedora-harden.sh --resume\n' "$open"
+            grep -E '\|HIGH\|' "$dir.followups" | head -5 | awk -F'|' '{print "  - [HIGH] " $4}'
+        fi
+        review_due && printf '\n%s\n' "$(review_text)"
+    } >"$out"
+    chmod 600 "$out"
+    local -a old=()
+    mapfile -t old < <(printf '%s\n' "$STATE"/summary-*.txt | sort -r | tail -n +9) # keep 8 weeks
+    ((${#old[@]})) && rm -f -- "${old[@]}"
+    say NOTE "weekly summary: $done done, $attention need attention, $open open follow-ups ($out)"
+    notify normal "Weekly summary" "$done done, $((attention + open)) need you. Details: sudo less $out"
+    if review_due; then
+        notify normal "Time for a review" "$(review_text)"
+        date +%s >"$STATE/review-notified"
+    fi
+}
+
+# Relevance review: every 90 days, compare the saved use cases with what the machine
+# shows now, and point out automations that had no effect.
+review_due() {
+    local reviewed=0 notified=0 now
+    now="$(date +%s)"
+    reviewed="$(sed -n 's/^REVIEWED=//p' "$PROFILE" 2>/dev/null)"
+    reviewed="$(date -d "${reviewed:-1970-01-01}" +%s 2>/dev/null || echo 0)"
+    [[ -f "$STATE/review-notified" ]] && notified="$(cat "$STATE/review-notified")"
+    ((now - reviewed > 90 * 86400 && now - notified > 30 * 86400))
+}
+review_text() {
+    local saved detected msg freed
+    saved="$(sed -n 's/^USE_CASES=//p' "$PROFILE" 2>/dev/null | tr -d '"')"
+    detected="$(cmd_detect)"
+    msg="Review your routine (sudo fedora-harden.sh --only 19)."
+    if [[ "$(tr ' ' '\n' <<<"$saved" | awk 'NF' | sort -u)" != "$(tr ' ' '\n' <<<"$detected" | awk 'NF' | sort -u)" ]]; then
+        msg+=" Saved use cases: $saved; this machine now looks like: $detected."
+    fi
+    if [[ -s "$STATE/cleanup.stats" ]]; then
+        freed="$(awk -v t="$(($(date +%s) - 90 * 86400))" '$1 > t {s += $2} END {print s + 0}' "$STATE/cleanup.stats")"
+        ((freed == 0)) && msg+=" Cleanup freed nothing in 90 days; it could be turned off."
+    fi
+    printf '%s' "$msg"
+}
+
+cmd_notify_failed() {
+    local unit="$1"
+    say ATTENTION "$unit failed: journalctl -u $unit"
+    notify critical "Needs attention: ${unit%.service}" "$(journalctl -u "$unit" -n 2 -o cat --no-pager 2>/dev/null | tr '\n' ' ') — details: journalctl -u $unit"
+}
+
+# ── Home snapshots and copies (section 20) ──────────────────────────────────────
+# Config (/etc/fedora-harden/snapshots): BACKEND=snapper|btrfs|rsync, HOME_DIR=,
+# TARGET= (rsync copies), EXCLUDES= (space-separated, relative to HOME_DIR).
+SNAPCONF=/etc/fedora-harden/snapshots
+snap_conf() { sed -n "s/^$1=//p" "$SNAPCONF" 2>/dev/null | tr -d '"'; }
+
+# Activity: the hourly run records whether anyone is actively using the machine;
+# the average over 14 days picks how often to snapshot.
+record_activity() {
+    local sid
+    while read -r sid _; do
+        [[ -n "$sid" ]] || continue
+        [[ "$(loginctl show-session "$sid" -p Active --value 2>/dev/null)" == yes ]] || continue
+        [[ "$(loginctl show-session "$sid" -p Class --value 2>/dev/null)" == user ]] || continue
+        date +%s >>"$STATE/activity"
+        break
+    done < <(loginctl list-sessions --no-legend 2>/dev/null)
+    local cutoff=$(($(date +%s) - 14 * 86400))
+    [[ -f "$STATE/activity" ]] && awk -v c="$cutoff" '$1 > c' "$STATE/activity" >"$STATE/activity.new" &&
+        mv -f "$STATE/activity.new" "$STATE/activity"
+}
+activity_tier() { # hourly (≥6 active h/day), regular (1–6), light (<1)
+    local hours=0
+    [[ -f "$STATE/activity" ]] && hours="$(wc -l <"$STATE/activity")"
+    local per_day=$((hours / 14))
+    if ((per_day >= 6)); then
+        echo hourly
+    elif ((per_day >= 1)); then
+        echo regular
+    else
+        echo light
+    fi
+}
+tier_interval() { case "$1" in hourly) echo 3600 ;; regular) echo 21600 ;; *) echo 86400 ;; esac }
+
+home_free_pct() { df --output=pcent "$1" 2>/dev/null | tail -1 | tr -dc 0-9; }
+
+# Change log: a short note of what changed, kept next to each snapshot or copy.
+write_changes() { # write_changes <file> <list of changed paths on stdin>
+    local out="$1" n
+    awk -F/ 'NF >= 3 {print $1 "/" $2 "/" $3} NF < 3 {print}' | sort | uniq -c | sort -rn >"$out.tmp"
+    n="$(awk '{s += $1} END {print s + 0}' "$out.tmp")"
+    {
+        printf 'changed files: %s\ntop folders:\n' "$n"
+        head -10 "$out.tmp"
+    } >"$out"
+    rm -f "$out.tmp"
+    chmod 600 "$out"
+    echo "$n"
+}
+
+# thin <dir> — keep the newest 24, the newest per day for 7 days and per ISO week
+# for 4 weeks; delete the rest (names are YYYYmmdd-HHMMSS).
+thin() {
+    local dir="$1" name keep_recent=24 i=0
+    declare -A keep=() days=() weeks=()
+    while read -r name; do
+        ((++i))
+        local ts d w
+        ts="$(date -d "${name:0:8} ${name:9:2}:${name:11:2}" +%s 2>/dev/null)" || continue
+        d="$(date -d "@$ts" +%F)"
+        w="$(date -d "@$ts" +%G-%V)"
+        ((i <= keep_recent)) && keep[$name]=1
+        if [[ -z "${days[$d]:-}" && ${#days[@]} -lt 7 ]]; then
+            days[$d]=1
+            keep[$name]=1
+        fi
+        if [[ -z "${weeks[$w]:-}" && ${#weeks[@]} -lt 4 ]]; then
+            weeks[$w]=1
+            keep[$name]=1
+        fi
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n' | sort -r)
+    while read -r name; do
+        [[ -n "${keep[$name]:-}" ]] && continue
+        remove_snapshot "$dir/$name"
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n')
+}
+remove_snapshot() {
+    case "$(snap_conf BACKEND)" in
+    btrfs) btrfs subvolume delete "$1" >/dev/null 2>&1 ;;
+    *) rm -rf --one-file-system -- "$1" ;;
+    esac
+    rm -f -- "$1.changes"
+}
+
+cmd_snapshot() {
+    [[ -f "$SNAPCONF" ]] || return 0
+    record_activity
+    local backend home tier interval last=0 now stamp
+    backend="$(snap_conf BACKEND)" home="$(snap_conf HOME_DIR)"
+    tier="$(activity_tier)"
+    if [[ "$tier" != "$(cat "$STATE/snapshot-tier" 2>/dev/null)" ]]; then
+        say NOTE "snapshot frequency now: $tier (from how actively this machine is used)"
+        echo "$tier" >"$STATE/snapshot-tier"
+    fi
+    interval="$(tier_interval "$tier")"
+    now="$(date +%s)"
+    [[ -f "$STATE/snapshot-last" ]] && last="$(cat "$STATE/snapshot-last")"
+    ((now - last >= interval)) || return 0
+    # Space guard: never let snapshots push the disk under 15% free.
+    local target="$home" pct
+    [[ "$backend" == rsync ]] && target="$(snap_conf TARGET)"
+    pct="$(home_free_pct "$target")"
+    if [[ -n "$pct" ]] && ((pct >= 85)); then
+        say ATTENTION "snapshot skipped: $target is ${pct}% full"
+        notify normal "Snapshot skipped" "$target is ${pct}% full; old snapshots are being removed first."
+        prune_for_space
+        return 0
+    fi
+    if [[ "$backend" != rsync ]] && ! btrfs subvolume show "$home" >/dev/null 2>&1; then
+        say NOTE "home snapshots start after the next boot (home becomes a subvolume then)"
+        return 0
+    fi
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    case "$backend" in
+    snapper) ensure_snapper "$home" && snapshot_snapper "$stamp" ;;
+    btrfs) snapshot_btrfs "$home" "$stamp" ;;
+    rsync) snapshot_rsync "$home" "$(snap_conf TARGET)" "$stamp" ;;
+    esac || return 1
+    echo "$now" >"$STATE/snapshot-last"
+}
+
+snapshot_btrfs() {
+    local home="$1" stamp="$2" dir="$1/.snapshots" lastgen gen n
+    if [[ ! -d "$dir" ]]; then
+        btrfs subvolume create "$dir" >/dev/null && chmod 700 "$dir"
+    fi
+    gen="$(btrfs subvolume show "$home" 2>/dev/null | awk '/Generation:/ {print $2; exit}')"
+    lastgen="$(cat "$STATE/snapshot-gen" 2>/dev/null || echo 0)"
+    if [[ -n "$gen" && "$gen" == "$lastgen" ]]; then
+        return 0 # nothing changed since the last snapshot
+    fi
+    btrfs subvolume snapshot -r "$home" "$dir/$stamp" >/dev/null || {
+        say ATTENTION "btrfs snapshot of $home failed"
+        return 1
+    }
+    if [[ "$lastgen" == 0 ]]; then # first snapshot: nothing to compare with
+        printf 'initial snapshot\n' >"$dir/$stamp.changes"
+        chmod 600 "$dir/$stamp.changes"
+        n=initial
+    else
+        n="$(btrfs subvolume find-new "$home" "$lastgen" 2>/dev/null | awk '/^inode/ {print $NF}' | write_changes "$dir/$stamp.changes")"
+    fi
+    echo "$gen" >"$STATE/snapshot-gen"
+    say DONE "home snapshot $stamp ($n changed files)"
+    thin "$dir"
+}
+
+ensure_snapper() { # Snapper's own config for home; it thins to 24 recent, 7 daily, 4 weekly
+    snapper -c home get-config >/dev/null 2>&1 && return 0
+    snapper -c home create-config "$1" >/dev/null 2>&1 || {
+        say ATTENTION "snapper could not set up home snapshots"
+        return 1
+    }
+    snapper -c home set-config TIMELINE_CREATE=no TIMELINE_CLEANUP=yes TIMELINE_LIMIT_HOURLY=24 \
+        TIMELINE_LIMIT_DAILY=7 TIMELINE_LIMIT_WEEKLY=4 TIMELINE_LIMIT_MONTHLY=0 TIMELINE_LIMIT_YEARLY=0 >/dev/null 2>&1
+}
+
+snapshot_snapper() {
+    local stamp="$1" num prev n
+    prev="$(snapper -c home --csvout list --columns number 2>/dev/null | tail -1)"
+    num="$(snapper -c home create -c timeline -d "fedora-harden $stamp" -p 2>/dev/null)" || {
+        say ATTENTION "snapper snapshot of home failed"
+        return 1
+    }
+    if [[ -n "$prev" && "$prev" != 0 && "$prev" != number ]]; then
+        n="$(snapper -c home status "$prev..$num" 2>/dev/null | awk '{print $2}' | write_changes "$STATE/snapper-$num.changes")"
+        if [[ "$n" == 0 ]]; then
+            snapper -c home delete "$num" >/dev/null 2>&1 # nothing changed: keep the older one
+            rm -f "$STATE/snapper-$num.changes"
+            return 0
+        fi
+    fi
+    say DONE "home snapshot $num via snapper (${n:-first} changed files)"
+    snapper -c home cleanup timeline >/dev/null 2>&1
+}
+
+snapshot_rsync() {
+    local home="$1" target="$2" stamp="$3" prev excl=() e n
+    mkdir -p "$target"
+    chmod 700 "$target"
+    for e in $(snap_conf EXCLUDES); do excl+=(--exclude "/$e"); done
+    prev="$(find "$target" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n' | sort | tail -1)"
+    local -a link=()
+    [[ -n "$prev" ]] && link=(--link-dest "$target/$prev")
+    # Nothing changed since the last copy: skip it.
+    # Extended attributes are kept, but not security labels: the copy location has
+    # its own, and some file systems cannot store them.
+    local -a opts=(-aHAX --filter='-x security.*' --delete)
+    if [[ -n "$prev" ]] && [[ -z "$(rsync "${opts[@]}" -n "${excl[@]}" --out-format='%n' "$home/" "$target/$prev/" 2>/dev/null | grep -v '/$' | head -1)" ]]; then
+        return 0
+    fi
+    local rc=0
+    rsync "${opts[@]}" "${excl[@]}" "${link[@]}" --out-format='%n' "$home/" "$target/$stamp/" >"$STATE/rsync.out" 2>"$STATE/rsync.err" || rc=$?
+    if ((rc != 0 && rc != 24)); then # 24: files vanished while copying (normal in a home folder)
+        say ATTENTION "copy of $home to $target failed: $(tail -1 "$STATE/rsync.err")"
+        return 1
+    fi
+    n="$(grep -v '/$' "$STATE/rsync.out" | write_changes "$target/$stamp.changes")"
+    say DONE "home copy $stamp to $target ($n changed files)"
+    thin "$target"
+}
+
+prune_for_space() {
+    local backend dir oldest
+    backend="$(snap_conf BACKEND)"
+    case "$backend" in
+    snapper) snapper -c home cleanup timeline >/dev/null 2>&1 ;;
+    btrfs | rsync)
+        dir="$(snap_conf HOME_DIR)/.snapshots"
+        [[ "$backend" == rsync ]] && dir="$(snap_conf TARGET)"
+        oldest="$(find "$dir" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n' | sort | head -1)"
+        [[ -n "$oldest" ]] && remove_snapshot "$dir/$oldest" && say NOTE "removed oldest snapshot $oldest to free space"
+        ;;
+    esac
+}
+
+# Index of the home folder: written once, then updated with notes when it changes.
+# Large, replaceable folders are flagged; they are excluded only with approval.
+REPLACEABLE='\.cache$|/\.local/share/containers$|/\.local/share/Steam$|/steamapps$|/\.local/share/libvirt$|/\.local/share/gnome-boxes$|/\.var/app/[^/]+/cache$'
+cmd_index() {
+    local home index="$STATE/home-index.tsv" new="$STATE/home-index.new" notes="$STATE/home-index.notes"
+    home="$(snap_conf HOME_DIR)"
+    [[ -n "$home" ]] || return 0
+    wait_for_quiet || return 0
+    du -x -k --max-depth=4 "$home" 2>/dev/null | awk -v min=$((5 * 1024 * 1024)) '$1 >= min' |
+        while read -r kb path; do
+            local class=keep
+            [[ "$path" =~ $REPLACEABLE ]] && class=replaceable
+            printf '%s\t%s\t%s\n' "${path#"$home"/}" "$((kb / 1024 / 1024))" "$class"
+        done | sort >"$new"
+    if [[ ! -f "$index" ]]; then
+        mv -f "$new" "$index"
+        printf '%s indexed %s folder(s) of 5 GB or more\n' "$(date +%F)" "$(wc -l <"$index")" >>"$notes"
+        say NOTE "home index created"
+        return 0
+    fi
+    local path size class old
+    while IFS=$'\t' read -r path size class; do
+        old="$(awk -F'\t' -v p="$path" '$1 == p {print $2}' "$index")"
+        if [[ -z "$old" ]]; then
+            printf '%s new: %s (%s GB, %s)\n' "$(date +%F)" "$path" "$size" "$class" >>"$notes"
+            [[ "$class" == replaceable ]] && say ATTENTION "new large replaceable folder $path ($size GB) — exclude it from snapshots: sudo fedora-harden.sh --only 20"
+        elif ((size > old + old / 4 + 1)); then
+            printf '%s grew: %s %s → %s GB\n' "$(date +%F)" "$path" "$old" "$size" >>"$notes"
+        fi
+    done <"$new"
+    mv -f "$new" "$index"
+    chmod 600 "$index" "$notes" 2>/dev/null
+}
+
+# exclude-convert — at boot, before anyone logs in, turn approved folders into their
+# own subvolumes so Btrfs snapshots leave them out. Verified before the old copy goes.
+cmd_exclude_convert() {
+    local queue="$STATE/exclude-queue" home path new old
+    [[ -s "$queue" ]] || return 0
+    home="$(snap_conf HOME_DIR)"
+    local dir
+    while read -r path; do
+        [[ -n "$path" ]] || continue
+        # "." is the home folder itself (Btrfs installs where home is a plain folder)
+        dir="$home/$path"
+        [[ "$path" == . ]] && dir="$home"
+        [[ -d "$dir" ]] || continue
+        btrfs subvolume show "$dir" >/dev/null 2>&1 && continue # already one
+        new="$dir.fh-new" old="$dir.fh-old"
+        if btrfs subvolume create "$new" >/dev/null &&
+            chown --reference="$dir" "$new" && chmod --reference="$dir" "$new" &&
+            { chcon --reference="$dir" "$new" 2>/dev/null || true; } &&
+            cp -a --reflink=always "$dir/." "$new/" &&
+            [[ "$(find "$dir" | wc -l)" == "$(find "$new" | wc -l)" ]] &&
+            mv "$dir" "$old" && mv "$new" "$dir"; then
+            rm -rf --one-file-system -- "$old"
+            if [[ "$path" == . ]]; then
+                say DONE "home is now its own subvolume; snapshots start"
+            else
+                say DONE "excluded $path from snapshots (now its own subvolume)"
+            fi
+        else
+            [[ -d "$new" ]] && btrfs subvolume delete "$new" >/dev/null 2>&1
+            [[ -d "$old" && ! -e "$dir" ]] && mv "$old" "$dir"
+            say ATTENTION "could not make $path its own subvolume; nothing was changed"
+        fi
+    done <"$queue"
+    : >"$queue"
+}
+
+case "${1:-}" in
+detect) cmd_detect ;;
+snapshot) cmd_snapshot ;;
+index) cmd_index ;;
+exclude-convert) cmd_exclude_convert ;;
+cleanup) cmd_cleanup ;;
+scrub) cmd_scrub ;;
+diskspace) cmd_diskspace ;;
+drift) cmd_drift ;;
+boxes) cmd_boxes ;;
+devclean) cmd_devclean ;;
+flatpak-perms) cmd_flatpak_perms ;;
+summary) cmd_summary ;;
+notify-failed) cmd_notify_failed "${2:?unit}" ;;
+*)
+    sed -n '2,18p' "$0"
+    exit 2
+    ;;
+esac

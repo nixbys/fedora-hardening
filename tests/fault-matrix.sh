@@ -22,7 +22,6 @@ shift 2
 GROUPS_WANTED=("$@")
 ((${#GROUPS_WANTED[@]})) || GROUPS_WANTED=(args env net pkg fs interrupt)
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
-SCRIPT="$ROOT/fedora-harden.sh"
 IMG_QUICK="localhost/fedora-harden:test-only-f$REL"
 IMG_FULL="localhost/fedora-harden:test-f$REL"
 RUN_TIMEOUT="${FAULT_RUN_TIMEOUT:-1800}" # a run longer than this counts as a hang
@@ -48,14 +47,15 @@ verdict() { # verdict <name> <0|1 ok> [detail]
 want() { [[ " ${GROUPS_WANTED[*]} " == *" $1 "* ]]; }
 
 # clean_log <log> — no raw bash errors from the script, no unexpected abort.
-# "fedora-harden.sh: line N:" is bash reporting an error inside the script.
+# "fedora-harden.sh: line N:" (or lib/..., sections/...) is bash reporting an error
+# inside the script.
 clean_log() {
-    ! grep -qE 'fedora-harden\.sh: line [0-9]+:|unbound variable|syntax error near|bad substitution|Aborted at line' "$1"
+    ! grep -qE '(fedora-harden|lib/[0-9]+-[a-z-]+|sections/[0-9]+-[a-z-]+)\.sh: line [0-9]+:|unbound variable|syntax error near|bad substitution|Aborted at line' "$1"
 }
-bash_errors() { grep -E 'fedora-harden\.sh: line [0-9]+:|unbound variable|Aborted at line' "$1" | head -3 | tr '\n' ' '; }
+bash_errors() { grep -E '(fedora-harden|lib/[0-9]+-[a-z-]+|sections/[0-9]+-[a-z-]+)\.sh: line [0-9]+:|unbound variable|Aborted at line' "$1" | head -3 | tr '\n' ' '; }
 
 # quick <log> [podman args...] -- <script args...> — run in a throwaway no-systemd container
-# (script at /opt/fh, readable by any user)
+# (project at /opt/fedora-hardening, readable by any user)
 quick() {
     local log="$1" pargs=() rc=0
     shift
@@ -64,8 +64,8 @@ quick() {
         shift
     done
     shift
-    timeout "$RUN_TIMEOUT" podman run --rm -v "$SCRIPT:/opt/fh/fedora-harden.sh:ro,z" "${pargs[@]}" \
-        --entrypoint /opt/fh/fedora-harden.sh "$IMG_QUICK" "$@" </dev/null >"$log" 2>&1 || rc=$?
+    timeout "$RUN_TIMEOUT" podman run --rm -v "$ROOT:/opt/fedora-hardening:ro,z" "${pargs[@]}" \
+        --entrypoint /opt/fedora-hardening/fedora-harden.sh "$IMG_QUICK" "$@" </dev/null >"$log" 2>&1 || rc=$?
     return "$rc"
 }
 # quick_sh <log> [podman args...] -- <bash script> — run a bash script in the quick image
@@ -77,19 +77,19 @@ quick_sh() {
         shift
     done
     shift
-    timeout "$RUN_TIMEOUT" podman run --rm -v "$SCRIPT:/opt/fh/fedora-harden.sh:ro,z" "${pargs[@]}" \
+    timeout "$RUN_TIMEOUT" podman run --rm -v "$ROOT:/opt/fedora-hardening:ro,z" "${pargs[@]}" \
         --entrypoint /bin/bash "$IMG_QUICK" -c "$1" </dev/null >"$log" 2>&1 || rc=$?
     return "$rc"
 }
 
 # boot <name> [podman args...] — systemd container from the full image, script at
-# /opt/fh/fedora-harden.sh (so /root can be replaced in filesystem faults)
+# /opt/fedora-hardening/fedora-harden.sh (so /root can be replaced in filesystem faults)
 boot() {
     local name="$1" state=""
     shift
     CONTAINERS+=("$name")
     podman run -d --systemd=always --cap-add NET_ADMIN,NET_RAW --name "$name" --hostname fault-test \
-        --memory 3g --memory-swap 3g -v "$SCRIPT:/opt/fh/fedora-harden.sh:ro,z" "$@" \
+        --memory 3g --memory-swap 3g -v "$ROOT:/opt/fedora-hardening:ro,z" "$@" \
         "$IMG_FULL" >/dev/null 2>"$OUT/$name.boot.log" || return 1
     for _ in $(seq 1 60); do
         state="$(podman exec "$name" systemctl is-system-running 2>/dev/null || true)"
@@ -114,7 +114,7 @@ sx() { # sx <name> <command...>
 harden() {
     local name="$1" log="$2" rc=0
     shift 2
-    timeout "$RUN_TIMEOUT" podman exec "$name" /opt/fh/fedora-harden.sh "$@" </dev/null >"$log" 2>&1 || rc=$?
+    timeout "$RUN_TIMEOUT" podman exec "$name" /opt/fedora-hardening/fedora-harden.sh "$@" </dev/null >"$log" 2>&1 || rc=$?
     return "$rc"
 }
 etc_snap() { # etc_snap <name> <outfile> — as tests/run-suite.sh etc_snapshot
@@ -175,7 +175,7 @@ if want args; then
     verdict "args: --user for a missing account is refused (exit 2, got $rc)" \
         "$( ((rc == 2)) && grep -qi 'nosuchuser' "$l/user-missing.log" && echo 1 || echo 0)"
     rc=0
-    quick_sh "$l/user-nohome.log" -- 'useradd -M nohome && /opt/fh/fedora-harden.sh --yes --dry-run --user nohome' || rc=$?
+    quick_sh "$l/user-nohome.log" -- 'useradd -M nohome && /opt/fedora-hardening/fedora-harden.sh --yes --dry-run --user nohome' || rc=$?
     verdict "args: --user without a home directory runs cleanly (exit $rc)" \
         "$( ((rc == 0)) && clean_log "$l/user-nohome.log" && echo 1 || echo 0)" "$(bash_errors "$l/user-nohome.log")"
     rc=0
@@ -213,32 +213,32 @@ if want env; then
             "$( ((rc == 0)) && clean_log "$l/locale-$loc.log" && echo 1 || echo 0)" "$(bash_errors "$l/locale-$loc.log")"
     done
     rc=0
-    quick_sh "$l/no-term.log" -- 'env -u TERM -u LANG -u HOME PATH=/usr/bin /opt/fh/fedora-harden.sh --yes --dry-run' || rc=$?
+    quick_sh "$l/no-term.log" -- 'env -u TERM -u LANG -u HOME PATH=/usr/bin /opt/fedora-hardening/fedora-harden.sh --yes --dry-run' || rc=$?
     verdict "env: no TERM, LANG or HOME; PATH=/usr/bin (exit $rc)" \
         "$( ((rc == 0)) && clean_log "$l/no-term.log" && echo 1 || echo 0)" "$(bash_errors "$l/no-term.log")"
     rc=0
-    quick_sh "$l/closed-stdout.log" -- '/opt/fh/fedora-harden.sh --yes --dry-run >&- 2>/tmp/err; rc=$?
+    quick_sh "$l/closed-stdout.log" -- '/opt/fedora-hardening/fedora-harden.sh --yes --dry-run >&- 2>/tmp/err; rc=$?
         cat /tmp/err; ls /var/log/fedora-harden/harden-*.log >/dev/null && echo LOG-WRITTEN; exit $rc' || rc=$?
     verdict "env: closed stdout does not break the run (exit $rc)" \
         "$( ((rc == 0)) && grep -q LOG-WRITTEN "$l/closed-stdout.log" && echo 1 || echo 0)" "$(tail -2 "$l/closed-stdout.log" | tr '\n' ' ')"
     rc=0
     quick_sh "$l/paths.log" -- 'set -e
-        mkdir -p "/opt/my scripts" && cp /opt/fh/fedora-harden.sh "/opt/my scripts/" && chmod +x "/opt/my scripts/fedora-harden.sh"
-        ln -s "/opt/my scripts/fedora-harden.sh" /usr/local/bin/harden
-        "/opt/my scripts/fedora-harden.sh" --yes --dry-run --only 21 >/tmp/a 2>&1
+        mkdir -p "/opt/my scripts" && cp -a /opt/fedora-hardening "/opt/my scripts/"
+        ln -s "/opt/my scripts/fedora-hardening/fedora-harden.sh" /usr/local/bin/harden
+        "/opt/my scripts/fedora-hardening/fedora-harden.sh" --yes --dry-run --only 21 >/tmp/a 2>&1
         harden --yes --dry-run --only 21 >/tmp/b 2>&1
-        bash /opt/fh/fedora-harden.sh --yes --dry-run --only 21 >/tmp/c 2>&1
+        bash /opt/fedora-hardening/fedora-harden.sh --yes --dry-run --only 21 >/tmp/c 2>&1
         cat /tmp/a /tmp/b /tmp/c' || rc=$?
     verdict "env: path with spaces, symlink and 'bash script' invocations (exit $rc)" \
         "$( ((rc == 0)) && clean_log "$l/paths.log" && echo 1 || echo 0)" "$(bash_errors "$l/paths.log")"
     rc=0
-    quick_sh "$l/sh.log" -- 'sh /opt/fh/fedora-harden.sh --yes --dry-run --only 21' || rc=$?
+    quick_sh "$l/sh.log" -- 'sh /opt/fedora-hardening/fedora-harden.sh --yes --dry-run --only 21' || rc=$?
     verdict "env: 'sh script' either works or refuses clearly (exit $rc)" \
         "$(clean_log "$l/sh.log" && echo 1 || echo 0)" "$(tail -2 "$l/sh.log" | tr '\n' ' ')"
     # A permissive umask must not leave world-writable files behind.
     rc=0
     quick_sh "$l/umask.log" -- 'umask 000; touch /tmp/marker; sleep 1
-        /opt/fh/fedora-harden.sh --yes --only 8,22 --user testuser >/tmp/run 2>&1; rc=$?
+        /opt/fedora-hardening/fedora-harden.sh --yes --only 8,22 --user testuser >/tmp/run 2>&1; rc=$?
         cat /tmp/run; echo "--- world-writable files created by the run:"
         find /etc /root /var/log/fedora-harden -xdev -newer /tmp/marker -type f -perm -o+w
         exit $rc' || rc=$?
@@ -433,9 +433,9 @@ if want interrupt; then
             continue
         fi
         etc_snap "$n" "$l/$sig.etc0"
-        podman exec "$n" /opt/fh/fedora-harden.sh --yes --user testuser </dev/null >"$l/$sig-run1.log" 2>&1 &
+        podman exec "$n" /opt/fedora-hardening/fedora-harden.sh --yes --user testuser </dev/null >"$l/$sig-run1.log" 2>&1 &
         sleep "$after"
-        sx "$n" pkill "-$sig" -f '/opt/fh/fedora-harden.sh' >/dev/null 2>&1
+        sx "$n" pkill "-$sig" -f '/opt/fedora-hardening/fedora-harden.sh' >/dev/null 2>&1
         wait
         # SIGKILL cannot be trapped: a dnf transaction already running finishes on
         # its own. Allow that, but nothing may keep running after it.
@@ -467,7 +467,7 @@ if want interrupt; then
     if boot "$n"; then
         etc_snap "$n" "$l/concurrent.etc0"
         # A is a full run (several minutes); B starts while A is still working.
-        podman exec "$n" /opt/fh/fedora-harden.sh --yes --user testuser </dev/null >"$l/concurrent-a.log" 2>&1 &
+        podman exec "$n" /opt/fedora-hardening/fedora-harden.sh --yes --user testuser </dev/null >"$l/concurrent-a.log" 2>&1 &
         sleep 15
         rc_b=0
         harden "$n" "$l/concurrent-b.log" --yes --only 8,9,22 --user testuser || rc_b=$?
