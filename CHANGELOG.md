@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — your routine (section 24)
+
+- **New section 24:** detects how the machine is used (everyday, gaming, creative,
+  development, laptop), asks once or takes `--profile`, and adds only the timers those
+  use cases need: monthly cleanup, daily free-space check, monthly Btrfs scrub, weekly
+  drift check of the hardening, weekly summary, box upgrades, build-cache cleanup and
+  an optional Flatpak permission watch; plus a journal size cap, `smartd`, an optional
+  battery charge limit and a layer audit on image-based systems.
+- **Notifications and summary:** a desktop notification only when something needs the
+  person; a weekly summary of what was done and what is still open.
+- **Relevance review:** every 90 days the summary compares the saved use cases with
+  what the machine shows now and points out automations that had no effect.
+- Heavy jobs wait for mains power and for a game to end. Everything is undone by
+  `--rollback`.
+
 ## Unreleased — journal logging, honest diagnosis, WireGuard kill switch
 
 - **Logs in the system journal:** every message goes to the journal with the session
