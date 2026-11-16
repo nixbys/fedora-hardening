@@ -92,7 +92,10 @@ namespace.
 
 The full tier also checks that the run logs to the journal under its session (and
 writes no log file), that `--report` writes a page with the changes, follow-ups and
-live checks, and that `--resume` brings back the last session's follow-ups.
+live checks, and that `--resume` brings back the last session's follow-ups. `--score`
+reads the live system (the firewall is reported on) and creates no session, and the
+report includes the scorecard. A running Avahi gets the section 21 sandbox drop-in
+and keeps running; `--rollback all` removes the drop-in and Avahi still runs.
 
 Section 19 runs with `--profile everyday,dev`: the profile is saved, the timers are
 enabled, the helper's drift check is clean after the run and catches a changed managed
