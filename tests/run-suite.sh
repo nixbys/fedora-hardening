@@ -7,7 +7,7 @@
 #           otherwise inside the matching "lint" image built from Dockerfile.test
 #   quick   runs in the fedora-minimal:N "test-only" image
 #   full    runs in the fedora-minimal:N systemd "base" image
-#   gui     runs in the fedora:N "gui" image (Xvfb + zenity + kdialog)
+#   gui     runs in the fedora:N "gui" image (Xvfb + GTK4/libadwaita for Python)
 #   vm      installs real Fedora Atomic images of release N (Silverblue, Universal
 #           Blue) on a virtual disk (bootc, in a Fedora CoreOS VM), boots them with KVM
 #   fault   runs in the quick and full images of release N
@@ -767,7 +767,7 @@ tier_full() {
 }
 
 # ---------------------------------------------------------------------------
-# Tier: gui (Xvfb + zenity)
+# Tier: gui (Xvfb + the GTK4 window)
 # ---------------------------------------------------------------------------
 tier_gui() {
     tier_header gui
