@@ -520,7 +520,7 @@ mcp_server_fedora_harden.py    # optional, contributor-only: exposes lint/test w
                                # workflow-security (actionlint + zizmor)
 SECURITY.md / THREAT_MODEL.md  # responsible-use policy and trust boundary
 DEVELOPMENT.md                 # contributor setup, conventions, CI, keeping up with guidance
-TESTING.md / QUICKSTART-TESTING.md  # how to exercise the script in Podman
+TESTING.md                          # how to exercise the script in Podman
 ```
 
 If you're only here to harden a machine, `fedora-harden.sh` is the only file

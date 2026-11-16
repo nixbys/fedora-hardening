@@ -43,7 +43,6 @@ RUN set -e && \
         selinux-policy \
         audit \
         aide \
-        rkhunter \
         openssh-server \
         openssh-clients \
         cronie \
