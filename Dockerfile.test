@@ -4,11 +4,11 @@
 #        ./test-in-podman.sh --quick --dry-run  (no-systemd variant)
 #
 # Version pinning (hadolint DL3041) is intentionally not used: these images track the
-# current Fedora 44 package set so the script is tested against what users will install.
+# current Fedora package set so the script is tested against what users will install.
 # hadolint global ignore=DL3041
 
 # Fedora release under test (44, 45, ...). Every stage is built on that release.
-ARG FEDORA_VERSION=44
+ARG FEDORA_VERSION=45
 ARG FEDORA_IMAGE=registry.fedoraproject.org/fedora-minimal:${FEDORA_VERSION}
 ARG FEDORA_FULL_IMAGE=registry.fedoraproject.org/fedora:${FEDORA_VERSION}
 
@@ -116,11 +116,11 @@ ENTRYPOINT ["/bin/bash"]
 
 # ============================================================================
 # Lint/toolchain variant: the static test tier runs here so linters come from
-# Fedora 44 RPMs (same versions setup-dev.sh installs and CI uses).
+# Fedora RPMs (same versions setup-dev.sh installs and CI uses).
 # Build: podman build --target lint -f Dockerfile.test -t fedora-harden:lint .
 # ============================================================================
 FROM ${FEDORA_FULL_IMAGE} AS lint
-LABEL description="Fedora 44 lint toolchain for fedora-harden.sh"
+LABEL description="Fedora lint toolchain for fedora-harden.sh"
 
 RUN set -e && \
     dnf install -y --setopt=install_weak_deps=False \
@@ -138,8 +138,8 @@ RUN set -e && \
     dnf clean all && \
     rm -rf /var/cache/dnf/* /var/cache/libdnf5/*
 
-# shfmt: Fedora RPM where packaged (44), else the same pinned version built with
-# Fedora's Go (45+). See tests/install-shfmt.sh.
+# shfmt: the pinned version, built with
+# Fedora's Go. See tests/install-shfmt.sh.
 COPY tests/install-shfmt.sh /usr/local/sbin/install-shfmt.sh
 RUN /usr/local/sbin/install-shfmt.sh /usr/local/bin && \
     dnf clean all && \
@@ -154,7 +154,7 @@ ENTRYPOINT ["/bin/bash"]
 # Build: podman build --target gui -f Dockerfile.test -t fedora-harden:gui .
 # ============================================================================
 FROM ${FEDORA_FULL_IMAGE} AS gui
-LABEL description="Fedora 44 GUI test bed for fedora-harden.sh --gui/--gui-full"
+LABEL description="Fedora GUI test bed for fedora-harden.sh --gui"
 
 RUN set -e && \
     dnf install -y --setopt=install_weak_deps=False \
