@@ -101,7 +101,7 @@ check "no [FAIL] lines in the run" bash -c '! grep -q "^\[FAIL\]" "$1"' _ "$OUT/
 # ── Nothing from the list is layered (real rpm-ostree, container mode) ─────────
 in_box bash -c 'rpm -qa --qf "%{NAME}\n" | sort -u | comm -13 /tmp/rpm-before -' >"$OUT/layered.txt"
 echo "layered by the run: $(tr '\n' ' ' <"$OUT/layered.txt")"
-for pkg in clamav clamd clamav-update aide rkhunter openscap-scanner scap-security-guide \
+for pkg in clamav clamd clamav-update aide openscap-scanner scap-security-guide \
     setools-console buildah skopeo podman-compose mat2 yubikey-manager yubico-piv-tool toolbox; do
     check "$pkg is not layered" bash -c '! grep -qx -- "$1" "$2"' _ "$pkg" "$OUT/layered.txt"
 done

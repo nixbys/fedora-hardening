@@ -142,7 +142,7 @@ real Universal Blue desktop for the release — with systemd as PID 1 in a privi
 container, and runs sections 1, 2, 4, 5, 16, 17, 18 and 24 with nothing stubbed:
 
 - the image's own `rpm-ostree` works in container mode, so anything the run layers
-  shows up in `rpm -qa`; none of ClamAV, AIDE, rkhunter, OpenSCAP, setools, buildah,
+  shows up in `rpm -qa`; none of ClamAV, AIDE, OpenSCAP, setools, buildah,
   skopeo, podman-compose, mat2, the YubiKey CLI tools or toolbox may appear
 - Yubico Authenticator and Metadata Cleaner are installed from Flathub
 - the ClamAV quadlet is turned into a unit by Podman's generator, runs read-only,
