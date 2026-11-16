@@ -49,6 +49,22 @@ New:
   NetworkManager's connectivity check can be turned off (asked; default keep).
 - The weekly summary says when a reboot is waiting for installed updates.
 
+## Unreleased — scorecard and deep hardening
+
+- **Protection scorecard:** at the end of a run, on the `--gui` summary page, in
+  `--report`, and with the new read-only `--score`, the script checks the live
+  system (disk encryption, Secure Boot, firewall, automatic updates, SELinux, SSH,
+  DNS over TLS, home snapshots, screen lock, Flatpak restrictions, firmware HSI
+  level, admin rights as advice) and says how to fix what is not protected.
+- **Kernel boot hardening (opt-in, section 9):** `init_on_free=1`, `slab_nomerge`,
+  `page_alloc.shuffle=1`, `randomize_kstack_offset=on` via grubby or `rpm-ostree
+  kargs`; asked for, or `--kernel-hardening`; not offered for gaming (1–5% cost);
+  `--rollback` removes exactly what was added.
+- **Service sandboxing (section 21):** running CUPS and Avahi get a conservative
+  systemd sandbox drop-in, kept only if the service restarts cleanly; exposure
+  before and after is reported. sshd is left alone (its sandbox would apply to
+  every login session). `--rollback` removes the drop-ins and restarts the service.
+
 ## Unreleased — sections numbered in the order they run
 
 - **Sections are renumbered 1–24 in execution order.** The order was already chosen
