@@ -57,6 +57,13 @@
 #        --report [file]    Write an HTML report of the last session and exit
 #        --resume           Review the last session's open follow-ups and exit
 #        --wireguard-config <f> Install this WireGuard config with a kill switch (section 15)
+#        --profile <list>   Use cases for section 19: everyday,gaming,creative,dev,laptop,private
+#        --backup-target <dir> Second drive for home copies without Btrfs (section 20)
+#        --restore <file>   Reapply a recovery file (/etc/fedora-harden/machine.conf)
+#                           without questions, e.g. after a reinstall
+#        --include-setup    With --report: include the recovery file's contents
+#        --recovery-backup on|off  Copy the recovery file into the home backups
+#                           (default on; the choice is remembered)
 #        --skip <list>      Comma-separated sections to skip (e.g. 7,8,17)
 #        --only <list>      Comma-separated sections to run exclusively
 #        --list             List all section numbers & names and exit
@@ -232,10 +239,13 @@ fi
 [[ -z "$KERNEL_LABEL" ]] && KERNEL_LABEL="$(uname -r 2>/dev/null || echo unknown)"
 
 # ---------- Command-line option flags -----------------------------------------
-TARGET_USER=""   # Target username for SSH/home-dir hardening (--user)
-WG_CONFIG=""     # WireGuard config to install with kill switch (--wireguard-config)
-PROFILE_ARG=""   # Use cases for section 19 (--profile everyday,gaming,creative,dev,laptop)
-BACKUP_TARGET="" # Second drive for home copies on systems without Btrfs (--backup-target)
+TARGET_USER=""         # Target username for SSH/home-dir hardening (--user)
+WG_CONFIG=""           # WireGuard config to install with kill switch (--wireguard-config)
+PROFILE_ARG=""         # Use cases for section 19 (--profile everyday,gaming,creative,dev,laptop,private)
+RESTORE_FILE=""        # Recovery file to replay (--restore FILE)
+INCLUDE_SETUP=0        # --report also shows the recovery file's contents (--include-setup)
+RECOVERY_BACKUP_ARG="" # Copy the recovery file into the home backups: yes|no (--recovery-backup on|off)
+BACKUP_TARGET=""       # Second drive for home copies on systems without Btrfs (--backup-target)
 ROUTINE_HELPER="/usr/local/libexec/fedora-harden-routine"
 ROUTINE_ACTIVE=0 # Section 19 ran: record the managed state for the drift check
 ASSUME_YES=0     # Non-interactive mode (--yes)
@@ -2039,7 +2049,30 @@ enable_timer() {
 # In --yes mode the answer is the default: yes, unless the caller passes "no" for
 # an option that current guidance does not recommend enabling automatically.
 # Usage: confirm ["prompt text"] [yes|no]
+# Every answer is remembered for the recovery file; with --restore, a question
+# answered before gets the same answer again.
 confirm() {
+	local _q="${1:-Continue?}" _k
+	_k="$(_answer_key "$_q")"
+	if [[ -n "${RESTORE_ANSWERS[$_k]:-}" ]]; then
+		info "Answer from the recovery file ($_q): ${RESTORE_ANSWERS[$_k]}"
+		ANSWERS[$_k]="${RESTORE_ANSWERS[$_k]}"
+		ANSWER_TEXT[$_k]="$_q"
+		[[ "${RESTORE_ANSWERS[$_k]}" == yes ]]
+		return
+	fi
+	if _confirm_ask "$@"; then
+		ANSWERS[$_k]=yes
+		ANSWER_TEXT[$_k]="$_q"
+		return 0
+	fi
+	ANSWERS[$_k]=no
+	ANSWER_TEXT[$_k]="$_q"
+	return 1
+}
+
+# _confirm_ask - The question itself (--yes default, the window, or the terminal).
+_confirm_ask() {
 	local prompt="${1:-Continue?}" default="${2:-yes}"
 	if ((ASSUME_YES)); then
 		if [[ "$default" == no ]]; then
@@ -2979,6 +3012,88 @@ _apply_rollback_journal() {
 			fi
 			;;
 
+		BOX)
+			# user:tool:name — a box section 19 created (its data goes with it)
+			local bu bt bn
+			IFS=: read -r bu bt bn <<<"$detail"
+			if ((DRY_RUN)); then
+				info "Would remove the $bt box '$bn' of $bu"
+			elif runuser -u "$bu" -- "$bt" rm --force "$bn" >/dev/null 2>&1; then
+				ok "Removed the $bt box '$bn' of $bu"
+				_rjl "  [OK]   BOX_REMOVE  $detail"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not remove the $bt box '$bn' of $bu (already gone?)"
+				_rjl "  [WARN] BOX_REMOVE  $detail"
+			fi
+			;;
+
+		GROUP_ADD)
+			local gu="${detail%%:*}" gg="${detail#*:}"
+			if ((DRY_RUN)); then
+				info "Would remove $gu from group $gg"
+			elif gpasswd -d "$gu" "$gg" >/dev/null 2>&1; then
+				ok "Removed $gu from group $gg"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not remove $gu from group $gg"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		FLATPAK_SUBSET)
+			# remote:previous subset (empty = all apps)
+			local fr="${detail%%:*}" fs="${detail#*:}"
+			if ((DRY_RUN)); then
+				info "Would restore the $fr subset to '${fs:-all apps}'"
+			elif flatpak remote-modify --subset="$fs" "$fr" 2>/dev/null; then
+				ok "Flatpak remote $fr shows ${fs:-all apps} again"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not restore the $fr subset"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		AUTHSELECT_FEATURE)
+			if ((DRY_RUN)); then
+				info "Would run: authselect disable-feature $detail"
+			elif authselect disable-feature "$detail" >/dev/null 2>&1; then
+				ok "authselect feature $detail disabled"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not disable authselect feature $detail"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		LUKS_TOKEN)
+			# device:tpm2|fido2 — the unlock method section 19 enrolled; the
+			# passphrase was never touched
+			local ld="${detail%:*}" lk="${detail##*:}"
+			if ((DRY_RUN)); then
+				info "Would remove the $lk unlock from $ld"
+			elif systemd-cryptenroll --wipe-slot="$lk" "$ld" >/dev/null 2>&1; then
+				ok "Removed the $lk unlock from $ld (the passphrase still works)"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not remove the $lk unlock from $ld: sudo systemd-cryptenroll --wipe-slot=$lk $ld"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		OSTREE_INITRAMFS)
+			if ((DRY_RUN)); then
+				info "Would run: rpm-ostree initramfs --disable"
+			elif rpm-ostree initramfs --disable >/dev/null 2>&1; then
+				ok "Local initramfs regeneration turned off (applies at the next boot)"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not run rpm-ostree initramfs --disable"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
 		*)
 			warn "Unknown journal entry type '$ctype' — skipping"
 			_rjl "  [SKIP] UNKNOWN  $ctype: $detail"
@@ -3701,8 +3816,8 @@ parse_args() {
 			shift 2
 			;;
 		--profile)
-			if [[ ! "${2:-}" =~ ^(everyday|gaming|creative|dev|laptop)(,(everyday|gaming|creative|dev|laptop))*$ ]]; then
-				err "--profile expects a comma-separated list with no spaces: everyday,gaming,creative,dev,laptop"
+			if [[ ! "${2:-}" =~ ^(everyday|gaming|creative|dev|laptop|private)(,(everyday|gaming|creative|dev|laptop|private))*$ ]]; then
+				err "--profile expects a comma-separated list with no spaces: everyday,gaming,creative,dev,laptop,private"
 				exit 2
 			fi
 			PROFILE_ARG="$2"
@@ -3741,6 +3856,29 @@ parse_args() {
 		--resume)
 			RESUME_MODE=1
 			shift
+			;;
+		--restore)
+			if [[ -z "${2:-}" ]]; then
+				err "Option --restore requires a recovery file"
+				exit 2
+			fi
+			RESTORE_FILE="$2"
+			shift 2
+			;;
+		--include-setup)
+			INCLUDE_SETUP=1
+			shift
+			;;
+		--recovery-backup)
+			case "${2:-}" in
+			on) RECOVERY_BACKUP_ARG=yes ;;
+			off) RECOVERY_BACKUP_ARG=no ;;
+			*)
+				err "--recovery-backup expects on or off"
+				exit 2
+				;;
+			esac
+			shift 2
 			;;
 		--skip)
 			if [[ -z "${2:-}" ]]; then
@@ -6810,13 +6948,13 @@ sec_19_routine() {
 	uses="$PROFILE_ARG"
 	if [[ -z "$uses" ]]; then
 		info "This machine looks like: $detected"
-		uses="$(prompt_input "Use cases to automate for (comma-separated: everyday, gaming, creative, dev, laptop)" "${detected// /,}")"
+		uses="$(prompt_input "Use cases to automate for (comma-separated: everyday, gaming, creative, dev, laptop, private)" "${detected// /,}")"
 	fi
 	local -a chosen=(everyday)
 	for u in ${uses//,/ }; do
 		case "$u" in
 		everyday) ;;
-		gaming | creative | dev | laptop) chosen+=("$u") ;;
+		gaming | creative | dev | laptop | private) chosen+=("$u") ;;
 		*) warn "Unknown use case '$u' — ignored." ;;
 		esac
 	done
@@ -6830,7 +6968,7 @@ sec_19_routine() {
 		reviewed="$(sed -n 's/^REVIEWED=//p' /etc/fedora-harden/profile 2>/dev/null)"
 		[[ -n "$reviewed" ]] || reviewed="$(date +%F)"
 	fi
-	write_new_file /etc/fedora-harden/profile 0644 <<EOF || return 0
+	write_new_file /etc/fedora-harden/profile 0600 <<EOF || return 0
 # Written by fedora-harden.sh (section 19). Re-run section 19 to change it.
 USE_CASES="$uses"
 REVIEWED=$reviewed
@@ -6881,15 +7019,13 @@ EOF
 		if cmd_exists ujust && ujust --list 2>/dev/null | grep -q install-resolve; then
 			add_action_item 19 LOW "RESOLVE_WITHOUT_LAYERING" \
 				"DaVinci Resolve without layering anything: ujust install-resolve (runs it in its own container, davincibox)."
-		elif ((IS_OSTREE)); then
-			add_action_item 19 LOW "RESOLVE_WITHOUT_LAYERING" \
-				"DaVinci Resolve without layering: run it in a distrobox made for it (the davincibox project), not as layered packages."
 		fi
 	fi
 	if [[ " $uses " == *" laptop "* ]]; then
 		_battery_limit
 	fi
 	((IS_OSTREE)) && _layer_audit
+	_personal_setup "$uses"
 	ROUTINE_ACTIVE=1
 	ok "Routine in place for: $uses. Weekly summary every Monday; desktop notifications only when something needs you."
 }
@@ -8130,6 +8266,471 @@ CRONEOF
 		"Re-initialize AIDE after any future package updates (command in section-12 report)."
 }
 
+# ============================================================================
+#  Personal setup (section 19) and the recovery file
+# ============================================================================
+# Section 19 tailors the machine to its use cases. Besides the routine timers it
+# offers, once each: ready-made boxes for development and DaVinci Resolve (nothing
+# layered), the private-browsing browsers, a Flathub limited to verified apps, a
+# security key for sudo and login, unlocking the encrypted disk with the TPM or a
+# FIDO2 key, and pointers to OpenSnitch. Every one is a question (off under --yes
+# unless a use case implies it) and is undone by --rollback.
+#
+# After every run the recovery file (root-only, no secrets) records what this
+# machine was set up with; --restore replays it after a reinstall or a recovery.
+
+RECOVERY_FILE="/etc/fedora-harden/machine.conf"
+DEV_BOX_PKGS="gcc gcc-c++ make cmake git python3 python3-pip"
+declare -ga BOXES_MADE=()      # boxes created or already present this run
+declare -gA SETUP_CHOICES=()   # personal choices made this run (recovery file)
+declare -gA RESTORE_ANSWERS=() # answers loaded by --restore, by question key
+declare -gA ANSWERS=()         # answers given this run, by question key
+declare -gA ANSWER_TEXT=()     # the question behind each key
+
+# _answer_key <question> - Short stable key for a question (recovery file).
+_answer_key() {
+	printf '%s' "$1" | sha256sum | cut -c1-12
+}
+
+# _personal_setup <use cases> - Section 19's personal choices.
+_personal_setup() {
+	local uses="$1"
+	_use_case_boxes "$uses"
+	[[ " $uses " == *" private "* ]] && _private_browsing
+	_flathub_verified
+	_security_key_login
+	_disk_unlock
+	_opensnitch_pointer
+	return 0
+}
+
+# _has_nvidia - True when an NVIDIA GPU is driven by the proprietary driver.
+_has_nvidia() {
+	[[ -e /proc/driver/nvidia/version ]] || lspci 2>/dev/null | grep -qiE 'vga.*nvidia|3d.*nvidia'
+}
+
+# _use_case_boxes <use cases> - dev: a box with compilers and build tools;
+# creative: the davincibox container for DaVinci Resolve (as Bazzite does).
+# Created for the person in the background; upgraded weekly by the routine.
+_use_case_boxes() {
+	local uses="$1" user="${TARGET_USER:-${SUDO_USER:-}}" tool release
+	[[ " $uses " == *" dev "* || " $uses " == *" creative "* ]] || return 0
+	if [[ -z "$user" || "$user" == root ]]; then
+		info "No desktop user (run with sudo or --user NAME) — use-case boxes not created."
+		return 0
+	fi
+	tool="$(image_box_tool)"
+	if ! cmd_exists "$tool" && ((!IS_OSTREE)); then
+		pkg_install "$tool"
+	fi
+	if ((!DRY_RUN)) && ! cmd_exists "$tool"; then
+		info "$tool is not available — use-case boxes not created."
+		return 0
+	fi
+	release="${FEDORA_MAJOR:-0}"
+	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo 45)"
+	if [[ " $uses " == *" dev "* ]] &&
+		confirm "Create a 'dev' $tool box with compilers and build tools ($DEV_BOX_PKGS), so they stay out of the system?" yes; then
+		_make_box "$user" "$tool" dev "registry.fedoraproject.org/fedora-toolbox:$release" "$DEV_BOX_PKGS"
+	fi
+	if [[ " $uses " == *" creative "* ]]; then
+		if cmd_exists ujust && ujust --list 2>/dev/null | grep -q install-resolve; then
+			return 0 # Bazzite's own installer does the same (action item from section 19)
+		fi
+		confirm "Create the 'davincibox' container for DaVinci Resolve (the davincibox project, as Bazzite does)?" yes || return 0
+		local image="ghcr.io/zelikos/davincibox-opencl:latest" setup
+		_has_nvidia && image="ghcr.io/zelikos/davincibox:latest"
+		_make_box "$user" "$tool" davincibox "$image" ""
+		_render_groups "$user"
+		if [[ "$tool" == distrobox ]]; then
+			setup="distrobox enter davincibox -- setup-davinci squashfs-root/AppRun distrobox"
+		else
+			setup="toolbox run --container davincibox setup-davinci squashfs-root/AppRun toolbox"
+		fi
+		add_action_item 19 LOW "DAVINCIBOX_SETUP" \
+			"Install DaVinci Resolve into davincibox: download the Linux installer from blackmagicdesign.com, run '<installer>.run --appimage-extract' in its folder, then: $setup — Resolve then appears in your app menu."
+	fi
+}
+
+# _make_box <user> <tool> <name> <image> [packages] - Create a box for the person,
+# in the background (images are large). Journaled for --rollback.
+_make_box() {
+	local user="$1" tool="$2" name="$3" image="$4" extra="${5:-}" uid home box_cmd
+	uid="$(id -u "$user" 2>/dev/null)" || return 0
+	home="$(user_home "$user")" || return 0
+	if runuser -u "$user" -- podman container exists "$name" 2>/dev/null; then
+		ok "The '$name' box already exists for $user."
+		BOXES_MADE+=("$name")
+		return 0
+	fi
+	if [[ "$tool" == distrobox ]]; then
+		box_cmd="distrobox create --yes --name $name --image $image"
+		[[ -n "$extra" ]] && box_cmd+=" --additional-packages '$extra'"
+		# The build tools work from the host's terminal too.
+		[[ "$name" == dev ]] && box_cmd+=" && for b in gcc g++ make cmake; do distrobox enter $name -- distrobox-export --bin /usr/bin/\$b --export-path '$home/.local/bin'; done"
+	else
+		box_cmd="toolbox --assumeyes create --image $image $name"
+		[[ -n "$extra" ]] && box_cmd+=" && toolbox run --container $name sudo dnf install -y $extra"
+	fi
+	if ((DRY_RUN)); then
+		info "Would create the $tool box '$name' ($image) for $user in the background"
+		return 0
+	fi
+	if [[ ! -d /run/systemd/system ]] || ! cmd_exists systemd-run; then
+		add_action_item 19 LOW "BOX_${name^^}" "Create the '$name' box (as $user): $box_cmd"
+		return 0
+	fi
+	local -a env=(--setenv=HOME="$home")
+	[[ -d "/run/user/$uid" ]] && env+=(--setenv=XDG_RUNTIME_DIR="/run/user/$uid")
+	log "[RUN]   systemd-run --uid=$uid --unit=fedora-harden-box-$name: $box_cmd"
+	if systemd-run --quiet --no-block --collect --unit="fedora-harden-box-$name" --uid="$uid" \
+		"${env[@]}" /bin/bash -c "$box_cmd" 2>/dev/null; then
+		record_change BOX "$user:$tool:$name"
+		BOXES_MADE+=("$name")
+		ok "Creating the '$name' box for $user in the background (journalctl -u fedora-harden-box-$name)."
+	else
+		warn "Could not start creating the '$name' box."
+		add_action_item 19 LOW "BOX_${name^^}" "Create the '$name' box (as $user): $box_cmd"
+	fi
+}
+
+# _render_groups <user> - GPU compute in davincibox needs the render and video groups.
+_render_groups() {
+	local user="$1" g
+	for g in render video; do
+		getent group "$g" >/dev/null || continue
+		id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx "$g" && continue
+		if run "usermod -aG $g '$user'"; then
+			record_change GROUP_ADD "$user:$g"
+		fi
+	done
+}
+
+# _private_browsing - The "private" use case: Tor Browser (through its launcher,
+# which verifies the download) and Mullvad Browser, both from Flathub.
+_private_browsing() {
+	if ! cmd_exists flatpak || ! flatpak remotes --columns=name 2>/dev/null | grep -qx flathub; then
+		((DRY_RUN)) || {
+			warn "Flathub is not set up (section 4) — private-browsing browsers not installed."
+			return 0
+		}
+	fi
+	info "Private browsing: Tor Browser and Mullvad Browser (Flathub). Only Tor Browser hides who you are; see the README."
+	flatpak_install_or_update flathub org.torproject.torbrowser-launcher
+	flatpak_install_or_update flathub net.mullvad.MullvadBrowser
+	SETUP_CHOICES[PRIVATE_BROWSING]=yes
+}
+
+# _flathub_verified - Optionally show only Flathub apps published by their own
+# developers (the "verified" subset).
+_flathub_verified() {
+	cmd_exists flatpak || return 0
+	local subset
+	subset="$(flatpak remotes --columns=name,subset 2>/dev/null | awk '$1 == "flathub" {print $2}' || true)"
+	[[ -n "$subset" ]] || return 0 # no Flathub remote
+	if [[ "$subset" == verified ]]; then
+		SETUP_CHOICES[FLATHUB_VERIFIED]=yes
+		return 0
+	fi
+	confirm "Show only verified Flathub apps (published by their own developers)? Unverified apps disappear from app stores." no || {
+		SETUP_CHOICES[FLATHUB_VERIFIED]=no
+		return 0
+	}
+	if run "flatpak remote-modify --subset=verified flathub"; then
+		record_change FLATPAK_SUBSET "flathub:${subset/#-/}"
+		SETUP_CHOICES[FLATHUB_VERIFIED]=yes
+		ok "Flathub now offers verified apps only (undo: flatpak remote-modify --subset= flathub)."
+	fi
+}
+
+# _security_key_login - Optionally require the person's security key, as a second
+# factor, for sudo and login (pam-u2f through authselect). The key is registered
+# first; without a registration nothing changes.
+_security_key_login() {
+	local user="${TARGET_USER:-${SUDO_USER:-}}" home keys
+	[[ -n "$user" && "$user" != root ]] || return 0
+	cmd_exists pamu2fcfg && cmd_exists authselect || return 0 # section 1 installs pam-u2f for key owners
+	if authselect current 2>/dev/null | grep -q 'with-pam-u2f'; then
+		SETUP_CHOICES[PAM_U2F]=yes
+		return 0
+	fi
+	confirm "Require your security key, besides your password, for sudo and login (pam-u2f)? Keep a second key registered: losing the only key locks you out." no || {
+		SETUP_CHOICES[PAM_U2F]=no
+		return 0
+	}
+	if ! authselect current >/dev/null 2>&1; then
+		add_action_item 19 MEDIUM "PAM_U2F_NO_AUTHSELECT" \
+			"This system's PAM is not managed by authselect; add pam_u2f by hand (see man pam_u2f) or run: sudo authselect select local --force"
+		return 0
+	fi
+	home="$(user_home "$user")"
+	keys="$home/.config/Yubico/u2f_keys"
+	if ((DRY_RUN)); then
+		info "Would register $user's security key ($keys) and run: authselect enable-feature with-pam-u2f-2fa"
+		return 0
+	fi
+	if [[ ! -s "$keys" ]]; then
+		info "Touch your security key when it blinks (registering it for $user)..."
+		backup_file "$keys" || return 0
+		install -d -m 700 -o "$user" -g "$user" "$home/.config/Yubico" 2>/dev/null
+		if ! runuser -u "$user" -- pamu2fcfg -u "$user" >"$keys" 2>/dev/null || [[ ! -s "$keys" ]]; then
+			rm -f "$keys"
+			warn "No security key was registered — sudo and login are unchanged."
+			return 0
+		fi
+		chown "$user:" "$keys" && chmod 600 "$keys"
+	fi
+	if run "authselect enable-feature with-pam-u2f-2fa"; then
+		record_change AUTHSELECT_FEATURE with-pam-u2f-2fa
+		SETUP_CHOICES[PAM_U2F]=yes
+		ok "sudo and login now ask for the security key too. Register a second key: pamu2fcfg -n >> $keys"
+	fi
+}
+
+# _luks_root_device - The LUKS partition under the root filesystem, if any.
+_luks_root_device() {
+	local src
+	src="$(findmnt -no SOURCE /sysroot 2>/dev/null || findmnt -no SOURCE / 2>/dev/null)"
+	src="${src%%[*}"
+	[[ -n "$src" ]] || return 1
+	lsblk -nrso NAME,FSTYPE "$src" 2>/dev/null | awk '$2 == "crypto_LUKS" {print "/dev/" $1; exit}' | grep .
+}
+
+# _disk_unlock - When the root disk is already encrypted, optionally unlock it with
+# the TPM plus a PIN, or a FIDO2 key. The passphrase stays as a fallback; no
+# keyslot is ever removed except the one added here (by --rollback).
+_disk_unlock() {
+	local dev kind="" opt name
+	dev="$(_luks_root_device)" || return 0
+	cmd_exists systemd-cryptenroll || return 0
+	if systemd-cryptenroll "$dev" 2>/dev/null | grep -qE 'tpm2|fido2'; then
+		SETUP_CHOICES[LUKS_UNLOCK]="$(systemd-cryptenroll "$dev" 2>/dev/null | awk '/tpm2|fido2/ {print ($0 ~ /tpm2/ ? "tpm2" : "fido2"); exit}')"
+		return 0
+	fi
+	if [[ -e /dev/tpmrm0 ]] &&
+		confirm "Unlock the encrypted disk with the TPM plus a PIN instead of the long passphrase? (The passphrase keeps working.)" no; then
+		kind=tpm2
+	elif systemd-cryptenroll --fido2-device=list 2>/dev/null | grep -q /dev/ &&
+		confirm "Unlock the encrypted disk with your FIDO2 security key? (The passphrase keeps working.)" no; then
+		kind=fido2
+	fi
+	if [[ -z "$kind" ]]; then
+		SETUP_CHOICES[LUKS_UNLOCK]=passphrase
+		return 0
+	fi
+	if ((DRY_RUN)); then
+		info "Would enroll $kind for $dev, add $kind-device=auto to /etc/crypttab and rebuild the initramfs"
+		return 0
+	fi
+	if ((GUI_FULL_MODE)); then # enrollment asks for the passphrase in a terminal
+		add_action_item 19 LOW "LUKS_$kind" \
+			"Unlock the disk with $kind: in a terminal run sudo ./fedora-harden.sh --only 19 (it asks for the passphrase there)."
+		return 0
+	fi
+	info "Enter the disk passphrase, then $([[ $kind == tpm2 ]] && echo 'choose a PIN' || echo 'touch the key')..."
+	if [[ "$kind" == tpm2 ]]; then
+		systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes "$dev" || {
+			warn "TPM enrollment did not complete — the disk still unlocks with the passphrase only."
+			return 0
+		}
+	else
+		systemd-cryptenroll --fido2-device=auto "$dev" || {
+			warn "FIDO2 enrollment did not complete — the disk still unlocks with the passphrase only."
+			return 0
+		}
+	fi
+	record_change LUKS_TOKEN "$dev:$kind"
+	# Ask for the token at boot: <name> <device> <key> <options>
+	opt="$kind-device=auto"
+	name="$(awk -v u="$(blkid -s UUID -o value "$dev")" '$2 == "UUID=" u {print $1}' /etc/crypttab 2>/dev/null)"
+	if [[ -n "$name" ]] && backup_file /etc/crypttab; then
+		awk -v n="$name" -v o="$opt" 'BEGIN{OFS="\t"} $1 == n && $4 !~ o {$4 = ($4 == "" || $4 == "none") ? o : $4 "," o} {print}' \
+			/etc/crypttab >/etc/crypttab.fh-new && cat /etc/crypttab.fh-new >/etc/crypttab
+		rm -f /etc/crypttab.fh-new
+	fi
+	if ((IS_OSTREE)); then
+		if run "rpm-ostree initramfs --enable"; then
+			record_change OSTREE_INITRAMFS enable
+		fi
+	else
+		run "dracut -f" || true
+	fi
+	SETUP_CHOICES[LUKS_UNLOCK]="$kind"
+	ok "The disk unlocks with $kind from the next boot (the passphrase still works)."
+}
+
+# _opensnitch_pointer - OpenSnitch (an application firewall that asks before apps
+# connect out) is not packaged by Fedora; the script installs nothing from outside
+# Fedora and Flathub, so it only points to it when the person wants it.
+_opensnitch_pointer() {
+	confirm "Would you like an application firewall that asks before apps connect to the internet (OpenSnitch)?" no || {
+		SETUP_CHOICES[OPENSNITCH]=no
+		return 0
+	}
+	SETUP_CHOICES[OPENSNITCH]=wanted
+	add_action_item 19 LOW "OPENSNITCH" \
+		"OpenSnitch is not packaged by Fedora, so the script does not install it. Its signed RPMs are on github.com/evilsocket/opensnitch/releases (on an image-based system they must be layered). Expect many questions at first."
+}
+
+# ---------- The recovery file -----------------------------------------------
+# _recovery_get <key> [file] - Value of KEY=... (last one wins, quotes removed).
+_recovery_get() {
+	[[ -r "${2:-$RECOVERY_FILE}" ]] || return 0
+	sed -n "s/^$1=//p" "${2:-$RECOVERY_FILE}" | tail -n 1 | sed 's/^"\(.*\)"$/\1/'
+}
+
+# _union <list> <list> - Space-separated union, first-seen order.
+# shellcheck disable=SC2086  # the lists are split on purpose
+_union() {
+	printf '%s\n' $1 $2 | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//'
+}
+
+# write_recovery_file - Record what this machine was set up with (after a real run).
+write_recovery_file() {
+	((DRY_RUN)) && return 0
+	local f="$RECOVERY_FILE" s sections="" flatpaks="" timers wg="" key copy
+	for s in "${SECTIONS[@]}"; do
+		[[ -n "$ONLY_LIST" ]] && ! in_list "$s" "$ONLY_LIST" && continue
+		[[ -n "$SKIP_LIST" ]] && in_list "$s" "$SKIP_LIST" && continue
+		sections+="$s "
+	done
+	sections="$(_union "$(_recovery_get SECTIONS)" "$sections" | tr ' ' '\n' | sort -n | tr '\n' ' ' | sed 's/ $//')"
+	[[ -n "$ROLLBACK_JOURNAL" ]] &&
+		flatpaks="$(awk -F'|' '$2 == "FLATPAK_INSTALL" {print $3}' "$ROLLBACK_JOURNAL" 2>/dev/null | tr '\n' ' ')"
+	flatpaks="$(_union "$(_recovery_get FLATPAKS)" "$flatpaks")"
+	timers="$(systemctl list-unit-files 'fedora-harden-*.timer' --state=enabled --no-legend 2>/dev/null | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//' || true)"
+	[[ -e /etc/wireguard/wg0.conf ]] &&
+		wg="supply the provider config again with --wireguard-config FILE (it was installed as /etc/wireguard/wg0.conf)"
+	copy="${RECOVERY_BACKUP_ARG:-$(_recovery_get BACKUP_COPY)}"
+	[[ -n "$copy" ]] || copy=yes
+	# Earlier answers are kept unless this run answered the same question.
+	local -A all=() text=()
+	while IFS='=' read -r key s; do
+		all[${key#ANSWER_}]="$s"
+	done < <(grep -E '^ANSWER_[0-9a-f]{12}=(yes|no)$' "$f" 2>/dev/null)
+	while IFS= read -r s; do
+		text[${s%%|*}]="${s#*|}"
+	done < <(awk '/^# Q / {q=substr($0, 5); next} /^ANSWER_/ {split($1, a, "[_=]"); print a[2] "|" q}' "$f" 2>/dev/null)
+	for key in "${!ANSWERS[@]}"; do
+		all[$key]="${ANSWERS[$key]}"
+		text[$key]="${ANSWER_TEXT[$key]}"
+	done
+	local release="${FEDORA_MAJOR:-0}" edition
+	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo unknown)"
+	# shellcheck source=/dev/null
+	edition="$(. /etc/os-release 2>/dev/null && echo "${VARIANT_ID:-${ID:-fedora}}")"
+	write_new_file "$f" 0600 <<EOF || return 0
+# fedora-harden recovery file: what this machine was set up with, kept up to date
+# after every run. After a reinstall or a recovery, put things back with:
+#   sudo ./fedora-harden.sh --restore $f
+# It holds no secrets (no keys, passwords or tunnel configs).
+# BACKUP_COPY=no keeps it out of the home snapshots (or: --recovery-backup off).
+UPDATED=$(date '+%F %T')
+SESSION=$RUN_STAMP
+FEDORA_RELEASE=$release
+EDITION=$edition
+IMAGE_BASED=$( ((IS_OSTREE)) && echo yes || echo no)
+TARGET_USER=${TARGET_USER:-$(_recovery_get TARGET_USER)}
+SECTIONS="$sections"
+USE_CASES="$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"')"
+BOXES="$(_union "$(_recovery_get BOXES)" "${BOXES_MADE[*]}")"
+FLATPAKS="$flatpaks"
+TIMERS="$timers"
+SNAPSHOT_BACKEND=$(sed -n 's/^BACKEND=//p' /etc/fedora-harden/snapshots 2>/dev/null)
+BACKUP_TARGET=${BACKUP_TARGET:-$(_recovery_get BACKUP_TARGET)}
+WIREGUARD="${wg:-$(_recovery_get WIREGUARD)}"
+LUKS_UNLOCK=${SETUP_CHOICES[LUKS_UNLOCK]:-$(_recovery_get LUKS_UNLOCK)}
+PAM_U2F=${SETUP_CHOICES[PAM_U2F]:-$(_recovery_get PAM_U2F)}
+FLATHUB_VERIFIED=${SETUP_CHOICES[FLATHUB_VERIFIED]:-$(_recovery_get FLATHUB_VERIFIED)}
+PRIVATE_BROWSING=${SETUP_CHOICES[PRIVATE_BROWSING]:-$(_recovery_get PRIVATE_BROWSING)}
+OPENSNITCH=${SETUP_CHOICES[OPENSNITCH]:-$(_recovery_get OPENSNITCH)}
+BACKUP_COPY=$copy
+# Answers to the questions (Q = the question; --restore gives the same answers).
+$(for key in "${!all[@]}"; do printf '# Q %s\nANSWER_%s=%s\n' "${text[$key]//$'\n'/ }" "$key" "${all[$key]}"; done)
+EOF
+	_recovery_backup_copy "$copy"
+}
+
+# _recovery_backup_copy <yes|no> - Keep a copy inside the home folder's backups
+# (section 20 snapshots or copies everything under it), or remove it.
+_recovery_backup_copy() {
+	local want="$1" home dest
+	home="$(sed -n 's/^HOME_DIR=//p' /etc/fedora-harden/snapshots 2>/dev/null)"
+	[[ -n "$home" && -d "$home" ]] || return 0
+	dest="$home/.fedora-harden/machine.conf"
+	if [[ "$want" != yes ]]; then
+		if [[ -e "$dest" ]] && backup_file "$dest"; then
+			rm -f "$dest" && info "Recovery file no longer copied into the home backups."
+		fi
+		return 0
+	fi
+	install -d -m 700 "$home/.fedora-harden" 2>/dev/null || return 0
+	backup_file "$dest" || return 0
+	cp -f "$RECOVERY_FILE" "$dest" && chmod 600 "$dest" || return 0
+	info "Recovery file copied into the home backups ($dest); turn off with --recovery-backup off."
+}
+
+# load_recovery_file <file> - --restore: read a recovery file (never sourced) and
+# set this run up to reapply it without questions.
+load_recovery_file() {
+	local f="$1" v key s
+	[[ -r "$f" ]] || {
+		err "--restore: cannot read '$f'."
+		exit 2
+	}
+	grep -q '^# fedora-harden recovery file' "$f" || {
+		err "--restore: '$f' is not a fedora-harden recovery file."
+		exit 2
+	}
+	v="$(_recovery_get SECTIONS "$f")"
+	if [[ -z "$ONLY_LIST" && "$v" =~ ^[0-9\ ]+$ ]]; then
+		ONLY_LIST="${v// /,}"
+	fi
+	v="$(_recovery_get USE_CASES "$f")"
+	[[ -z "$PROFILE_ARG" && "$v" =~ ^[a-z\ ]+$ ]] && PROFILE_ARG="${v// /,}"
+	v="$(_recovery_get TARGET_USER "$f")"
+	[[ -z "$TARGET_USER" && "$v" =~ ^[a-z_][a-z0-9_.-]*$ ]] && getent passwd "$v" >/dev/null && TARGET_USER="$v"
+	v="$(_recovery_get BACKUP_TARGET "$f")"
+	[[ -z "$BACKUP_TARGET" && -n "$v" && -d "$v" ]] && BACKUP_TARGET="$v"
+	v="$(_recovery_get BACKUP_COPY "$f")"
+	[[ -z "$RECOVERY_BACKUP_ARG" && "$v" =~ ^(yes|no)$ ]] && RECOVERY_BACKUP_ARG="$v"
+	while IFS='=' read -r key s; do
+		RESTORE_ANSWERS[${key#ANSWER_}]="$s"
+	done < <(grep -E '^ANSWER_[0-9a-f]{12}=(yes|no)$' "$f")
+	ASSUME_YES=1
+	printf '%s[INFO]%s  Restoring from %s (written %s on Fedora %s %s):\n' "$C_BLU" "$C_RST" "$f" \
+		"$(_recovery_get UPDATED "$f")" "$(_recovery_get FEDORA_RELEASE "$f")" "$(_recovery_get EDITION "$f")"
+	printf '         sections %s; use cases: %s; boxes: %s\n' "${ONLY_LIST:-all}" \
+		"$(_recovery_get USE_CASES "$f")" "$(_recovery_get BOXES "$f")"
+	printf '         %d earlier answers reused; everything else takes the default.\n' "${#RESTORE_ANSWERS[@]}"
+	v="$(_recovery_get WIREGUARD "$f")"
+	[[ -n "$v" && -z "$WG_CONFIG" ]] && printf '         WireGuard: %s\n' "$v"
+	v="$(_recovery_get LUKS_UNLOCK "$f")"
+	[[ "$v" == tpm2 || "$v" == fido2 ]] && printf '         Disk unlock was %s: re-enroll it when asked (needs the passphrase).\n' "$v"
+	return 0
+}
+
+# _report_recovery - HTML report: say whether a recovery file exists and when it
+# was updated; its contents only with --include-setup.
+_report_recovery() {
+	if [[ ! -f "$RECOVERY_FILE" ]]; then
+		printf '<h2>Recovery file</h2><p>None yet (written after a real run).</p>\n'
+		return 0
+	fi
+	printf '<h2>Recovery file</h2><p>%s, updated %s. Restore with <code>sudo %s --restore %s</code>.</p>\n' \
+		"$(_html "$RECOVERY_FILE")" "$(_html "$(_recovery_get UPDATED)")" "$SCRIPT_NAME" "$(_html "$RECOVERY_FILE")"
+	((INCLUDE_SETUP)) || {
+		printf '<p>Its contents are left out of this report; add <code>--include-setup</code> to include them.</p>\n'
+		return 0
+	}
+	printf '<table>\n'
+	local key val
+	while IFS='=' read -r key val; do
+		printf '<tr><td>%s</td><td>%s</td></tr>\n' "$(_html "$key")" "$(_html "${val//\"/}")"
+	done < <(grep -E '^[A-Z_]+=' "$RECOVERY_FILE" | grep -v '^ANSWER_')
+	printf '</table>\n'
+}
+
 # ---------- Actionable-items display + remediation --------------------------
 # show_actionable_items() - Print the full prioritized actionable items list.
 show_actionable_items() {
@@ -8415,7 +9016,9 @@ write_html_report() {
 		else
 			printf '<tr><td>None.</td></tr>\n'
 		fi
-		printf '</table>\n<h2>Warnings and errors logged</h2><pre>\n'
+		printf '</table>\n'
+		_report_recovery
+		printf '<h2>Warnings and errors logged</h2><pre>\n'
 		if ((LOG_JOURNAL)); then
 			journalctl -t fedora-harden "FH_SESSION=$session" -p warning -o short-iso --no-pager 2>/dev/null |
 				while IFS= read -r line; do
@@ -8585,6 +9188,7 @@ EOF
 # Exit codes: 0 = success, 1 = preflight failed, catch-all for other errors
 main() {
 	parse_args "$@"
+	[[ -n "$RESTORE_FILE" ]] && load_recovery_file "$RESTORE_FILE"
 
 	# --list-sessions: show past sessions without running a full preflight
 	if ((LIST_SESSIONS_MODE)); then
@@ -8660,6 +9264,7 @@ main() {
 	diagnose_failures
 	final_summary
 	save_followups
+	write_recovery_file
 
 	SESSION_STATUS="completed"
 	ok "Script execution complete. See logs for full details."
