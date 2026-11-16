@@ -38,7 +38,7 @@ Unlike a library that gets audited transitively through a dependency tree,
 this script is meant to be trusted directly and immediately. Concretely:
 
 - **A PR that quietly changes what a section *does* is the highest-value
-  target.** A one-line change inside `sec_07_ssh()` or `sec_05_firewalld()`
+  target.** A one-line change inside `sec_07_ssh()` or `sec_06_firewalld()`
   that weakens a setting instead of hardening it (e.g. flips a `no` to `yes`,
   widens a firewalld zone, or drops a sysctl entry) is easy to miss in a large
   diff and would ship the *opposite* of what every user of this project
@@ -98,11 +98,11 @@ that turns "hardened" into "locked out":
 - **SSH hardening (Section 7)** disables password authentication. Applied
   without a working key already installed for the target `--user`, this is a
   remote lockout on a headless/remote box with no physical console fallback.
-- **firewalld drop-default (Section 5)** can cut off a service (a dev server,
+- **firewalld drop-default (Section 6)** can cut off a service (a dev server,
   a file share, a remote-access tool) that was working a moment before, with
   no prompt distinguishing "you forgot this is exposed" from "this was
   intentionally exposed."
-- **USBGuard (Section 8)** allowlists only devices plugged in when the section
+- **USBGuard (Section 23)** allowlists only devices plugged in when the section
   runs — a hardware security key inserted afterward is blocked until manually
   added (the README calls this out, but it's easy to run sections out of
   order via `--only`).

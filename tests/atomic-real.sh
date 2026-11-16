@@ -11,7 +11,7 @@
 #
 # Not testable in a container: commands that need a booted OSTree sysroot
 # (rpm-ostree status, ostree admin config-diff). The test only checks that
-# section 12 handles their absence; the image signature and /etc report need a VM.
+# section 24 handles their absence; the image signature and /etc report need a VM.
 #
 # Usage: tests/atomic-real.sh <image> <artifacts-dir>
 
@@ -93,7 +93,7 @@ in_box bash -c 'grep -m1 "^AutomaticUpdatePolicy" /etc/rpm-ostreed.conf 2>/dev/n
 
 # ── Run the sections that used to layer packages ──────────────────────────────
 rc=0
-in_box env TERM=dumb /fh/fedora-harden.sh --yes --only 2,3,4,12,13,21,22,23 --user testuser \
+in_box env TERM=dumb /fh/fedora-harden.sh --yes --only 1,2,4,5,16,17,18,24 --user testuser \
     </dev/null >"$OUT/run.log" 2>&1 || rc=$?
 check "run exits 0 (got $rc)" test "$rc" -eq 0
 check "no [FAIL] lines in the run" bash -c '! grep -q "^\[FAIL\]" "$1"' _ "$OUT/run.log"
@@ -142,7 +142,7 @@ check "OpenSCAP results written by the container scan" in_box test -s /root/scap
 check "OpenSCAP summary counts real results (pass > 0)" \
     grep -qE 'OpenSCAP results — pass: [1-9][0-9]*  fail: [0-9]+' "$OUT/run.log"
 
-# ── Section 12 without a booted sysroot: no abort, timers in place ────────────
+# ── Section 24 without a booted sysroot: no abort, timers in place ────────────
 check "/etc change report timer enabled" in_box systemctl is-enabled --quiet fedora-harden-etc-check.timer
 check "/etc check script installed" in_box test -x /usr/local/sbin/fedora-harden-etc-check
 
