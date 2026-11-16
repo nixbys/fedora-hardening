@@ -14,9 +14,9 @@ runs on the release it tests:
 | Quick tier | `registry.fedoraproject.org/fedora-minimal:45` (`test-only` image, no systemd) |
 | Full tier | `registry.fedoraproject.org/fedora-minimal:45` with systemd as PID 1 (`base` image) |
 | GUI tier | `registry.fedoraproject.org/fedora:44` + Xvfb, zenity, kdialog (`gui` image) |
-| Atomic tier | the real image-based systems: `quay.io/fedora/fedora-silverblue:45` and a Universal Blue desktop (`ghcr.io/ublue-os/bazzite:stable`), booted with systemd |
+| VM tier | the real image-based systems: `quay.io/fedora/fedora-silverblue:45` and a Universal Blue desktop (`ghcr.io/ublue-os/bazzite:stable`), installed with bootc and booted |
 | VM tier | the same images installed on a virtual disk with `bootc install to-disk` and booted with KVM |
-| CI (`.github/workflows/ci.yml`) | static and container jobs run in a `fedora:45` container; repository scans use `fedora:44` as a tool host |
+| CI (`.github/workflows/ci.yml`) | static jobs run in a `fedora:45` container; container tests run on a Fedora CoreOS 45 VM (`tests/fedora-host.sh`); repository scans use `fedora:44` as a tool host |
 | Developer tooling (`setup-dev.sh`, pre-commit) | Fedora RPMs (`ShellCheck yamllint ruff hadolint gitleaks pre-commit python3-mcp`); shfmt is an RPM on 44 and built at the same pinned version with Fedora's Go on 45 (`tests/install-shfmt.sh`) |
 
 On an rpm-ostree host (Silverblue, Kinoite, Bazzite, …) do development inside a
@@ -35,10 +35,9 @@ the host is never modified.
 
 ```bash
 ./tests/run-suite.sh                    # "all": static, quick, full, gui
-./tests/run-suite.sh --tier atomic      # real Fedora Atomic images (pulls ~3-4 GB each)
 ./tests/run-suite.sh --tier vm          # installed + booted images (needs /dev/kvm)
 ./tests/run-suite.sh --tier fault       # fault injection (about an hour)
-./tests/run-suite.sh --tier atomic --image quay.io/fedora/fedora-kinoite:45   # other images
+./tests/run-suite.sh --tier vm --image quay.io/fedora/fedora-kinoite:45   # other images
 ./tests/run-suite.sh --tier static      # one tier (repeatable)
 ./tests/run-suite.sh --artifacts ./out  # keep logs somewhere specific
 ./tests/run-suite.sh --no-build         # reuse already-built images
@@ -120,45 +119,29 @@ under `sudo -i`/`pkexec`):
 
 Screenshots (`gui-summary.png`, `gui-progress.png`) are saved in `<artifacts>/gui/`.
 
-### atomic (real image-based systems)
-
-`tests/atomic-real.sh` boots each image under test — real Fedora Silverblue and a
-real Universal Blue desktop for the release — with systemd as PID 1 in a privileged
-container, and runs sections 2, 3, 4, 12, 13, 21, 22 and 23 with nothing stubbed:
-
-- the image's own `rpm-ostree` works in container mode, so anything the run layers
-  shows up in `rpm -qa`; none of ClamAV, AIDE, rkhunter, OpenSCAP, setools, buildah,
-  skopeo, podman-compose, mat2, the YubiKey CLI tools or toolbox may appear
-- Yubico Authenticator and Metadata Cleaner are installed from Flathub
-- the ClamAV quadlet is turned into a unit by Podman's generator, runs read-only,
-  offline and with capabilities dropped, and a **real scan finds the EICAR test file**
-  planted in a `0600` file under `/home`
-- OpenSCAP runs from a throwaway container and the summary counts real results
-- Universal Blue: the distrobox manifest is accepted by `distrobox assemble`, uupd
-  stays the only updater; elsewhere the toolbox commands are offered
-- `verify-host.sh` passes, and `--rollback all` removes the units and Flatpaks
-
-Two container-only adjustments, neither of which applies to a booted system: the
-container's `/var` is bind-mounted onto itself, so systemd sees the image's
-`var.mount` as already mounted (otherwise it would mount the empty OSTree deployment
-`/var` over the real one); boot-time tmpfiles are run as a real boot does; and
-systemd-resolved is given the container's DNS servers. A booted OSTree sysroot cannot exist in a container, which is what the
-vm tier is for.
-
 ### vm (installed and booted)
 
 `tests/atomic-vm.sh` boots Fedora CoreOS's published QEMU image (checksum-verified,
 cached in `~/.cache/fedora-harden-vm`), installs the image under test onto an empty
 virtual disk with `bootc install to-disk` (Btrfs, as Fedora's installer uses), boots
 that disk and runs the script over SSH. The only change to the image is enabling
-sshd. On top of the atomic checks it covers what needs a real sysroot:
+sshd. It is the one test of the image-based systems:
 
 - the run requests no tool as a layered package (`rpm-ostree status --json`)
+  (none of ClamAV, AIDE, rkhunter, OpenSCAP, setools, buildah, skopeo,
+  podman-compose, mat2, the YubiKey CLI tools or toolbox)
+- Yubico Authenticator and Metadata Cleaner are installed from Flathub instead
+- OpenSCAP runs from a throwaway container and the summary counts real results
 - the image-signature finding: the locally installed image is an unverified
   reference, and the script reports it
 - the `/etc` baseline from `ostree admin config-diff`; the weekly check is clean
   after the run, fails after a new file appears in `/etc`, and logs it
-- the ClamAV scan through the quadlet on the booted host
+- the ClamAV scan through the quadlet: read-only, offline, capabilities dropped,
+  finds the EICAR test file planted in a `0600` file and does not report a clean one
+- Universal Blue: the distrobox manifest is accepted and uupd stays the only
+  updater (the rpm-ostreed policy is unchanged); elsewhere the toolbox commands
+  are offered
+- `verify-host.sh` passes, and `--rollback all` removes the units and Flatpaks
 
 QEMU runs in a Fedora container, so the host only needs Podman and access to
 `/dev/kvm`. One image takes about 10–15 minutes.
@@ -236,8 +219,23 @@ containers and VMs, and every check runs on the Fedora Atomic image under test:
 | static | static tier with Fedora 45 RPM tools |
 | secrets | `gitleaks git` over the full history (Fedora `gitleaks` RPM) |
 | vulnerabilities | `trivy fs` (Fedora `trivy` RPM), SARIF uploaded to code scanning |
-| container-tests | quick, full, gui and fault tiers; podman runs nested in a privileged Fedora job container |
+| container-tests | quick, full, gui and the six fault groups (one job each), on a Fedora CoreOS VM booted with KVM: Fedora kernel, SELinux enforcing, real nftables |
 | atomic-images | atomic and vm tiers for Silverblue 45 and Bazzite |
+
+### Running tiers on a Fedora host
+
+GitHub's runners are Ubuntu: a container there shares Ubuntu's kernel and AppArmor,
+so SELinux cannot enforce and the host's policy blocks `wg-quick` from running
+`nft`. `tests/fedora-host.sh` boots Fedora CoreOS for the release under test (the
+first of the stable, testing and next streams that runs it; checksum-verified,
+cached) with KVM, copies the repository in and runs `run-suite.sh` there:
+
+```bash
+tests/fedora-host.sh <artifacts-dir> --tier full          # any run-suite.sh arguments
+FAULT_GROUPS="net pkg" tests/fedora-host.sh out --tier fault
+```
+
+On a Fedora host the WireGuard tunnel checks run instead of being skipped.
 
 ## Troubleshooting
 

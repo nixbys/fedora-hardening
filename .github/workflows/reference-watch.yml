@@ -1,7 +1,9 @@
 name: Reference watch
 
 # Weekly check of the guidance fedora-harden.sh follows (docs/references.json):
-# Privacy Guides and IntelTechniques pages, plus the pinned arkenfox release.
+# Privacy Guides and IntelTechniques pages, plus the pinned releases (arkenfox,
+# ClamAV, shfmt, actionlint, zizmor) against their latest stable release that is
+# at least 14 days old.
 # When a source changes, one tracking issue is opened (or updated) with what
 # changed; a human reviews it, updates the script, and refreshes the
 # fingerprints with: python3 tests/check-references.py --update
@@ -19,10 +21,10 @@ concurrency:
 
 jobs:
   check:
-    name: Check references (Fedora 44)
+    name: Check references (Fedora 45)
     runs-on: ubuntu-latest
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
     permissions:
       contents: read
       issues: write
