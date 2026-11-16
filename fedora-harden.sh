@@ -3416,7 +3416,7 @@ parse_args() {
 			;;
 		--profile)
 			if [[ ! "${2:-}" =~ ^(everyday|gaming|creative|dev|laptop)(,(everyday|gaming|creative|dev|laptop))*$ ]]; then
-				err "--profile expects use cases separated by commas: everyday, gaming, creative, dev, laptop"
+				err "--profile expects a comma-separated list with no spaces: everyday,gaming,creative,dev,laptop"
 				exit 2
 			fi
 			PROFILE_ARG="$2"
@@ -6109,7 +6109,9 @@ review_text() {
     saved="$(sed -n 's/^USE_CASES=//p' "$PROFILE" 2>/dev/null | tr -d '"')"
     detected="$(cmd_detect)"
     msg="Review your routine (sudo fedora-harden.sh --only 24)."
-    [[ " $saved " != " $detected " ]] && msg+=" Saved use cases: $saved; this machine now looks like: $detected."
+    if [[ "$(tr ' ' '\n' <<<"$saved" | awk 'NF' | sort -u)" != "$(tr ' ' '\n' <<<"$detected" | awk 'NF' | sort -u)" ]]; then
+        msg+=" Saved use cases: $saved; this machine now looks like: $detected."
+    fi
     if [[ -s "$STATE/cleanup.stats" ]]; then
         freed="$(awk -v t="$(($(date +%s) - 90 * 86400))" '$1 > t {s += $2} END {print s + 0}' "$STATE/cleanup.stats")"
         ((freed == 0)) && msg+=" Cleanup freed nothing in 90 days; it could be turned off."
@@ -6321,7 +6323,7 @@ record_routine_state() {
 	if [[ -n "$ROLLBACK_JOURNAL" && -f "$ROLLBACK_JOURNAL" ]]; then
 		while IFS='|' read -r _ ctype f; do
 			[[ "$ctype" == FILE_CREATE || "$ctype" == FILE_BACKUP ]] || continue
-			[[ "$f" == /etc/* ]] && files[$f]=1
+			[[ "$f" == /etc/* || "$f" == "$ROUTINE_HELPER" ]] && files[$f]=1
 		done < <(grep -v '^#' "$ROLLBACK_JOURNAL")
 	fi
 	backup_file "$dir/managed.sha256" || return 0
