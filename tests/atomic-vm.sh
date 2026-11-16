@@ -249,7 +249,8 @@ if ((ublue)); then
         --file /var/home/tester/.config/distrobox/fedora-harden-tools.ini
     check "Universal Blue: uupd stays the only updater" grep -q 'handled by uupd.timer' "$OUT/run.log"
     vm 'grep -m1 "^AutomaticUpdatePolicy" /etc/rpm-ostreed.conf 2>/dev/null || true' >"$OUT/policy-after.txt"
-    check "Universal Blue: rpm-ostreed policy unchanged" cmp -s "$OUT/policy-before.txt" "$OUT/policy-after.txt"
+    check "Universal Blue: rpm-ostreed policy unchanged" \
+        bash -c '[[ "$(<"$1")" == "$(<"$2")" ]]' _ "$OUT/policy-before.txt" "$OUT/policy-after.txt"
 else
     check "toolbox path: tools-box commands offered" grep -q "toolbox create --release" "$OUT/run.log"
     check "toolbox path: no distrobox manifest" vm test ! -e /var/home/tester/.config/distrobox/fedora-harden-tools.ini
