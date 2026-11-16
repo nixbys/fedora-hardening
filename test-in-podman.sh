@@ -158,14 +158,14 @@ fi
 
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
-    if ((CONTAINER_STARTED && !KEEP_CONTAINER)); then
+    if ((CONTAINER_STARTED && ! KEEP_CONTAINER)); then
         podman rm -f -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
 
 # Step 1: Build container image if needed
-if ((!SKIP_BUILD)); then
+if ((! SKIP_BUILD)); then
     log_info "Building container image: $IMAGE_TAG (target: $BUILD_TARGET)"
     build_log="$(mktemp "${TMPDIR:-/tmp}/fedora-harden-build.XXXXXX.log")"
     if podman build -f "$SCRIPT_DIR/Dockerfile.test" --target "$BUILD_TARGET" \
