@@ -89,7 +89,7 @@ else
                  grep -qE '^\s*apply_updates\s*=\s*yes' /etc/dnf/automatic.conf"
 fi
 
-# --- SELinux (4) -------------------------------------------------------------------
+# --- SELinux (5) -------------------------------------------------------------------
 group SEL "SELinux"
 if want SEL-1; then
     mode="$(getenforce 2>/dev/null || echo unknown)"
@@ -103,7 +103,7 @@ if want SEL-1; then
     fi
 fi
 
-# --- Firewall (5) ------------------------------------------------------------------
+# --- Firewall (6) ------------------------------------------------------------------
 group FW "Firewall"
 check FW-1 "firewalld is running" "running" firewall-cmd --state
 if want FW-2; then
@@ -138,7 +138,7 @@ elif want SSH-1; then
     skip SSH-1 "effective sshd configuration" "(openssh-server not installed)"
 fi
 
-# --- Passwords and lockout (9) -----------------------------------------------------
+# --- Passwords and lockout (8) -----------------------------------------------------
 group PAM "Passwords and lockout"
 check PAM-1 "password minimum length 15, no composition rules" "minlen = 15, minclass = 0" \
     bash -c "grep -qE '^minlen = 15$' /etc/security/pwquality.conf && grep -qE '^minclass = 0$' /etc/security/pwquality.conf"
@@ -147,7 +147,7 @@ check PAM-2 "lockout after 5 failures for 15 minutes" "deny = 5, unlock_time = 9
 check PAM-3 "no forced password expiry" "PASS_MAX_DAYS not set to 90" \
     bash -c "! grep -qE '^PASS_MAX_DAYS[[:space:]]+90$' /etc/login.defs"
 
-# --- Kernel (10) ------------------------------------------------------------------
+# --- Kernel (9) ------------------------------------------------------------------
 group SYS "Kernel settings"
 if want SYS-1; then
     bad=""
@@ -163,12 +163,12 @@ if want SYS-1; then
     verdict SYS-1 "kernel and network sysctl values are active" "$ok" "(differs: $bad)"
 fi
 
-# --- Audit (11) -------------------------------------------------------------------
+# --- Audit (10) -------------------------------------------------------------------
 group AUD "Audit"
 check AUD-1 "audit rules for identity files are loaded" "-w /etc/passwd ... -k identity" \
     bash -c "auditctl -l 2>/dev/null | grep -q 'identity'"
 
-# --- DNS (14) ---------------------------------------------------------------------
+# --- DNS (11) ---------------------------------------------------------------------
 group DNS "Encrypted DNS"
 check DNS-1 "systemd-resolved is running with DNS-over-TLS" "active, +DNSOverTLS" \
     bash -c "systemctl is-active --quiet systemd-resolved && resolvectl status 2>/dev/null | grep -q '+DNSOverTLS'"
@@ -179,7 +179,7 @@ if want DNS-2; then
     verdict DNS-2 "all lookups go through systemd-resolved" "$ok" "(/etc/resolv.conf -> ${target:-missing})"
 fi
 
-# --- ClamAV (21) ------------------------------------------------------------------
+# --- ClamAV (16) ------------------------------------------------------------------
 group CLAM "Antivirus"
 if ((IS_OSTREE)); then
     # Image-based: a weekly scan in a locked-down container instead of layered ClamAV.
@@ -200,7 +200,7 @@ else
         systemctl is-active --quiet clamav-clamonacc
 fi
 
-# --- File integrity (12) ------------------------------------------------------------
+# --- File integrity (24) ------------------------------------------------------------
 group INT "File integrity"
 if ((IS_OSTREE)); then
     check INT-1 "weekly /etc change report is scheduled" "fedora-harden-etc-check.timer enabled" \
@@ -213,7 +213,7 @@ else
         systemctl is-enabled --quiet fedora-harden-aide-check.timer
 fi
 
-# --- Desktop (15) -----------------------------------------------------------------
+# --- Desktop (13) -----------------------------------------------------------------
 group DESK "Desktop privacy"
 if want DESK-1; then
     if [[ -z "$TARGET_USER" ]]; then
@@ -230,7 +230,7 @@ if want DESK-1; then
     fi
 fi
 
-# --- Flatpak (13) -----------------------------------------------------------------
+# --- Flatpak (4) -----------------------------------------------------------------
 group FLAT "Flatpak sandbox"
 if have flatpak; then
     check FLAT-1 "Flatpak apps cannot read the host filesystem" "filesystems=!host... in global overrides" \
@@ -240,7 +240,7 @@ elif want FLAT-1; then
 fi
 check FLAT-2 "Firejail is not installed (opt-in only)" "firejail absent" bash -c '! rpm -q firejail'
 
-# --- Permissions (20) -------------------------------------------------------------
+# --- Permissions (22) -------------------------------------------------------------
 group PERM "File permissions"
 check PERM-1 "/etc/shadow is mode 000" "000" bash -c '[[ "$(stat -c %a /etc/shadow)" == 0 ]]'
 check PERM-2 "new files are private (umask 077)" "umask 077 in /etc/profile.d/99-umask.sh" \

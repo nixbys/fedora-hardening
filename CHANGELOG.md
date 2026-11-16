@@ -118,7 +118,7 @@ New:
   the GUI. On other package-based systems `--gui` installs them.
 - zenity and kdialog are no longer used. `--gui-full` is removed: use `--gui`.
 
-## Unreleased — home snapshots (section 25)
+## Unreleased — home snapshots (section 20)
 
 - **New section 20:** snapshots of the home folder on every supported system:
   Snapper on Bazzite, read-only Btrfs snapshots on other Btrfs systems (home is made
@@ -131,7 +131,7 @@ New:
 - Off-machine backup options are ranked for the machine as follow-ups.
 - Rollback never deletes snapshots or copies.
 
-## Unreleased — your routine (section 24)
+## Unreleased — your routine (section 19)
 
 - **New section 19:** detects how the machine is used (everyday, gaming, creative,
   development, laptop), asks once or takes `--profile`, and adds only the timers those
