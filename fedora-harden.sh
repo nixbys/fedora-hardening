@@ -6159,10 +6159,18 @@ ROUTINE_EOF
 	done
 	uses="${chosen[*]}"
 	info "Routine for: $uses"
+	# A re-run with the same use cases keeps the review date: only a change of use
+	# cases restarts the 90-day relevance review.
+	local reviewed
+	reviewed="$(date +%F)"
+	if [[ "$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"')" == "$uses" ]]; then
+		reviewed="$(sed -n 's/^REVIEWED=//p' /etc/fedora-harden/profile 2>/dev/null)"
+		[[ -n "$reviewed" ]] || reviewed="$(date +%F)"
+	fi
 	write_new_file /etc/fedora-harden/profile 0644 <<EOF || return 0
 # Written by fedora-harden.sh (section 24). Re-run section 24 to change it.
 USE_CASES="$uses"
-REVIEWED=$(date +%F)
+REVIEWED=$reviewed
 EOF
 
 	write_new_file /etc/systemd/system/fedora-harden-notify@.service 0644 <<EOF || return 0
