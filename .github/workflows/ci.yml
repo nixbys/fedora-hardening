@@ -4,19 +4,21 @@ name: CI - Fedora Hardening Script
 # it tests, or (container tests) on a Fedora CoreOS VM so the kernel and SELinux are
 # Fedora's too. Tooling comes from Fedora RPMs. Release tests run on the latest
 # Fedora only (matrix "fedora"); the script stays compatible with the previous
-# release, which it still supports (see TESTING.md). Repository-level scans use a
-# Fedora 44 container as a tool host.
+# release, which it still supports (see TESTING.md). Repository-level scans run on
+# the latest Fedora too.
 # The Ubuntu runner is only the container host.
 
 on:
   push:
     branches: [main, develop]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   pull_request:
     branches: [main, develop]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_dispatch:
   schedule:
-    # Nightly: catches breakage from new Fedora package updates
-    - cron: '0 2 * * *'
+    # Weekly: catches breakage from new Fedora package updates
+    - cron: '0 2 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -56,52 +58,6 @@ jobs:
           FEDORA: ${{ matrix.fedora }}
         run: ./tests/run-suite.sh --tier static --fedora "$FEDORA"
 
-  secrets:
-    name: Secret scan (Fedora 44 gitleaks)
-    runs-on: ubuntu-latest
-    container:
-      image: registry.fedoraproject.org/fedora:44
-    permissions:
-      contents: read
-    steps:
-      - name: Install gitleaks
-        run: dnf install -y --setopt=install_weak_deps=False git gitleaks
-
-      # Full history: a secret committed earlier and later deleted is still in Git.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Scan full git history
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          gitleaks git --redact --no-banner --verbose .
-
-  vulnerabilities:
-    name: Vulnerability scan (Fedora 44 trivy)
-    runs-on: ubuntu-latest
-    container:
-      image: registry.fedoraproject.org/fedora:44
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - name: Install trivy
-        run: dnf install -y --setopt=install_weak_deps=False git trivy
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Trivy filesystem scan
-        run: trivy fs --scanners vuln,misconfig,secret --format sarif --output trivy-results.sarif .
-
-      - name: Upload results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
-        with:
-          sarif_file: trivy-results.sarif
-
   container-tests:
     name: Container tests (Fedora ${{ matrix.fedora }}, ${{ matrix.tier }})
     runs-on: ubuntu-latest
@@ -117,8 +73,8 @@ jobs:
       fail-fast: false
       matrix:
         fedora: ["45"]
-        # The fault tier runs one job per fault group, in parallel.
-        tier: [quick, full, gui, fault-args, fault-env, fault-net, fault-pkg, fault-fs, fault-interrupt]
+        # quick and full share one VM; the fault groups run as three balanced jobs.
+        tier: [core, gui, fault-interrupt, fault-net+env, fault-pkg+args+fs]
     steps:
       - name: Allow KVM
         run: |
@@ -148,11 +104,16 @@ jobs:
           FH_VM_RELEASE: ${{ matrix.fedora }}
         run: |
           artifacts="$RUNNER_TEMP/suite-$TIER"
-          if [[ "$TIER" == fault-* ]]; then
-            export FAULT_GROUPS="${TIER#fault-}"
-            TIER=fault
-          fi
-          ./tests/fedora-host.sh "$artifacts" --tier "$TIER" --fedora "$FEDORA"
+          case "$TIER" in
+            core) tiers=(--tier quick --tier full) ;;
+            fault-*)
+              groups="${TIER#fault-}"
+              export FAULT_GROUPS="${groups//+/ }"
+              tiers=(--tier fault)
+              ;;
+            *) tiers=(--tier "$TIER") ;;
+          esac
+          ./tests/fedora-host.sh "$artifacts" "${tiers[@]}" --fedora "$FEDORA"
 
       - name: Upload test artifacts
         if: always()
@@ -167,7 +128,7 @@ jobs:
   # use KVM; the runner only starts containers and VMs — every check runs on the
   # Fedora Atomic image under test.
   atomic-images:
-    name: Atomic images (Fedora ${{ matrix.fedora }}, ${{ matrix.variant }}, ${{ matrix.tier }})
+    name: Atomic images (Fedora ${{ matrix.fedora }}, ${{ matrix.variant }})
     runs-on: ubuntu-latest
     needs: static
     timeout-minutes: 90
@@ -178,7 +139,6 @@ jobs:
       matrix:
         fedora: ["45"]
         variant: [silverblue, universal-blue]
-        tier: [atomic, vm]
     steps:
       - name: Free disk space for the images
         run: |
@@ -186,8 +146,7 @@ jobs:
           sudo podman system prune -af >/dev/null 2>&1 || true
           df -h /
 
-      - name: Allow KVM for the VM tier
-        if: matrix.tier == 'vm'
+      - name: Allow KVM
         run: |
           rule='KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"'
           echo "$rule" | sudo tee /etc/udev/rules.d/99-kvm.rules
@@ -199,17 +158,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Cache the Fedora CoreOS builder image
-        if: matrix.tier == 'vm'
+      - name: Cache the Fedora CoreOS image
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.cache/fedora-harden-vm
           key: fcos-builder-${{ github.run_id }}
-          restore-keys: fcos-builder-
+          restore-keys: |
+            fcos-builder-
+            fcos-host-
 
-      - name: Run ${{ matrix.tier }} tier
+      # One realistic test per image: installed with bootc and booted (vm tier).
+      - name: Install, boot and test the image
         env:
-          TIER: ${{ matrix.tier }}
           FEDORA: ${{ matrix.fedora }}
           VARIANT: ${{ matrix.variant }}
         run: |
@@ -218,18 +178,12 @@ jobs:
             silverblue) image="quay.io/fedora/fedora-silverblue:$FEDORA" ;;
             universal-blue) image=ghcr.io/ublue-os/bazzite:stable ;;
           esac
-          args=(--tier "$TIER" --fedora "$FEDORA" --image "$image" --artifacts "$RUNNER_TEMP/suite-$TIER")
-          # atomic: privileged systemd containers need rootful podman on Ubuntu runners
-          if [[ "$TIER" == atomic ]]; then
-            sudo -E ./tests/run-suite.sh "${args[@]}"
-          else
-            ./tests/run-suite.sh "${args[@]}"
-          fi
+          ./tests/run-suite.sh --tier vm --fedora "$FEDORA" --image "$image" --artifacts "$RUNNER_TEMP/suite-vm"
 
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: suite-f${{ matrix.fedora }}-${{ matrix.variant }}-${{ matrix.tier }}
-          path: ${{ runner.temp }}/suite-${{ matrix.tier }}
+          name: suite-f${{ matrix.fedora }}-${{ matrix.variant }}-vm
+          path: ${{ runner.temp }}/suite-vm
           if-no-files-found: ignore

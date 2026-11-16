@@ -11,18 +11,22 @@
 #   - zizmor: Actions security linter — template injection, unpinned action
 #     references, credential persistence, over-broad token permissions.
 #
-# Platform: runs in a Fedora 44 container like every other job. Neither tool
-# is packaged for Fedora 44, so actionlint is a pinned, checksum-verified
-# release binary and zizmor a pinned PyPI release.
+# Platform: runs in a Fedora 45 container like every other job. Neither tool
+# is packaged for Fedora, so actionlint is a pinned, checksum-verified release
+# binary and zizmor a pinned PyPI release; the weekly Reference watch reports
+# newer stable releases of both.
 #
 # Adapted from PR #12.
 
 name: Workflow security
 
+# Only when a workflow (or this repo's Dependabot config) changes.
 on:
   pull_request:
+    paths: ['.github/**']
   push:
     branches: [main]
+    paths: ['.github/**']
   workflow_dispatch:
 
 # Default-deny token; each job grants only read access to the code.
@@ -34,10 +38,10 @@ concurrency:
 
 jobs:
   actionlint:
-    name: actionlint (Fedora 44)
+    name: actionlint (Fedora 45)
     runs-on: ubuntu-latest
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
     permissions:
       contents: read
     steps:
@@ -65,10 +69,10 @@ jobs:
           ./actionlint -color
 
   zizmor:
-    name: zizmor (Fedora 44)
+    name: zizmor (Fedora 45)
     runs-on: ubuntu-latest
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
     permissions:
       contents: read
     steps:
@@ -82,8 +86,10 @@ jobs:
 
       # --offline keeps the audit hermetic; --min-severity=low surfaces everything.
       - name: Run zizmor (pinned)
+        env:
+          ZIZMOR_VERSION: 1.31.1  # tracked by the weekly Reference watch
         run: |
           set -euo pipefail
           python3 -m venv /tmp/zizmor
-          /tmp/zizmor/bin/pip install --quiet zizmor==1.30.0
+          /tmp/zizmor/bin/pip install --quiet "zizmor==${ZIZMOR_VERSION}"
           /tmp/zizmor/bin/zizmor --offline --min-severity=low .github/workflows/
