@@ -181,7 +181,7 @@
 #
 #  ERROR HANDLING:
 #    • EXIT trap: Cleans up all temporary files on script exit
-#    • ERR trap: Logs line number + failing command context + exit code
+#    • ERR trap: Logs file and line number + failing command context + exit code
 #    • Resource safety: Guaranteed cleanup of /tmp operations
 #    • Fallback strategies: curl → wget, plus best-effort dependency install
 #    • Follow-ups: kept with the session; --resume and --report show them later

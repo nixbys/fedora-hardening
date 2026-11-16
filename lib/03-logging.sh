@@ -97,11 +97,17 @@ err() {
 # capture_error_context() - Log detailed error information including command, exit code, and stderr.
 # Stores structured error data for later analysis and automatic remediation.
 # Called by trap_err and soft-fail handlers to capture full error context.
-# Usage: capture_error_context <line> <cmd> <exit_code> [stderr_file]
+# Usage: capture_error_context <where> <cmd> <exit_code> [stderr_file]
 capture_error_context() {
-	local line="$1" cmd="$2" ec="$3" stderr_file="${4:-}" detail=""
+	local where="$1" cmd="$2" ec="$3" stderr_file="${4:-}" detail=""
 	[[ -n "$stderr_file" && -s "$stderr_file" ]] && detail="$(tail -n 5 "$stderr_file" | tr '\n' ' ')"
-	log "[ERROR] line $line: '$cmd' exited $ec${detail:+ — $detail}"
+	log "[ERROR] $where: '$cmd' exited $ec${detail:+ — $detail}"
+}
+
+# source_line <file> <line> - "sections/05-selinux.sh line 42": a location in the
+# script's own files, relative to the project directory.
+source_line() {
+	printf '%s line %s' "${1#"$SCRIPT_DIR"/}" "$2"
 }
 
 # section() - Print formatted section header with visual divider and log entry.
@@ -162,7 +168,7 @@ run() {
 		while IFS= read -r line; do
 			log "[STDERR]   $line"
 		done <"$ERROR_CAPTURE_FILE"
-		capture_error_context "${BASH_LINENO[0]}" "$*" "$rc" "$ERROR_CAPTURE_FILE"
+		capture_error_context "$(source_line "${BASH_SOURCE[1]:-$0}" "${BASH_LINENO[0]}")" "$*" "$rc" "$ERROR_CAPTURE_FILE"
 	fi
 	# Record service enable/disable transitions for rollback journal.
 	if ((rc == 0)); then
@@ -331,7 +337,7 @@ pkg_install() {
 				# As with dnf: a package that cannot be layered (not in the image's
 				# repositories — Bazzite ships without Fedora's — or no network) must
 				# not abort the remaining sections; callers check for what they need.
-				capture_error_context "${BASH_LINENO[0]:-?}" "rpm-ostree install ${needed[*]}" "$rc" "/dev/null" || true
+				capture_error_context "$(source_line "${BASH_SOURCE[1]:-$0}" "${BASH_LINENO[0]:-?}")" "rpm-ostree install ${needed[*]}" "$rc" "/dev/null" || true
 				local reason
 				reason="$(grep -m1 -iE 'error|not found' <<<"$out" || true)"
 				warn "rpm-ostree could not layer: ${needed[*]}${reason:+ — $reason}"
@@ -1090,7 +1096,9 @@ trap_cleanup() {
 # Captures exit code + command context, logs with full detail, then exits.
 # Usage: Called automatically on error via trap.
 trap_err() {
-	local rc=$? line=${BASH_LINENO[0]:-?}
+	# The failing command is at line BASH_LINENO[0] of file BASH_SOURCE[1].
+	local rc=$? line=${BASH_LINENO[0]:-?} file=${BASH_SOURCE[1]:-$0}
+	file="${file#"$SCRIPT_DIR"/}"
 	# With set -E this trap also fires in subshells and command substitutions when a
 	# command fails there. Cleanup belongs to the main script only: a subshell
 	# running it removed the run lock and temp files while the run went on.
@@ -1100,8 +1108,8 @@ trap_err() {
 		exit "$rc"
 	fi
 	SESSION_STATUS="aborted"
-	capture_error_context "$line" "$cmd_ctx" "$rc" "$ERROR_CAPTURE_FILE" 2>/dev/null || true
-	err "Aborted at line $line (exit $rc). Log: ${LOG_WHERE:-$LOG_FILE}"
+	capture_error_context "$file line $line" "$cmd_ctx" "$rc" "$ERROR_CAPTURE_FILE" 2>/dev/null || true
+	err "Aborted at line $line of $file (exit $rc). Log: ${LOG_WHERE:-$LOG_FILE}"
 	trap_cleanup || true
 	exit "$rc"
 }
