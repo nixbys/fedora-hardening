@@ -13,7 +13,7 @@ runs on the release it tests:
 | Static tier (lint, formatting, MCP smoke test) | `registry.fedoraproject.org/fedora:45` — the `lint` image from `Dockerfile.test`, or natively when the host is Fedora 45 |
 | Quick tier | `registry.fedoraproject.org/fedora-minimal:45` (`test-only` image, no systemd) |
 | Full tier | `registry.fedoraproject.org/fedora-minimal:45` with systemd as PID 1 (`base` image) |
-| GUI tier | `registry.fedoraproject.org/fedora:44` + Xvfb, zenity, kdialog (`gui` image) |
+| GUI tier | `registry.fedoraproject.org/fedora:45` + Xvfb, GTK4/libadwaita for Python (`gui` image) |
 | VM tier | the real image-based systems: `quay.io/fedora/fedora-silverblue:45` and a Universal Blue desktop (`ghcr.io/ublue-os/bazzite:stable`), installed with bootc and booted |
 | VM tier | the same images installed on a virtual disk with `bootc install to-disk` and booted with KVM |
 | CI (`.github/workflows/ci.yml`) | static jobs run in a `fedora:45` container; container tests run on a Fedora CoreOS 45 VM (`tests/fedora-host.sh`); repository scans use `fedora:44` as a tool host |
@@ -98,6 +98,14 @@ enabled, the helper's drift check is clean after the run and catches a changed m
 file, and the weekly summary is written. The static tier extracts the helper embedded
 in the script and lints it with ShellCheck.
 
+Section 25 runs in the full tier without Btrfs (the rsync path): the first copy
+holds the home folder, nothing is copied when nothing changed, a changed file gives a
+new copy with a change note, unchanged files are hard links, the index and the
+off-machine options exist, and rollback keeps the copies. The vm tier covers Btrfs on
+installed systems: home is made its own subvolume (owner and SELinux label kept),
+read-only snapshots with change notes (Silverblue), Snapper snapshots (Bazzite), and
+an approved folder becoming its own subvolume with its contents intact.
+
 Section 17 is tested against a real WireGuard peer (`tests/wireguard-test.sh`, two
 containers on a private network): invalid and split-tunnel configs are refused; the
 handshake happens and traffic flows through the tunnel; DNS is routed through it;
@@ -110,14 +118,21 @@ works again.
 Runs `tests/gui-test.sh` on a virtual X display, as root with no UTF-8 locale (as
 under `sudo -i`/`pkexec`):
 
-- `--gui-full --dry-run --yes` exits 0 and never waits on a dialog
-- the progress window is closed, not orphaned, when the script exits
-- exactly one end-of-run window remains, and a sampled pixel proves the
-  Material-dark theme was applied (`#2B2930` surface)
-- killing the progress window (= the user pressing Cancel) stops a real run with
-  exit 130, and the cancellation is logged
+- `--gui --dry-run --yes` exits 0 and never hangs; the one window shows every
+  planned section finished (done or skipped), a filled activity log and the summary
+- the window stays open after the script exits and is the only window; a sampled
+  pixel proves the Material-dark theme was applied (`#1D1B20` sidebar); Ctrl+W
+  closes it
+- without `--yes`, questions appear in the window and are answered from the
+  keyboard: a typed answer (use cases for section 24) reaches the script, and
+  Return picks the default of a Yes/No question
+- Stop (Ctrl+W, then Stop in the confirmation) ends a real run with exit 130, the
+  cancellation is logged and the window shows the run stopped
+- a window that disappears mid-run stops the run (exit 130)
 
-Screenshots (`gui-summary.png`, `gui-progress.png`) are saved in `<artifacts>/gui/`.
+The window reports what it shows to `$FH_GUI_STATE` (a test-only hook) when it asks
+something and when the run ends. Screenshots (`gui-summary.png`, `gui-question.png`,
+`gui-progress.png`, `gui-stop-confirm.png`) are saved in `<artifacts>/gui/`.
 
 ### vm (installed and booted)
 
@@ -198,7 +213,7 @@ systemd variant, `journal.log` and `failed-units.txt`.
 | `base` | `fedora-minimal:44` + systemd and the services the script manages | full tier |
 | `test-only` | `fedora-minimal:44`, no systemd | quick tier |
 | `lint` | `fedora:44` + the lint toolchain RPMs | static tier |
-| `gui` | `fedora:44` + Xvfb, zenity, kdialog, qdbus, xdotool, ImageMagick | gui tier |
+| `gui` | `fedora:45` + Xvfb, python3-gobject, gtk4, libadwaita, xdotool, ImageMagick | gui tier |
 
 ```bash
 podman build -f Dockerfile.test --target base      -t localhost/fedora-harden:test .

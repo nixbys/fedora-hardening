@@ -149,8 +149,8 @@ WORKDIR /src
 ENTRYPOINT ["/bin/bash"]
 
 # ============================================================================
-# GUI variant: virtual X display + both dialog toolkits the script supports
-# (zenity for GTK, kdialog + qdbus for KDE) and tools to inspect/drive windows.
+# GUI variant: virtual X display, the GTK4/libadwaita Python stack the --gui window
+# uses (preinstalled on Fedora's desktop and Atomic images) and tools to drive it.
 # Build: podman build --target gui -f Dockerfile.test -t fedora-harden:gui .
 # ============================================================================
 FROM ${FEDORA_FULL_IMAGE} AS gui
@@ -167,10 +167,10 @@ RUN set -e && \
         ImageMagick \
         dbus-daemon \
         dbus-tools \
-        zenity \
-        kdialog \
-        qt6-qttools \
-        plasma-integration \
+        python3-gobject \
+        gobject-introspection \
+        gtk4 \
+        libadwaita \
         adwaita-icon-theme \
         dejavu-sans-fonts \
         mesa-libGLES \
@@ -180,7 +180,7 @@ RUN set -e && \
     dnf clean all && \
     rm -rf /var/cache/dnf/* /var/cache/libdnf5/* && \
     useradd -m testuser && \
-    systemd-machine-id-setup
+    dbus-uuidgen >/etc/machine-id
 
 WORKDIR /root
 ENTRYPOINT ["/bin/bash"]

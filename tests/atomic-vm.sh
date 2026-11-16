@@ -249,7 +249,8 @@ if ((ublue)); then
         --file /var/home/tester/.config/distrobox/fedora-harden-tools.ini
     check "Universal Blue: uupd stays the only updater" grep -q 'handled by uupd.timer' "$OUT/run.log"
     vm 'grep -m1 "^AutomaticUpdatePolicy" /etc/rpm-ostreed.conf 2>/dev/null || true' >"$OUT/policy-after.txt"
-    check "Universal Blue: rpm-ostreed policy unchanged" cmp -s "$OUT/policy-before.txt" "$OUT/policy-after.txt"
+    check "Universal Blue: rpm-ostreed policy unchanged" \
+        bash -c '[[ "$(<"$1")" == "$(<"$2")" ]]' _ "$OUT/policy-before.txt" "$OUT/policy-after.txt"
 else
     check "toolbox path: tools-box commands offered" grep -q "toolbox create --release" "$OUT/run.log"
     check "toolbox path: no distrobox manifest" vm test ! -e /var/home/tester/.config/distrobox/fedora-harden-tools.ini
@@ -260,6 +261,37 @@ for grp in CLAM INT; do
     check "verify-host $grp passes" bash -c 'grep -q " PASS" "$1" && ! grep -q " FAIL" "$1"' _ "$OUT/verify-$grp.log"
 done
 
+# ── Section 25: home snapshots on a real Btrfs home ───────────────────────────
+H=/usr/local/libexec/fedora-harden-routine
+vm "TERM=dumb ./fedora-harden.sh --yes --only 25 </dev/null" >"$OUT/snapshots.log" 2>&1
+expected=btrfs
+vm 'command -v snapper >/dev/null' && expected=snapper
+check "home snapshots use $expected" vm grep -qx "BACKEND=$expected" /etc/fedora-harden/snapshots
+# bootc installs leave home a plain folder: the boot-time step makes it a subvolume.
+# Nobody is logged in to the VM's desktop, so run that step now as boot would.
+vm "$H exclude-convert" >/dev/null 2>&1
+# vm() runs one command string over SSH: pass each check as a single string.
+check "home is its own Btrfs subvolume (owner and label kept)" vm '
+    btrfs subvolume show /var/home >/dev/null && [[ $(stat -c %U /var/home/tester) == tester ]] &&
+    ls -Zd /var/home | grep -q home_root_t'
+vm "echo one >/var/home/tester/note.txt; rm -f /var/lib/fedora-harden/snapshot-last; $H snapshot" >/dev/null 2>&1
+vm "sleep 2; echo two >>/var/home/tester/note.txt; rm -f /var/lib/fedora-harden/snapshot-last; $H snapshot" >/dev/null 2>&1
+if [[ "$expected" == snapper ]]; then
+    snaps="$(vm snapper -c home --csvout list --columns number 2>/dev/null | tail -n +2 | grep -cv '^0$')"
+    check "snapper keeps home snapshots ($snaps)" test "${snaps:-0}" -ge 1
+else
+    check "read-only home snapshots exist" \
+        vm 's=$(ls -d /var/home/.snapshots/2*[0-9] | tail -1) && btrfs property get -ts "$s" ro | grep -q true'
+    check "the newest snapshot has the changed file and a change note" \
+        vm 's=$(ls -d /var/home/.snapshots/2*[0-9] | tail -1) && grep -q two "$s/tester/note.txt" && grep -q tester "$s.changes"'
+fi
+vm journalctl -t fedora-harden-routine -o cat --no-pager >"$OUT/routine.journal" 2>&1
+vm ls -la /var/home/.snapshots >"$OUT/snapshots.ls" 2>&1
+check "an approved folder becomes its own subvolume, contents intact" vm "
+    mkdir -p /var/home/tester/.cache/app && seq 1 1000 >/var/home/tester/.cache/app/data &&
+    echo tester/.cache >>/var/lib/fedora-harden/exclude-queue && $H exclude-convert &&
+    btrfs subvolume show /var/home/tester/.cache >/dev/null && [[ \$(wc -l </var/home/tester/.cache/app/data) == 1000 ]]"
+
 # ── Rollback ────────────────────────────────────────────────────────────────────
 rc=0
 vm "./fedora-harden.sh --yes --rollback all </dev/null" >"$OUT/rollback.log" 2>&1 || rc=$?
@@ -268,6 +300,7 @@ for f in /etc/containers/systemd/fedora-harden-clamscan.container /etc/systemd/s
     /var/lib/fedora-harden/etc-baseline.txt; do
     check "rollback removed $f" vm test ! -e "$f"
 done
+check "rollback keeps the home snapshots" vm test -d /var/home/.snapshots
 vm flatpak list --app --columns=application >"$OUT/flatpaks-after-rollback.txt" 2>&1
 check "rollback removed the Flatpaks it installed" \
     bash -c '! grep -qE "^(com.yubico.yubioath|io.gitlab.metadatacleaner.metadatacleaner)$" "$1"' _ "$OUT/flatpaks-after-rollback.txt"
