@@ -29,7 +29,7 @@ This is a personal hardening script that has grown a substantial feature set and
 - **Logs in the system journal** — `journalctl -t fedora-harden`; failed services are reported with their own log lines
 - **Reports and follow-ups** — `--report` writes one HTML page per session; `--resume` brings back open follow-ups
 - **Dry-run mode** — preview all changes without touching the system
-- **GUI frontend** — optional dialogs and progress window via `--gui` / `--gui-full`, in a Material Design dark theme (see [GUI](#gui))
+- **GUI** — `--gui` runs the whole session in one window: sections, progress, live activity log, questions and summary, in a Material Design dark theme (see [GUI](#gui))
 - **4-layer caching** — memoized command checks, package status, user home dirs, and rpm-ostree pending layers
 
 ---
@@ -61,6 +61,7 @@ This is a personal hardening script that has grown a substantial feature set and
 | 21 | ClamAV | clamd + freshclam + on-access scanning of /home; image-based: weekly scan in a locked-down container |
 | 22 | OpenSCAP | Compliance scan (image-based: from a throwaway container, nothing layered) |
 | 24 | Your routine | Timers for the upkeep this machine's use cases need, a weekly drift check and summary, desktop notifications |
+| 25 | Home snapshots | Btrfs snapshots (Snapper on Bazzite) or incremental copies of home, as often as the machine is used |
 | 23 | Container security | Rootless Podman, image policy, seccomp, registry hardening; toolbox or distrobox for tools |
 
 **Sections not automated by design:** LUKS (Anaconda install-time), GRUB password (interactive key derivation), WireGuard tunnel config (requires peer keys).
@@ -114,12 +115,12 @@ sudo ./fedora-harden.sh [options]
   -u, --user <name>       Target username for SSH/chage/home-dir hardening
   -y, --yes               Assume "yes" to all prompts (non-interactive)
   -n, --dry-run           Print what would run; make no changes
-      --gui               Enable graphical prompts (zenity, kdialog fallback) when available
-      --gui-full          Full windowed frontend: GUI progress + GUI status output
+      --gui               Windowed frontend: progress window, dialogs and summary
       --report [file]     Write an HTML report of the last session and exit
       --resume            Review the last session's open follow-ups and exit
       --wireguard-config <file>  Install this WireGuard config with a kill switch (section 17)
       --profile <list>    Use cases for section 24: everyday,gaming,creative,dev,laptop
+      --backup-target <dir>  Second drive for home copies on systems without Btrfs (section 25)
       --skip <list>       Comma-separated sections to skip  (e.g. 7,8,17)
       --only <list>       Comma-separated sections to run exclusively
       --list              List all section numbers & names and exit
@@ -134,35 +135,48 @@ sudo ./fedora-harden.sh [options]
 ## GUI
 
 ```bash
-sudo ./fedora-harden.sh --gui          # questions as dialogs, output in the terminal
-sudo ./fedora-harden.sh --gui-full     # progress window + dialogs, no terminal output
+sudo ./fedora-harden.sh --gui          # the whole run in one window
 ```
 
-- **Theme:** dialogs use a Material Design 3 dark theme (surfaces, pill buttons,
-  linear progress indicator), titlebar included. The theme is private to the
-  script's own dialogs (written to `/run/fedora-harden/gui-theme`) and does not
-  change your desktop or user settings.
-- **Toolkit:** zenity is preferred on every desktop, because it draws its own
-  titlebar and the theme can cover the whole window. kdialog is the fallback; it
-  gets Material-dark colours, but its titlebar is drawn by KWin and follows your
-  Plasma window decoration.
-- **Progress window (`--gui-full`):** shows the current section and status;
-  **Cancel** stops the run (exit code 130). At the end, a single window shows the
-  summary and follow-up items grouped by priority, as selectable text so commands
-  can be copied. It does not block the script from exiting.
-- Works under `sudo` (Fedora keeps `DISPLAY`/`XAUTHORITY`). If no dialog can be
-  shown (no usable display), the script falls back to terminal prompts instead
-  of treating every question as "No".
+Everything happens in one window:
 
-| Progress window (`--gui-full`) | Question |
+- **Sections** (left): every section this run will go through, in execution order,
+  with its status: running, done, done with warnings or errors, or skipped when it
+  does not apply to this system. F9 shows or hides the list; narrow windows fold it
+  away.
+- **Status card**: the section running now and its latest step, a progress bar,
+  the elapsed time and an estimate of the time left.
+- **Questions** appear inside the window with Yes/No buttons or a text field. Enter
+  picks the default answer; nothing pops up in a separate dialog.
+- **Notices** that need reading (USBGuard, the manual GRUB password, VPN choices)
+  stay at the top until you dismiss them.
+- **Activity**: a live log of every message, command and command output, with
+  filters (done, warnings, errors, commands), search, follow mode, and Copy activity
+  log / Copy problems only in the menu.
+- **Summary**: at the end, the outcome, the log and backup locations, and the
+  follow-up items grouped by priority, each with a copy button.
+
+**Stop** (or closing the window, or Ctrl+W) asks first, then stops after the
+current step with exit code 130; changes made so far can be undone with
+`--rollback`. The window stays open after the run so you can read the results.
+
+The window is a GTK4/libadwaita app embedded in the script. Those libraries and their
+Python bindings come with Fedora Workstation and every Atomic desktop (Silverblue,
+Kinoite, Bazzite, Bluefin), so nothing is layered for the GUI; on other package-based
+systems `--gui` installs `python3-gobject`, `gtk4` and `libadwaita`. Its Material
+Design 3 dark theme is private to the window and does not change your desktop. It
+works under `sudo` (Fedora keeps `DISPLAY`/`XAUTHORITY`). Without a usable display,
+the run stays in the terminal.
+
+| Running | Question |
 |---|---|
-| ![Progress window](docs/screenshots/progress.png) | ![Yes/No question](docs/screenshots/question.png) |
-| **Text input** | **End-of-run summary** |
-| ![Text input](docs/screenshots/entry.png) | ![Summary with follow-up items](docs/screenshots/summary.png) |
+| ![The window during a run](docs/screenshots/running.png) | ![A question inside the window](docs/screenshots/question.png) |
+| **Stopping** | **Summary** |
+| ![Stop asks first](docs/screenshots/stop.png) | ![Summary with follow-up items](docs/screenshots/summary.png) |
 
-Screenshots are generated from the theme embedded in `fedora-harden.sh` by
-`tests/gui-screenshots.sh` (Fedora 44, virtual display, so the rounded window
-corners a compositor draws on a real desktop are not shown).
+Screenshots are generated by `tests/gui-screenshots.sh`, which plays a sample run
+into the window embedded in `fedora-harden.sh` (Fedora 44, virtual display, so the
+rounded window corners a compositor draws on a real desktop are not shown).
 
 ---
 
@@ -269,6 +283,32 @@ notification appears only when something needs you; the weekly summary is in
 the machine now looks different from its saved use cases, or an automation has had
 no effect, it says so. Re-run `--only 24` to change the routine; `--rollback` removes it.
 
+## Home snapshots (Section 25)
+
+Gets back a file you deleted or overwrote, on every supported system, with what the
+system already ships:
+
+| System | How |
+|--------|-----|
+| Btrfs with Snapper (Bazzite) | Snapper's own `home` config |
+| Btrfs without Snapper (Silverblue, Kinoite, Bluefin, Aurora, Workstation) | read-only Btrfs snapshots in `/home/.snapshots` |
+| Btrfs where home is a plain folder (bootc installs) | home becomes its own subvolume at the next boot, before anyone logs in; snapshots start then |
+| No Btrfs (e.g. Fedora Server on XFS) | hard-link incremental copies with `rsync`: to a second drive when configured (`--backup-target DIR`, `/backup`, `/mnt/backup`), otherwise on the same disk |
+
+- **As often as the machine is used:** 6+ active hours a day → hourly, 1–6 → every
+  6 hours, less → daily; nothing is taken when nothing changed. Kept: 24 recent,
+  7 daily, 4 weekly. Snapshots never push the disk below 15% free.
+- **Index and change notes:** the first run indexes the home folder (folders of
+  5 GB or more); each snapshot keeps a note of what changed; the weekly index notes
+  what grew and flags new large folders. Large replaceable folders (container
+  storage, caches, game libraries) are left out of snapshots only if you say yes,
+  folder by folder.
+- **Not a backup:** snapshots live on the same disk. The follow-ups rank ways to
+  keep a copy elsewhere for this machine (an external drive with Pika Backup, a
+  network share, or cloud storage with Déjà Dup); the choice is yours.
+- **Restore** by copying from `/home/.snapshots/<date>/<user>/…` (or Snapper's
+  tools on Bazzite). `--rollback` removes the timers but never deletes snapshots.
+
 ## WireGuard with a kill switch (Section 17)
 
 Download a WireGuard config from your VPN provider (a full tunnel:
@@ -346,7 +386,7 @@ host is never modified:
 ./tests/run-suite.sh --tier static    # shellcheck, shfmt, yamllint, hadolint, ruff
 ./tests/run-suite.sh --tier quick     # CLI, dry-run makes no changes, desktop settings
 ./tests/run-suite.sh --tier full      # real run under systemd, idempotency, rollback
-./tests/run-suite.sh --tier gui       # --gui-full on a virtual display, theme, Cancel
+./tests/run-suite.sh --tier gui       # --gui on a virtual display, theme, Stop
 ./tests/run-suite.sh --tier vm        # the same images installed and booted in a VM (KVM)
 ./tests/run-suite.sh --tier fault     # fault injection: no network, full disks, kills, ...
 ./tests/run-suite.sh --fedora 45      # the same on Fedora 45 (default: 44)

@@ -7,7 +7,7 @@
 #           otherwise inside the matching "lint" image built from Dockerfile.test
 #   quick   runs in the fedora-minimal:N "test-only" image
 #   full    runs in the fedora-minimal:N systemd "base" image
-#   gui     runs in the fedora:N "gui" image (Xvfb + zenity + kdialog)
+#   gui     runs in the fedora:N "gui" image (Xvfb + GTK4/libadwaita for Python)
 #   vm      installs real Fedora Atomic images of release N (Silverblue, Universal
 #           Blue) on a virtual disk (bootc, in a Fedora CoreOS VM), boots them with KVM
 #   fault   runs in the quick and full images of release N
@@ -21,7 +21,7 @@
 #             applied hardening, idempotent re-run, --list-sessions, --rollback all,
 #             journal logging, --report/--resume, and section 17 against a real
 #             WireGuard peer (tests/wireguard-test.sh: kill switch, DNS, rollback)
-#   gui     - --gui-full on a virtual display: no hang, progress window closed,
+#   gui     - --gui on a virtual display: no hang, progress window closed,
 #             one Material-dark end-of-run window, Cancel exits 130
 #   vm      - image-based behaviour on an installed, booted system: nothing layered,
 #             real Flathub installs, a real ClamAV container scan, OpenSCAP from a
@@ -351,6 +351,13 @@ tier_static() {
             sed -n "/<<'"'"'ROUTINE_EOF'"'"'/,/^ROUTINE_EOF\$/p" "$1" | sed "1d;\$d" >"$2" &&
             [[ -s "$2" ]] && shellcheck -s bash "$2"' _ "$SCRIPT" "$ARTIFACTS/fedora-harden-routine"
     fi
+    # --gui runs a window app embedded in the script; compile and lint it too.
+    check "static: embedded --gui window app compiles" bash -c '
+        sed -n "/<<'"'"'GUIAPP_EOF'"'"'/,/^GUIAPP_EOF\$/p" "$1" | sed "1d;\$d" >"$2" &&
+        [[ -s "$2" ]] && python3 -m py_compile "$2"' _ "$SCRIPT" "$ARTIFACTS/fedora-harden-gui.py"
+    if need_tool ruff "static: embedded --gui window app"; then
+        check "static: embedded --gui window app passes ruff" ruff check --no-cache "$ARTIFACTS/fedora-harden-gui.py"
+    fi
 
     # Regression guard: under `set -e` a post-increment of a zero counter inside (( ))
     # evaluates to 0, returns status 1 and aborts the script.
@@ -381,6 +388,7 @@ tier_quick() {
     expect_rc "quick: --help exits 0" 0 quick_run --help
     expect_rc "quick: --list exits 0" 0 quick_run --list
     expect_rc "quick: unknown option exits 2" 2 quick_run --bogus
+    expect_rc "quick: --gui-full is gone (one GUI mode: --gui)" 2 quick_run --gui-full
     expect_rc "quick: --only without value exits 2" 2 quick_run --only
     expect_rc "quick: --user without value exits 2" 2 quick_run --user
 
@@ -677,6 +685,31 @@ tier_full() {
         grep -q "Done this week" /var/lib/fedora-harden/summary-*.txt && grep -q "Needs you" /var/lib/fedora-harden/summary-*.txt'
     check "full: free-space check runs" fx /usr/local/libexec/fedora-harden-routine diskspace
 
+    # --- section 25: home copies (no Btrfs in this image: the rsync backend) -------
+    local H=/usr/local/libexec/fedora-harden-routine C=/var/lib/fedora-harden/home-copies
+    log="$ARTIFACTS/full_snapshots.log"
+    rc=0
+    fx /root/fedora-harden.sh --yes --only 25 >"$log" 2>&1 || rc=$?
+    check "full: section 25 runs cleanly (exit $rc)" bash -c '[[ $1 == 0 ]] && ! grep -q "^\[FAIL\]" "$2"' _ "$rc" "$log"
+    check "full: without Btrfs, home copies use rsync on the same disk" \
+        fx bash -c 'grep -qx BACKEND=rsync /etc/fedora-harden/snapshots && grep -qx TARGET=/var/lib/fedora-harden/home-copies /etc/fedora-harden/snapshots'
+    check "full: snapshot and index timers are enabled" \
+        fx bash -c 'systemctl is-enabled --quiet fedora-harden-snapshot.timer && systemctl is-enabled --quiet fedora-harden-index.timer'
+    check "full: the first copy holds the home folder" fx bash -c "
+        echo one >/home/testuser/note.txt && rm -f /var/lib/fedora-harden/snapshot-last && $H snapshot &&
+        ls $C/2*[0-9]/testuser/note.txt"
+    check "full: an unchanged home gives no new copy" fx bash -c "
+        n=\$(ls -d $C/2*[0-9] | wc -l); sleep 1; rm -f /var/lib/fedora-harden/snapshot-last; $H snapshot &&
+        [[ \$(ls -d $C/2*[0-9] | wc -l) == \$n ]]"
+    check "full: a changed file gives a new copy with a change note" fx bash -c "
+        sleep 1; echo two >>/home/testuser/note.txt; rm -f /var/lib/fedora-harden/snapshot-last; $H snapshot &&
+        f=\$(ls $C/2*.changes | tail -1) && grep -q 'changed files: 1' \"\$f\" && grep -q testuser \"\$f\""
+    check "full: unchanged files are shared between copies (hard links)" fx bash -c "
+        a=\$(ls -d $C/2*[0-9] | head -1); b=\$(ls -d $C/2*[0-9] | tail -1);
+        [[ \$(stat -c %i \$a/testuser/.bashrc) == \$(stat -c %i \$b/testuser/.bashrc) ]]"
+    check "full: the home index is written" fx test -s /var/lib/fedora-harden/home-index.notes
+    check "full: off-machine backup options are offered" grep -q "Off-machine copy" "$log"
+
     # --- sessions + rollback ------------------------------------------------------
     log="$ARTIFACTS/full_list_sessions.log"
     rc=0
@@ -702,7 +735,8 @@ tier_full() {
     for f in /etc/sysctl.d/99-hardening.conf /etc/audit/rules.d/hardening.rules /etc/ssh/sshd_config.d/10-hardening.conf \
         /etc/profile.d/99-umask.sh /etc/security/limits.d/99-coredump.conf \
         /var/lib/flatpak/overrides/global /usr/local/libexec/fedora-harden-routine /etc/fedora-harden/profile \
-        /etc/systemd/system/fedora-harden-drift.timer /etc/systemd/journald.conf.d/50-fedora-harden.conf; do
+        /etc/systemd/system/fedora-harden-drift.timer /etc/systemd/journald.conf.d/50-fedora-harden.conf \
+        /etc/fedora-harden/snapshots /etc/systemd/system/fedora-harden-snapshot.timer; do
         fx test -e "$f" && ((++hardened_left))
     done
     if ((hardened_left == 0)) && cmp -s <(grep pwquality.conf "$ARTIFACTS/etc.0") \
@@ -712,6 +746,8 @@ tier_full() {
         record FAIL "full: rollback removed drop-ins and restored pwquality.conf" \
             "$hardened_left drop-in(s) remain; residual diff in $ARTIFACTS/full_rollback.residual"
     fi
+    check "full: rollback keeps home copies (the person's data) but removes their timer" \
+        fx bash -c 'ls -d /var/lib/fedora-harden/home-copies/2*[0-9] >/dev/null && ! systemctl is-enabled --quiet fedora-harden-snapshot.timer'
 
     fx journalctl --no-pager -b >"$ARTIFACTS/full_journal.log" 2>&1 || true
     fx systemctl --failed --no-pager >"$ARTIFACTS/full_failed_units.txt" 2>&1 || true
@@ -731,7 +767,7 @@ tier_full() {
 }
 
 # ---------------------------------------------------------------------------
-# Tier: gui (Xvfb + zenity)
+# Tier: gui (Xvfb + the GTK4 window)
 # ---------------------------------------------------------------------------
 tier_gui() {
     tier_header gui

@@ -52,8 +52,8 @@
 #    -u, --user <name>      Target username for SSH/chage/home-dir hardening
 #    -y, --yes              Assume "yes" to all prompts (non-interactive)
 #    -n, --dry-run          Print what would run; make no changes
-#        --gui              Enable graphical prompts (kdialog/zenity) when available
-#        --gui-full         Full windowed frontend: GUI progress + GUI status output
+#        --gui              Run in one window: sections, progress, live activity,
+#                           questions and summary (GTK4/libadwaita, Material dark)
 #        --report [file]    Write an HTML report of the last session and exit
 #        --resume           Review the last session's open follow-ups and exit
 #        --wireguard-config <f> Install this WireGuard config with a kill switch (section 17)
@@ -230,9 +230,10 @@ fi
 [[ -z "$KERNEL_LABEL" ]] && KERNEL_LABEL="$(uname -r 2>/dev/null || echo unknown)"
 
 # ---------- Command-line option flags -----------------------------------------
-TARGET_USER="" # Target username for SSH/home-dir hardening (--user)
-WG_CONFIG=""   # WireGuard config to install with kill switch (--wireguard-config)
-PROFILE_ARG="" # Use cases for section 24 (--profile everyday,gaming,creative,dev,laptop)
+TARGET_USER=""   # Target username for SSH/home-dir hardening (--user)
+WG_CONFIG=""     # WireGuard config to install with kill switch (--wireguard-config)
+PROFILE_ARG=""   # Use cases for section 24 (--profile everyday,gaming,creative,dev,laptop)
+BACKUP_TARGET="" # Second drive for home copies on systems without Btrfs (--backup-target)
 ROUTINE_HELPER="/usr/local/libexec/fedora-harden-routine"
 ROUTINE_ACTIVE=0 # Section 24 ran: record the managed state for the drift check
 ASSUME_YES=0     # Non-interactive mode (--yes)
@@ -242,23 +243,14 @@ ONLY_LIST=""     # Comma-separated sections to run exclusively (--only)
 REPORT_MODE=0    # Write an HTML report of the last session (--report)
 REPORT_FILE=""   # Where to write it (--report FILE)
 RESUME_MODE=0    # Review the last session's open follow-ups (--resume)
-FORCE_GUI=0      # Request graphical prompts (--gui)
-FORCE_GUI_FULL=0 # Full GUI frontend with progress (--gui-full)
+FORCE_GUI=0      # Run in one window (--gui)
 
 # ---------- GUI mode state ------------------------------------------------
-GUI_MODE=0               # Set to 1 if kdialog/zenity available and enabled
-GUI_FULL_MODE=0          # Set to 1 if --gui-full requested and display available
-GUI_TOOL=""              # Selected dialog tool: "kdialog" or "zenity"
-GUI_PROGRESS_REF=""      # D-Bus reference for kdialog progress tracking
-QDBUS_CMD=""             # qdbus binary name (qdbus-qt6 / qdbus-qt5 / qdbus)
-GUI_PROGRESS_PIPE_FD=""  # File descriptor for GUI progress updates
-GUI_PROGRESS_PID=""      # PID of running GUI progress process
-GUI_LAST_STATUS=""       # Last status message sent to GUI
-GUI_CANCEL_REQUESTED=0   # Set to 1 if user cancels via GUI
-GUI_SINGLE_WINDOW_MODE=0 # Set to 1 to keep GUI-full updates in one window
+GUI_FULL_MODE=0        # Set to 1 while the --gui window is open
+GUI_CANCEL_REQUESTED=0 # Set to 1 when the user stops the run from the window
 
 # Sections in execution order (dependency flow; see main). --only/--skip accept these.
-SECTIONS=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 23 24 12 19 20 8)
+SECTIONS=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 23 24 25 12 19 20 8)
 
 # ---------- Execution state flags -------------------------------------------
 LOG_READY=0       # Set to 1 after log file initialized
@@ -377,614 +369,1080 @@ progress_bar() {
 	printf ']'
 }
 
-# ---------- GUI theme (Material Design 3, dark) -----------------------------
-# The script's dialogs use a private Material-dark theme without touching user or
-# system configuration: GTK4/libadwaita (zenity) loads $XDG_CONFIG_HOME/gtk-4.0/gtk.css
-# and KDE/Qt (kdialog) reads its palette from $XDG_CONFIG_HOME/kdeglobals.
-# zenity draws its own titlebar (client-side decorations), so the theme covers the
-# whole window. kdialog titlebars belong to the window manager (KWin) and follow
-# the desktop's decoration settings.
-GUI_THEME_DIR=""
-declare -ga GUI_ZENITY_ENV=()
-declare -ga GUI_KDIALOG_ENV=()
+# ---------- GUI (--gui): one window for the whole run -----------------------
+# A GTK4/libadwaita app (Python, embedded below) shows the run in one window: the
+# sections with their status, a progress bar with elapsed and remaining time, a live
+# activity log with filters and search, questions answered inline, notices, and the
+# summary with follow-up items at the end. GTK4, libadwaita and their Python bindings
+# ship with Fedora Workstation and every Atomic desktop; elsewhere --gui installs them.
+# The script and the window talk over a pipe, one tab-separated event per line (the
+# protocol is described at the top of the app). The window stays open after the
+# script exits so the summary can be read.
+GUI_DIR=""     # Private directory for the app (root-only)
+GUI_APP_PID="" # PID of the window process
+GUI_TX_FD=""   # Script → window events
+GUI_RX_FD=""   # Window → script answers and stop requests
+GUI_ENDED=0    # END was sent
+declare -gA GUI_SECTION_TITLES=()
 
-# gui_theme_init() - Write the theme files and build the dialog environments.
-# Location: /run/fedora-harden/gui-theme (root-only tmpfs, kept for detached
-# end-of-run dialogs, cleared at reboot), falling back to a private /tmp dir.
-gui_theme_init() {
-	local dir="/run/fedora-harden/gui-theme"
-	if ! install -d -m 700 "$dir/gtk-4.0" "$dir/gtk-3.0" 2>/dev/null; then
-		dir="$(mktemp -d "/tmp/fedora-harden-gui.XXXXXX" 2>/dev/null)" || dir=""
-		[[ -n "$dir" ]] && install -d -m 700 "$dir/gtk-4.0" "$dir/gtk-3.0" 2>/dev/null
+# gui_dir() - Private directory for the app: /run/fedora-harden/gui (root-only tmpfs,
+# cleared at reboot), falling back to a private /tmp directory.
+gui_dir() {
+	local dir="/run/fedora-harden/gui"
+	if ! install -d -m 700 "$dir" 2>/dev/null; then
+		dir="$(mktemp -d "/tmp/fedora-harden-gui.XXXXXX" 2>/dev/null)" || return 1
 	fi
-	if [[ -n "$dir" ]]; then
-		cat 2>/dev/null >"$dir/gtk-4.0/gtk.css" <<'GTKCSS'
-/* fedora-harden.sh — Material Design 3 dark theme for zenity (GTK4 / libadwaita).
-   Loaded via XDG_CONFIG_HOME for the script's own dialogs only. */
-
-/* M3 dark baseline tokens mapped onto libadwaita's palette (variables + legacy names) */
-:root {
-  --window-bg-color: #141218;
-  --window-fg-color: #E6E0E9;
-  --view-bg-color: #211F26;
-  --view-fg-color: #E6E0E9;
-  --headerbar-bg-color: #141218;
-  --headerbar-fg-color: #E6E0E9;
-  --headerbar-backdrop-color: #141218;
-  --headerbar-shade-color: transparent;
-  --dialog-bg-color: #2B2930;
-  --dialog-fg-color: #E6E0E9;
-  --card-bg-color: #211F26;
-  --popover-bg-color: #2B2930;
-  --accent-bg-color: #D0BCFF;
-  --accent-fg-color: #381E72;
-  --accent-color: #D0BCFF;
-  --destructive-bg-color: #F2B8B5;
-  --destructive-fg-color: #601410;
-  --destructive-color: #F2B8B5;
-  --warning-color: #FFB95C;
-  --error-color: #F2B8B5;
-}
-@define-color window_bg_color #141218;
-@define-color window_fg_color #E6E0E9;
-@define-color view_bg_color #211F26;
-@define-color view_fg_color #E6E0E9;
-@define-color headerbar_bg_color #141218;
-@define-color headerbar_fg_color #E6E0E9;
-@define-color dialog_bg_color #2B2930;
-@define-color dialog_fg_color #E6E0E9;
-@define-color accent_bg_color #D0BCFF;
-@define-color accent_fg_color #381E72;
-@define-color accent_color #D0BCFF;
-
-* {
-  font-family: "Roboto", "Noto Sans", "Cantarell", sans-serif;
+	GUI_DIR="$dir"
 }
 
-/* Surfaces: dialogs sit on surface-container-high with a 28px M3 corner radius */
-window, window.background, window.dialog, .message-dialog, dialog-host > dialog {
-  background-color: #2B2930;
-  color: #E6E0E9;
-}
-window.csd, window.dialog.csd, window.message.csd {
-  border-radius: 28px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(147, 143, 153, 0.22);
+# gui_deps_ok() - True when python3 can load GTK4 and libadwaita.
+gui_deps_ok() {
+	have_cmd python3 && python3 -c 'import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1"); from gi.repository import Adw, Gtk' >/dev/null 2>&1
 }
 
-/* Titlebar (client-side decoration drawn by the dialog itself) */
-headerbar, .titlebar, windowhandle {
-  background: #2B2930;
-  color: #E6E0E9;
-  box-shadow: none;
-  border: none;
-  min-height: 48px;
-}
-.title, headerbar .title, .message-dialog .heading, .title-2, .heading {
-  color: #E6E0E9;
-  font-weight: 500;
-  font-size: 1.35em;
-  letter-spacing: 0.01em;
-}
-windowcontrols button {
-  background: transparent;
-  color: #CAC4D0;
-  border-radius: 9999px;
-  min-width: 32px;
-  min-height: 32px;
-}
-windowcontrols button:hover {
-  background: rgba(230, 224, 233, 0.08);
-}
-
-/* Body text (buttons set their own on-colour; their labels inherit it) */
-label {
-  color: #E6E0E9;
-}
-button label, button image {
-  color: inherit;
-}
-.body, .message-dialog .body, label.dim-label {
-  color: #CAC4D0;
-  font-size: 1.0em;
-}
-
-/* Buttons: M3 pill shapes. Default = tonal; suggested/primary = filled. */
-button {
-  border-radius: 9999px;
-  min-height: 40px;
-  padding: 0 24px;
-  background: #4A4458;
-  color: #E8DEF8;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  box-shadow: none;
-  border: none;
-}
-button:hover {
-  background: #554F64;
-}
-button:active {
-  background: #605A70;
-}
-button:focus-visible {
-  outline: 2px solid #D0BCFF;
-  outline-offset: 2px;
-}
-button.suggested-action, button.suggested, .response-area button.suggested,
-.response-area button:last-child, button.default {
-  background: #D0BCFF;
-  color: #381E72;
-}
-button.suggested-action:hover, button.suggested:hover, .response-area button:last-child:hover {
-  background: #DCCBFF;
-}
-button.destructive-action, button.destructive {
-  background: #8C1D18;
-  color: #F9DEDC;
-}
-button:disabled {
-  background: rgba(230, 224, 233, 0.12);
-  color: rgba(230, 224, 233, 0.38);
-}
-button:disabled label {
-  background: none;
-  color: rgba(230, 224, 233, 0.38);
-}
-.response-area {
-  border-top: none;
-  padding: 8px 16px 16px 16px;
-}
-.response-area button {
-  margin: 0 4px;
-}
-
-/* Text entry: M3 filled text field */
-entry, text, textview {
-  background: #36343B;
-  color: #E6E0E9;
-  border-radius: 4px 4px 0 0;
-  border: none;
-  box-shadow: inset 0 -1px #CAC4D0;
-  min-height: 48px;
-  padding: 0 16px;
-  caret-color: #D0BCFF;
-}
-entry:focus-within {
-  box-shadow: inset 0 -2px #D0BCFF;
-  outline: none;
-}
-entry selection, text selection {
-  background: rgba(208, 188, 255, 0.35);
-  color: #E6E0E9;
-}
-
-/* Progress: M3 linear indicator */
-progressbar trough {
-  background: #4A4458;
-  border-radius: 9999px;
-  min-height: 6px;
-}
-progressbar progress {
-  background: #D0BCFF;
-  border-radius: 9999px;
-  min-height: 6px;
-}
-progressbar text {
-  color: #CAC4D0;
-}
-
-/* Icons in message dialogs follow the accent / status colours */
-image {
-  color: #D0BCFF;
-}
-.warning image, image.warning {
-  color: #FFB95C;
-}
-.error image, image.error {
-  color: #F2B8B5;
-}
-
-scrollbar slider {
-  background: #938F99;
-  border-radius: 9999px;
-}
-/* Disabled must win over the filled-primary rules above (same or higher specificity) */
-button:disabled, button.suggested-action:disabled, button.suggested:disabled,
-.response-area button:disabled, .response-area button:last-child:disabled {
-  background: rgba(230, 224, 233, 0.12);
-  color: rgba(230, 224, 233, 0.38);
-}
-
-/* Lists (end-of-run follow-up items): M3 surface-container with a tonal header */
-columnview, treeview, listview, .view {
-  background-color: #211F26;
-  color: #E6E0E9;
-  border-radius: 12px;
-}
-columnview > header, treeview > header, columnview > header > button,
-treeview header button {
-  background: #36343B;
-  color: #CAC4D0;
-  border-radius: 0;
-  min-height: 36px;
-  font-weight: 500;
-  padding: 0 12px;
-  box-shadow: none;
-}
-columnview > listview > row, treeview row, listview > row {
-  min-height: 40px;
-  padding: 0 4px;
-}
-columnview > listview > row:hover, listview > row:hover {
-  background: rgba(230, 224, 233, 0.08);
-}
-columnview > listview > row:selected, listview > row:selected, treeview:selected {
-  background: #4F378B;
-  color: #EADDFF;
-}
-columnview cell, columnview label {
-  padding: 4px 12px;
-}
-textview, textview text {
-  background-color: #211F26;
-  color: #E6E0E9;
-  border-radius: 12px;
-  padding: 12px 16px;
-  font-family: "Roboto Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
-  font-size: 0.95em;
-  box-shadow: none;
-  min-height: 0;
-}
-textview text selection {
-  background: #4F378B;
-  color: #EADDFF;
-}
-scrolledwindow, frame {
-  border-radius: 12px;
-  border: none;
-  background: transparent;
-}
-GTKCSS
-		cp -f "$dir/gtk-4.0/gtk.css" "$dir/gtk-3.0/gtk.css" 2>/dev/null || true
-		printf '[Settings]\ngtk-application-prefer-dark-theme=1\n' >"$dir/gtk-3.0/settings.ini"
-		cat 2>/dev/null >"$dir/kdeglobals" <<'KDEGLOBALS'
-[General]
-ColorScheme=FedoraHardenMaterialDark
-Name=Fedora Harden Material Dark
-font=Roboto,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
-
-[KDE]
-widgetStyle=Fusion
-
-[Colors:Window]
-BackgroundNormal=43,41,48
-BackgroundAlternate=33,31,38
-ForegroundNormal=230,224,233
-ForegroundInactive=202,196,208
-ForegroundActive=208,188,255
-ForegroundLink=208,188,255
-ForegroundVisited=204,194,220
-ForegroundNegative=242,184,181
-ForegroundNeutral=255,185,92
-ForegroundPositive=166,218,166
-DecorationFocus=208,188,255
-DecorationHover=208,188,255
-
-[Colors:View]
-BackgroundNormal=54,52,59
-BackgroundAlternate=43,41,48
-ForegroundNormal=230,224,233
-ForegroundInactive=202,196,208
-ForegroundActive=208,188,255
-ForegroundLink=208,188,255
-ForegroundVisited=204,194,220
-ForegroundNegative=242,184,181
-ForegroundNeutral=255,185,92
-ForegroundPositive=166,218,166
-DecorationFocus=208,188,255
-DecorationHover=208,188,255
-
-[Colors:Button]
-BackgroundNormal=74,68,88
-BackgroundAlternate=85,79,100
-ForegroundNormal=232,222,248
-ForegroundInactive=202,196,208
-ForegroundActive=208,188,255
-ForegroundLink=208,188,255
-ForegroundVisited=204,194,220
-ForegroundNegative=242,184,181
-ForegroundNeutral=255,185,92
-ForegroundPositive=166,218,166
-DecorationFocus=208,188,255
-DecorationHover=208,188,255
-
-[Colors:Selection]
-BackgroundNormal=208,188,255
-BackgroundAlternate=79,55,139
-ForegroundNormal=56,30,114
-ForegroundInactive=56,30,114
-ForegroundActive=56,30,114
-ForegroundLink=56,30,114
-ForegroundVisited=56,30,114
-ForegroundNegative=96,20,16
-ForegroundNeutral=56,30,114
-ForegroundPositive=56,30,114
-DecorationFocus=208,188,255
-DecorationHover=208,188,255
-
-[Colors:Tooltip]
-BackgroundNormal=230,224,233
-ForegroundNormal=50,47,53
-
-[Colors:Header]
-BackgroundNormal=20,18,24
-ForegroundNormal=230,224,233
-
-[WM]
-activeBackground=20,18,24
-activeForeground=230,224,233
-inactiveBackground=20,18,24
-inactiveForeground=147,143,153
-activeBlend=20,18,24
-inactiveBlend=20,18,24
-KDEGLOBALS
-		GUI_THEME_DIR="$dir"
-	fi
-
-	# zenity silently shows NO dialog for non-ASCII text (this script uses — and →)
-	# under a non-UTF-8 locale, which root often has (sudo -i, pkexec, cron).
-	local -a locale_env=()
-	if [[ ! "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" =~ [Uu][Tt][Ff]-?8 ]]; then
-		locale_env=(LC_ALL=C.UTF-8)
-	fi
-	GUI_ZENITY_ENV=("${locale_env[@]}" ADW_DEBUG_COLOR_SCHEME=prefer-dark)
-	GUI_KDIALOG_ENV=("${locale_env[@]}")
-	if [[ -n "$GUI_THEME_DIR" ]]; then
-		GUI_ZENITY_ENV+=(XDG_CONFIG_HOME="$GUI_THEME_DIR")
-		GUI_KDIALOG_ENV+=(XDG_CONFIG_HOME="$GUI_THEME_DIR")
-	fi
-}
-
-# gui_zenity() / gui_kdialog() - Run a dialog with the theme and locale applied.
-gui_zenity() {
-	env "${GUI_ZENITY_ENV[@]}" zenity "$@"
-}
-gui_kdialog() {
-	env "${GUI_KDIALOG_ENV[@]}" kdialog "$@"
-}
-
-# setup_ui_mode() - Configure GUI prompt mode if requested and available.
-# Prefers kdialog on KDE systems, then zenity, otherwise falls back to TTY prompts.
+# setup_ui_mode() - With --gui and a display, open the window; otherwise stay in the
+# terminal. On a package-based system the GTK4 Python stack is installed if missing;
+# on an Atomic system it is part of the image (nothing is layered for the GUI).
 setup_ui_mode() {
-	local has_display=0
-	local prefers_kde=0
-	[[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] && has_display=1
-	[[ "${XDG_CURRENT_DESKTOP:-}${DESKTOP_SESSION:-}" =~ ([Kk][Dd][Ee]|[Pp]lasma) ]] && prefers_kde=1
-	GUI_SINGLE_WINDOW_MODE=0
-
-	# If GUI mode is requested, try to satisfy missing GUI dialog dependencies.
-	# zenity is preferred on every desktop: it draws its own titlebar, so the
-	# Material-dark theme covers the whole window. kdialog is the fallback.
-	if ((has_display && (FORCE_GUI || FORCE_GUI_FULL))); then
-		if ! cmd_exists zenity && ! cmd_exists kdialog; then
-			ensure_command_dep zenity "GUI dialogs" zenity ||
-				{ ((prefers_kde)) && ensure_command_dep kdialog "GUI dialog fallback" kdialog; } || true
-		fi
+	((FORCE_GUI)) || return 0
+	if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+		warn "--gui needs a graphical session (no DISPLAY or WAYLAND_DISPLAY) — using the terminal."
+		return 0
 	fi
-
-	if ((has_display)) && cmd_exists zenity; then
-		GUI_TOOL="zenity"
-	elif ((has_display)) && cmd_exists kdialog; then
-		GUI_TOOL="kdialog"
+	if ! gui_deps_ok && ((!IS_OSTREE)) && ((EUID == 0)); then
+		install_dep_candidates python3-gobject 2>/dev/null || true
+		install_dep_candidates gobject-introspection 2>/dev/null || true
+		install_dep_candidates gtk4 2>/dev/null || true
+		install_dep_candidates libadwaita 2>/dev/null || true
 	fi
-
-	if ((FORCE_GUI)); then
-		if [[ -n "$GUI_TOOL" ]]; then
-			GUI_MODE=1
-			gui_theme_init
-			info "GUI mode enabled using $GUI_TOOL dialogs (Material dark theme)."
-		else
-			GUI_MODE=0
-			warn "--gui requested, but no supported GUI dialog tool was found. Falling back to terminal prompts."
-			warn "Install 'zenity' (recommended: fully themed) or 'kdialog' to use GUI prompts."
-		fi
+	if ! gui_deps_ok; then
+		warn "--gui needs python3-gobject, gtk4 and libadwaita — using the terminal."
+		return 0
 	fi
+	gui_dir || {
+		warn "--gui could not create its private directory — using the terminal."
+		return 0
+	}
+	local app="$GUI_DIR/fedora-harden-gui.py"
+	cat >"$app" <<'GUIAPP_EOF'
+"""fedora-harden --gui: one window for the whole run.
 
-	if ((FORCE_GUI_FULL)); then
-		FORCE_GUI=1
-		if [[ -n "$GUI_TOOL" ]]; then
-			if [[ "$GUI_TOOL" == "kdialog" ]]; then
-				# Fedora 44+ ships qdbus-qt6; older releases use qdbus-qt5 or qdbus.
-				# Install the package if needed, then probe all known binary names.
-				if ! cmd_exists qdbus-qt6 && ! cmd_exists qdbus-qt5 && ! cmd_exists qdbus; then
-					install_dep_candidates qt6-qttools qt5-qttools 2>/dev/null || true
-				fi
-				if cmd_exists qdbus-qt6; then
-					QDBUS_CMD="qdbus-qt6"
-				elif cmd_exists qdbus-qt5; then
-					QDBUS_CMD="qdbus-qt5"
-				elif cmd_exists qdbus; then
-					QDBUS_CMD="qdbus"
-				else
-					QDBUS_CMD=""
-					warn "qdbus not found; kdialog progress updates will be limited."
-				fi
-			fi
-			GUI_MODE=1
-			GUI_FULL_MODE=1
-			GUI_SINGLE_WINDOW_MODE=1
-			[[ ${#GUI_ZENITY_ENV[@]} -gt 0 ]] || gui_theme_init
-			info "Full GUI frontend enabled using $GUI_TOOL (single-window mode)."
-		else
-			GUI_MODE=0
-			GUI_FULL_MODE=0
-			GUI_SINGLE_WINDOW_MODE=0
-			warn "--gui-full requested, but no supported GUI dialog tool was found. Falling back to terminal output."
-			warn "Install 'zenity' (recommended) or 'kdialog' and rerun with --gui-full."
-		fi
+fedora-harden.sh starts this app and talks to it over a pipe, one event per line,
+fields separated by tabs (backslash, tab and newline escaped as \\, \t and \n):
+
+  in  (script -> window)              out (window -> script)
+  MODE   <subtitle>                   READY
+  PLAN   <section> <title>            ANSWER <id> <yes|no|text>
+  SECTION <section> <title>           CANCEL
+  LOG    <info|ok|warn|error|dry|run|out> <text>
+  NOTICE <info|warning|error> <text>
+  ASK    <id> <confirm|input> <default> <text>
+  SUMMARY <headline> <details>
+  ITEMS                               (clears the follow-up list)
+  ITEM   <HIGH|MEDIUM|LOW|DONE> <section> <text>
+  END    <exit code> <message>
+
+The window stays open after the script exits so the summary can be read; closing
+it while the run is going asks before stopping the run.
+"""
+
+import os
+import sys
+import time
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
+
+try:  # GLib 2.80+ moved the Unix streams to GioUnix
+    gi.require_version("GioUnix", "2.0")
+    from gi.repository import GioUnix
+
+    UnixInputStream = GioUnix.InputStream
+except (ImportError, ValueError):
+    UnixInputStream = Gio.UnixInputStream
+
+APP_TITLE = "Fedora Hardening"
+MAX_LINES = 20000  # activity lines kept in memory; older ones are dropped
+
+CSS = """
+/* Material Design 3, dark: surface #141218, containers #211F26 / #2B2930, primary #D0BCFF */
+:root {
+  --window-bg-color: #141218; --window-fg-color: #E6E0E9;
+  --view-bg-color: #211F26; --view-fg-color: #E6E0E9;
+  --headerbar-bg-color: #141218; --headerbar-fg-color: #E6E0E9;
+  --headerbar-backdrop-color: #141218; --headerbar-shade-color: transparent;
+  --sidebar-bg-color: #1D1B20; --sidebar-fg-color: #E6E0E9;
+  --sidebar-backdrop-color: #1D1B20; --sidebar-shade-color: transparent;
+  --card-bg-color: #211F26; --card-fg-color: #E6E0E9;
+  --dialog-bg-color: #2B2930; --dialog-fg-color: #E6E0E9;
+  --popover-bg-color: #2B2930; --popover-fg-color: #E6E0E9;
+  --accent-bg-color: #D0BCFF; --accent-fg-color: #381E72; --accent-color: #D0BCFF;
+  --destructive-bg-color: #8C1D18; --destructive-fg-color: #F9DEDC;
+  --destructive-color: #F2B8B5;
+  --success-color: #8BD5A5; --warning-color: #FFB95C; --error-color: #F2B8B5;
+}
+* { font-family: "Roboto", "Noto Sans", "Cantarell", sans-serif; }
+.status-card { background: #2B2930; border-radius: 20px; padding: 18px 20px; }
+.status-section { font-size: 1.25em; font-weight: 600; }
+.status-step { color: #CAC4D0; }
+.status-clock { color: #CAC4D0; font-feature-settings: "tnum"; }
+progressbar trough { background: #4A4458; border-radius: 9999px; min-height: 8px; }
+progressbar progress { background: #D0BCFF; border-radius: 9999px; min-height: 8px; }
+progressbar.failed progress { background: #F2B8B5; }
+progressbar text { color: #CAC4D0; font-feature-settings: "tnum"; }
+.chip { border-radius: 9999px; padding: 2px 12px; min-height: 30px; background: #2B2930; color: #E6E0E9; }
+.chip:checked { background: #4F378B; color: #EADDFF; }
+.chip .count { font-weight: 700; font-feature-settings: "tnum"; }
+.chip.warn .count { color: #FFB95C; }
+.chip.error .count { color: #F2B8B5; }
+.chip.ok .count { color: #8BD5A5; }
+.question { background: #4F378B; color: #EADDFF; border-radius: 20px; padding: 16px 18px; }
+.question label { color: #EADDFF; }
+.question entry { background: #381E72; color: #EADDFF; }
+.notice { border-radius: 16px; padding: 12px 14px; background: #2B2930; }
+.notice.warning { background: #4A3A1F; }
+.notice.error { background: #601410; }
+.log-view, .log-view text { background: #0F0D13; color: #E6E0E9; }
+.log-view { border-radius: 16px; padding: 10px 12px;
+  font-family: "Roboto Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace; font-size: 0.92em; }
+.section-row { padding: 6px 4px; }
+.section-num { color: #938F99; font-feature-settings: "tnum"; min-width: 2.2em; }
+.section-row.running .section-title { font-weight: 700; color: #D0BCFF; }
+.section-row.pending .section-title, .section-row.skipped .section-title { color: #938F99; }
+.st-ok { color: #8BD5A5; } .st-warn { color: #FFB95C; } .st-error { color: #F2B8B5; }
+.st-running { color: #D0BCFF; } .st-pending { color: #4A4458; }
+.summary-icon.ok { color: #8BD5A5; } .summary-icon.warn { color: #FFB95C; }
+.summary-icon.error { color: #F2B8B5; }
+.prio { border-radius: 9999px; padding: 0 10px; font-size: 0.85em; font-weight: 700; }
+.prio.HIGH { background: #601410; color: #F9DEDC; }
+.prio.MEDIUM { background: #4A3A1F; color: #FFDDB3; }
+.prio.LOW { background: #36343B; color: #CAC4D0; }
+.prio.DONE { background: #1F3A2A; color: #B7F1C8; }
+"""
+
+# Activity-log levels: (prefix shown, text tag, counted as)
+LEVELS = {
+    "info": ("INFO", "info", None),
+    "ok": ("OK", "ok", "ok"),
+    "warn": ("WARN", "warn", "warn"),
+    "error": ("FAIL", "error", "error"),
+    "dry": ("DRY", "dry", None),
+    "run": ("RUN", "run", None),
+    "out": ("", "out", None),
+}
+STATUS_ICON = {
+    "pending": ("media-record-symbolic", "st-pending"),
+    "running": ("media-playback-start-symbolic", "st-running"),
+    "ok": ("object-select-symbolic", "st-ok"),
+    "warn": ("dialog-warning-symbolic", "st-warn"),
+    "error": ("dialog-error-symbolic", "st-error"),
+    "skipped": ("media-skip-forward-symbolic", "st-pending"),
+}
+FINAL = ("ok", "warn", "error", "skipped")
+
+
+def unescape(s):
+    out, i = [], 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            n = s[i + 1]
+            out.append({"n": "\n", "t": "\t", "\\": "\\"}.get(n, "\\" + n))
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def escape(s):
+    return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+
+
+def fmt_clock(seconds):
+    seconds = int(seconds)
+    h, rest = divmod(seconds, 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+class SectionRow(Gtk.ListBoxRow):
+    def __init__(self, num, title):
+        super().__init__(activatable=False, selectable=False)
+        self.num, self.status = num, "pending"
+        box = Gtk.Box(spacing=10)
+        box.add_css_class("section-row")
+        self.icon = Gtk.Image(pixel_size=14)
+        self.num_label = Gtk.Label(label=f"§{num}", xalign=0)
+        self.num_label.add_css_class("section-num")
+        self.title = Gtk.Label(label=title, xalign=0, hexpand=True, wrap=True,
+                               wrap_mode=Pango.WrapMode.WORD_CHAR, lines=2,
+                               ellipsize=Pango.EllipsizeMode.END)
+        self.title.add_css_class("section-title")
+        box.append(self.icon)
+        box.append(self.num_label)
+        box.append(self.title)
+        self.set_child(box)
+        self.box = box
+        self.set_status("pending")
+
+    def set_status(self, status):
+        for s in STATUS_ICON:
+            self.box.remove_css_class(s)
+        self.status = status
+        self.box.add_css_class(status)
+        name, cls = STATUS_ICON[status]
+        self.icon.set_from_icon_name(name)
+        for c in ("st-pending", "st-running", "st-ok", "st-warn", "st-error"):
+            self.icon.remove_css_class(c)
+        self.icon.add_css_class(cls)
+        self.icon.set_tooltip_text(
+            {"pending": "Not started", "running": "Running", "ok": "Done",
+             "warn": "Done with warnings", "error": "Done with errors",
+             "skipped": "Skipped: not applicable on this system"}[status])
+
+
+class HardenWindow(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title=APP_TITLE, default_width=1080,
+                         default_height=720)
+        self.set_size_request(380, 480)
+        self.started = time.monotonic()
+        self.finished = False
+        self.exit_code = None
+        self.cancel_sent = False
+        self.lines = []  # (level, time, text)
+        self.counts = {"ok": 0, "warn": 0, "error": 0}
+        self.sections = {}  # num -> SectionRow
+        self.order = []
+        self.current = None
+        self.section_started = {}
+        self.section_durations = []
+        self.section_level = "ok"
+        self.pending_ask = None
+        self.asks = 0
+        self.filter = "all"
+        self.follow = True
+
+        self.toasts = Adw.ToastOverlay()
+        self.set_content(self.toasts)
+        view = Adw.ToolbarView()
+        self.toasts.set_child(view)
+
+        # Header: title + mode, sidebar toggle, stop/close, log menu
+        header = Adw.HeaderBar()
+        self.title_widget = Adw.WindowTitle(title=APP_TITLE, subtitle="Starting…")
+        header.set_title_widget(self.title_widget)
+        self.sidebar_btn = Gtk.ToggleButton(icon_name="sidebar-show-symbolic", active=True,
+                                            tooltip_text="Show sections (F9)")
+        header.pack_start(self.sidebar_btn)
+        self.stop_btn = Gtk.Button(label="_Stop", use_underline=True,
+                                   tooltip_text="Stop the run after the current step (Ctrl+W)")
+        self.stop_btn.add_css_class("destructive-action")
+        self.stop_btn.connect("clicked", lambda *_: self.request_close())
+        header.pack_end(self.stop_btn)
+        menu = Gio.Menu()
+        menu.append("Copy activity log", "win.copy-log")
+        menu.append("Copy problems only", "win.copy-problems")
+        header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
+                                       tooltip_text="Activity log"))
+        view.add_top_bar(header)
+
+        # Sidebar: the sections this run will go through, in execution order
+        self.split = Adw.OverlaySplitView(min_sidebar_width=230, max_sidebar_width=300)
+        self.sidebar_btn.bind_property("active", self.split, "show-sidebar",
+                                       GObject.BindingFlags.BIDIRECTIONAL |
+                                       GObject.BindingFlags.SYNC_CREATE)
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        side_head = Gtk.Label(label="Sections", xalign=0, margin_start=16, margin_top=12,
+                              margin_bottom=6)
+        side_head.add_css_class("heading")
+        self.section_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.section_list.add_css_class("navigation-sidebar")
+        side_scroll = Gtk.ScrolledWindow(vexpand=True,
+                                         hscrollbar_policy=Gtk.PolicyType.NEVER)
+        side_scroll.set_child(self.section_list)
+        side.append(side_head)
+        side.append(side_scroll)
+        self.split.set_sidebar(side)
+        view.set_content(self.split)
+
+        main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin_top=16,
+                       margin_bottom=16, margin_start=18, margin_end=18)
+        self.split.set_content(main)
+
+        # Status card: what is running now, progress, time
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        card.add_css_class("status-card")
+        top = Gtk.Box(spacing=12)
+        self.spinner = Gtk.Spinner(spinning=True, width_request=22, height_request=22)
+        self.status_icon = Gtk.Image(pixel_size=22, visible=False)
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+        self.section_label = Gtk.Label(label="Preparing", xalign=0, wrap=True)
+        self.section_label.add_css_class("status-section")
+        self.step_label = Gtk.Label(label="Checking this system…", xalign=0,
+                                    ellipsize=Pango.EllipsizeMode.END)
+        self.step_label.add_css_class("status-step")
+        texts.append(self.section_label)
+        texts.append(self.step_label)
+        self.clock_label = Gtk.Label(label="00:00", xalign=1, valign=Gtk.Align.START,
+                                     justify=Gtk.Justification.RIGHT)
+        self.clock_label.add_css_class("status-clock")
+        top.append(self.spinner)
+        top.append(self.status_icon)
+        top.append(texts)
+        top.append(self.clock_label)
+        self.progress = Gtk.ProgressBar(show_text=True, text="Starting")
+        card.append(top)
+        card.append(self.progress)
+        main.append(card)
+
+        # Question: shown inline when the script asks something
+        self.question = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN)
+        qbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        qbox.add_css_class("question")
+        qrow = Gtk.Box(spacing=12)
+        qrow.append(Gtk.Image(icon_name="dialog-question-symbolic", pixel_size=24,
+                              valign=Gtk.Align.START))
+        self.q_label = Gtk.Label(xalign=0, wrap=True, hexpand=True, selectable=True,
+                                 wrap_mode=Pango.WrapMode.WORD_CHAR)
+        qrow.append(self.q_label)
+        self.q_entry = Gtk.Entry(hexpand=True)
+        self.q_entry.connect("activate", lambda *_: self.answer(None))
+        buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        self.q_no = Gtk.Button(label="_No", use_underline=True)
+        self.q_no.connect("clicked", lambda *_: self.answer("no"))
+        self.q_yes = Gtk.Button(label="_Yes", use_underline=True)
+        self.q_yes.add_css_class("suggested-action")
+        self.q_yes.connect("clicked", lambda *_: self.answer("yes"))
+        buttons.append(self.q_no)
+        buttons.append(self.q_yes)
+        qbox.append(qrow)
+        qbox.append(self.q_entry)
+        qbox.append(buttons)
+        self.question.set_child(qbox)
+        main.append(self.question)
+
+        # Notices: things the script wants the user to read (stay until dismissed)
+        self.notices = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        main.append(self.notices)
+
+        # Two pages: the live activity, and the summary once the run is done
+        self.stack = Adw.ViewStack(vexpand=True)
+        self.switcher = Adw.InlineViewSwitcher(stack=self.stack, visible=False,
+                                               halign=Gtk.Align.CENTER)
+        main.append(self.switcher)
+        main.append(self.stack)
+        self.stack.add_titled_with_icon(self.build_activity(), "activity", "Activity",
+                                        "utilities-terminal-symbolic")
+        self.stack.add_titled_with_icon(self.build_summary(), "summary", "Summary",
+                                        "view-list-bullet-symbolic")
+
+        # Narrow windows: the sidebar slides over the content instead
+        bp = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 720sp"))
+        bp.add_setter(self.split, "collapsed", True)
+        bp.add_setter(self.sidebar_btn, "active", False)
+        self.add_breakpoint(bp)
+
+        for name, cb in (("copy-log", lambda *_: self.copy_log(False)),
+                         ("copy-problems", lambda *_: self.copy_log(True))):
+            act = Gio.SimpleAction.new(name, None)
+            act.connect("activate", cb)
+            self.add_action(act)
+        keys = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
+        keys.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("<Control>w"),
+                                           Gtk.CallbackAction.new(self.on_close_key)))
+        keys.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("F9"),
+                                           Gtk.CallbackAction.new(self.on_f9)))
+        self.add_controller(keys)
+        self.connect("close-request", self.on_close_request)
+        GLib.timeout_add_seconds(1, self.tick)
+
+    # ── Activity page ────────────────────────────────────────────────────────
+    def build_activity(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        bar = Gtk.Box(spacing=8)
+        self.chips = {}
+        first = None
+        for key, label, cls in (("all", "All", None), ("ok", "Done", "ok"),
+                                ("warn", "Warnings", "warn"), ("error", "Errors", "error"),
+                                ("run", "Commands", None)):
+            chip = Gtk.ToggleButton(group=first)
+            first = first or chip
+            chip.add_css_class("chip")
+            if cls:
+                chip.add_css_class(cls)
+            inner = Gtk.Box(spacing=6)
+            inner.append(Gtk.Label(label=label))
+            count = Gtk.Label(label="", visible=key in self.counts)
+            count.add_css_class("count")
+            inner.append(count)
+            chip.set_child(inner)
+            chip.connect("toggled", self.on_filter, key)
+            self.chips[key] = count
+            bar.append(chip)
+        self.first_chip = first
+        bar.append(Gtk.Box(hexpand=True))
+        self.search = Gtk.SearchEntry(placeholder_text="Find in activity", width_chars=18)
+        self.search.connect("search-changed", lambda *_: self.refilter())
+        bar.append(self.search)
+        follow = Gtk.ToggleButton(icon_name="go-bottom-symbolic", active=True,
+                                  tooltip_text="Follow new activity")
+        follow.connect("toggled", lambda b: self.set_follow(b.get_active()))
+        bar.append(follow)
+        self.follow_btn = follow
+        wrap = Gtk.ScrolledWindow(child=bar, vscrollbar_policy=Gtk.PolicyType.NEVER,
+                                  hscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
+        box.append(wrap)
+
+        self.buffer = Gtk.TextBuffer()
+        for tag, props in (
+            ("time", {"foreground": "#938F99"}),
+            ("info", {"foreground": "#E6E0E9"}),
+            ("ok", {"foreground": "#8BD5A5"}),
+            ("warn", {"foreground": "#FFB95C"}),
+            ("error", {"foreground": "#F2B8B5", "weight": 700}),
+            ("dry", {"foreground": "#CCC2DC"}),
+            ("run", {"foreground": "#D0BCFF"}),
+            ("out", {"foreground": "#A9A4B0"}),
+            ("section", {"foreground": "#D0BCFF", "weight": 700,
+                         "pixels-above-lines": 10}),
+        ):
+            self.buffer.create_tag(tag, **props)
+        self.text = Gtk.TextView(buffer=self.buffer, editable=False, cursor_visible=False,
+                                 monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                                 top_margin=8, bottom_margin=8, left_margin=10,
+                                 right_margin=10)
+        self.text.add_css_class("log-view")
+        self.text.update_property([Gtk.AccessibleProperty.LABEL], ["Activity log"])
+        self.log_scroll = Gtk.ScrolledWindow(child=self.text, vexpand=True)
+        self.log_scroll.get_vadjustment().connect("value-changed", self.on_scrolled)
+        box.append(self.log_scroll)
+        self.end_mark = self.buffer.create_mark("end", self.buffer.get_end_iter(), False)
+        self.first_chip.set_active(True)
+        return box
+
+    # ── Summary page ─────────────────────────────────────────────────────────
+    def build_summary(self):
+        page = Adw.PreferencesPage()
+        head = Adw.PreferencesGroup()
+        top = Gtk.Box(spacing=16, margin_bottom=6)
+        self.sum_icon = Gtk.Image(icon_name="object-select-symbolic", pixel_size=48,
+                                  valign=Gtk.Align.START)
+        self.sum_icon.add_css_class("summary-icon")
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, hexpand=True)
+        self.sum_head = Gtk.Label(xalign=0, wrap=True)
+        self.sum_head.add_css_class("title-2")
+        self.sum_body = Gtk.Label(xalign=0, wrap=True, selectable=True,
+                                  wrap_mode=Pango.WrapMode.WORD_CHAR)
+        self.sum_body.add_css_class("dim-label")
+        texts.append(self.sum_head)
+        texts.append(self.sum_body)
+        top.append(self.sum_icon)
+        top.append(texts)
+        head.add(top)
+        page.add(head)
+        self.items_page = page
+        self.item_groups = []
+        self.item_count = 0
+        return page
+
+    # ── Event handling ───────────────────────────────────────────────────────
+    def handle(self, line):
+        parts = [unescape(p) for p in line.split("\t")]
+        kind, args = parts[0], parts[1:] + [""] * 4
+        if kind == "MODE":
+            self.title_widget.set_subtitle(args[0])
+        elif kind == "PLAN":
+            self.add_section(args[0], args[1])
+        elif kind == "SECTION":
+            self.start_section(args[0], args[1])
+        elif kind == "LOG":
+            self.add_line(args[0] if args[0] in LEVELS else "info", args[1])
+        elif kind == "NOTICE":
+            self.add_notice(args[0], args[1])
+        elif kind == "ASK":
+            self.ask(args[0], args[1], args[2], args[3])
+        elif kind == "SUMMARY":
+            self.show_summary(args[0], args[1])
+        elif kind == "ITEMS":
+            self.clear_items()
+        elif kind == "ITEM":
+            self.add_item(args[0], args[1], args[2])
+        elif kind == "END":
+            self.end(args[0], args[1])
+
+    def add_section(self, num, title):
+        if num in self.sections:
+            return
+        row = SectionRow(num, title)
+        self.sections[num] = row
+        self.order.append(num)
+        self.section_list.append(row)
+        self.update_progress()
+
+    def close_current(self):
+        if self.current and self.current in self.sections:
+            self.sections[self.current].set_status(self.section_level)
+            started = self.section_started.get(self.current)
+            if started:
+                self.section_durations.append(time.monotonic() - started)
+
+    def start_section(self, num, title):
+        self.close_current()
+        if num not in self.sections:
+            self.add_section(num, title)
+        # Sections run in plan order; one that never started was not applicable here.
+        for earlier in self.order[: self.order.index(num)]:
+            if self.sections[earlier].status == "pending":
+                self.sections[earlier].set_status("skipped")
+        row = self.sections[num]
+        row.title.set_label(title)
+        row.set_status("running")
+        self.current, self.section_level = num, "ok"
+        self.section_started[num] = time.monotonic()
+        self.section_label.set_label(f"Section {num} · {title}")
+        self.add_line("section", f"Section {num}: {title}")
+        self.update_progress()
+
+    def done_count(self):
+        return sum(1 for r in self.sections.values() if r.status in FINAL)
+
+    def update_progress(self):
+        total = len(self.order)
+        if not total:
+            return
+        done = self.done_count()
+        position = done + (1 if self.current and not self.finished else 0)
+        frac = 1.0 if self.finished and self.exit_code == "0" else min(done / total, 0.99)
+        self.progress.set_fraction(frac)
+        if self.finished:
+            self.progress.set_text(f"{done} of {total} sections · {int(frac * 100)}%")
+        else:
+            self.progress.set_text(f"Step {position} of {total} · {int(frac * 100)}%")
+
+    def add_line(self, level, text):
+        if level != "section":
+            counted = LEVELS[level][2]
+            if counted:
+                self.counts[counted] += 1
+                self.chips[counted].set_label(str(self.counts[counted]))
+            if level == "warn" and self.section_level == "ok":
+                self.section_level = "warn"
+            elif level == "error":
+                self.section_level = "error"
+            if level not in ("out",):
+                self.step_label.set_label(text.split("\n")[0])
+        entry = (level, time.strftime("%H:%M:%S"), text)
+        self.lines.append(entry)
+        if len(self.lines) > MAX_LINES:
+            del self.lines[: len(self.lines) - MAX_LINES]
+        if self.matches(entry):
+            self.write(entry)
+
+    def matches(self, entry):
+        level, _, text = entry
+        if self.filter == "run" and level not in ("run", "dry", "out", "section"):
+            return False
+        if self.filter in ("ok", "warn", "error") and level not in (self.filter, "section"):
+            return False
+        q = self.search.get_text().strip().lower()
+        return not q or q in text.lower()
+
+    def write(self, entry):
+        level, ts, text = entry
+        end = self.buffer.get_end_iter()
+        self.buffer.insert_with_tags_by_name(end, ts + "  ", "time")
+        prefix = "" if level == "section" else LEVELS[level][0]
+        label = f"{prefix:<5} " if prefix else ("      │ " if level == "out" else "")
+        self.buffer.insert_with_tags_by_name(self.buffer.get_end_iter(),
+                                             label + text + "\n",
+                                             "section" if level == "section" else LEVELS[level][1])
+        if self.follow:
+            self.buffer.move_mark(self.end_mark, self.buffer.get_end_iter())
+            self.text.scroll_mark_onscreen(self.end_mark)
+
+    def refilter(self):
+        self.buffer.set_text("")
+        for entry in self.lines:
+            if self.matches(entry):
+                self.write(entry)
+
+    def on_filter(self, button, key):
+        if button.get_active():
+            self.filter = key
+            self.refilter()
+
+    def set_follow(self, on):
+        self.follow = on
+        if on:
+            self.buffer.move_mark(self.end_mark, self.buffer.get_end_iter())
+            self.text.scroll_mark_onscreen(self.end_mark)
+
+    def on_scrolled(self, adj):
+        # Scrolling up to read pauses following; scrolling back to the end resumes it.
+        at_end = adj.get_value() + adj.get_page_size() >= adj.get_upper() - 4
+        if self.follow != at_end and adj.get_upper() > adj.get_page_size():
+            self.follow_btn.set_active(at_end)
+
+    def add_notice(self, level, text):
+        box = Gtk.Box(spacing=12)
+        box.add_css_class("notice")
+        box.add_css_class(level)
+        icon = {"warning": "dialog-warning-symbolic",
+                "error": "dialog-error-symbolic"}.get(level, "dialog-information-symbolic")
+        box.append(Gtk.Image(icon_name=icon, pixel_size=20, valign=Gtk.Align.START))
+        box.append(Gtk.Label(label=text, xalign=0, wrap=True, hexpand=True,
+                             wrap_mode=Pango.WrapMode.WORD_CHAR))
+        close = Gtk.Button(icon_name="window-close-symbolic", valign=Gtk.Align.START,
+                           tooltip_text="Dismiss")
+        close.add_css_class("flat")
+        close.connect("clicked", lambda *_: self.notices.remove(box))
+        box.append(close)
+        self.notices.append(box)
+        self.add_line({"warning": "warn", "error": "error"}.get(level, "info"), text)
+
+    # ── Questions ────────────────────────────────────────────────────────────
+    def ask(self, ask_id, kind, default, text):
+        self.pending_ask = (ask_id, kind)
+        self.q_label.set_label(text)
+        is_input = kind == "input"
+        self.q_entry.set_visible(is_input)
+        self.q_no.set_visible(not is_input)
+        self.q_yes.set_label("_OK" if is_input else "_Yes")
+        if is_input:
+            self.q_entry.set_text(default)
+            self.question.set_reveal_child(True)
+            self.q_entry.grab_focus()
+        else:
+            self.question.set_reveal_child(True)
+            (self.q_no if default == "no" else self.q_yes).grab_focus()
+        self.step_label.set_label("Waiting for your answer")
+        self.add_line("info", f"Question: {text}")
+        self.asks += 1
+        self.present()
+        self.dump_state()
+
+    def answer(self, value):
+        if not self.pending_ask:
+            return
+        ask_id, kind = self.pending_ask
+        if kind == "input":
+            value = self.q_entry.get_text()
+        self.pending_ask = None
+        self.question.set_reveal_child(False)
+        self.add_line("info", f"Answer: {value if value != '' else '(blank)'}")
+        self.send("ANSWER", ask_id, value)
+        self.dump_state()
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+    def show_summary(self, headline, details):
+        self.sum_head.set_label(headline)
+        self.sum_body.set_label(details)
+        self.switcher.set_visible(True)
+        self.stack.set_visible_child_name("summary")
+
+    def clear_items(self):
+        for g in self.item_groups:
+            self.items_page.remove(g)
+        self.item_groups = []
+        self.item_count = 0
+
+    def add_item(self, priority, section, text):
+        titles = {"HIGH": "Needs attention", "MEDIUM": "Recommended", "LOW": "Optional",
+                  "DONE": "Resolved this run"}
+        group = next((g for g in self.item_groups if g.prio == priority), None)
+        if group is None:
+            group = Adw.PreferencesGroup(title=titles.get(priority, priority))
+            group.prio = priority
+            order = list(titles)
+            self.item_groups.append(group)
+            self.item_groups.sort(key=lambda g: order.index(g.prio) if g.prio in order else 9)
+            for g in self.item_groups:
+                if g.get_parent():
+                    self.items_page.remove(g)
+            for g in self.item_groups:
+                self.items_page.add(g)
+        row = Adw.ActionRow(title=GLib.markup_escape_text(text),
+                            subtitle=f"Section {section.lstrip('S')}" if section else "",
+                            title_lines=0)
+        badge = Gtk.Label(label=priority.title(), valign=Gtk.Align.CENTER)
+        badge.add_css_class("prio")
+        badge.add_css_class(priority)
+        row.add_prefix(badge)
+        copy = Gtk.Button(icon_name="edit-copy-symbolic", valign=Gtk.Align.CENTER,
+                          tooltip_text="Copy")
+        copy.add_css_class("flat")
+        copy.connect("clicked", lambda *_: self.copy_text(text, "Copied"))
+        row.add_suffix(copy)
+        group.add(row)
+        self.item_count += 1
+
+    def end(self, code, message):
+        self.close_current()
+        if code == "0":
+            for row in self.sections.values():
+                if row.status == "pending":
+                    row.set_status("skipped")
+        self.finished, self.exit_code = True, code
+        self.current = None
+        self.spinner.set_spinning(False)
+        self.spinner.set_visible(False)
+        self.status_icon.set_visible(True)
+        self.sum_icon.remove_css_class("ok")
+        if code == "0":
+            state, icon = ("warn", "dialog-warning-symbolic") if self.counts["error"] or \
+                self.counts["warn"] else ("ok", "object-select-symbolic")
+            self.section_label.set_label("Finished")
+        elif code == "130":
+            state, icon = "warn", "media-playback-stop-symbolic"
+            self.section_label.set_label("Stopped")
+        else:
+            state, icon = "error", "dialog-error-symbolic"
+            self.section_label.set_label("Stopped by an error")
+            self.progress.add_css_class("failed")
+        self.status_icon.set_from_icon_name(icon)
+        self.status_icon.add_css_class(f"st-{state}")
+        self.sum_icon.set_from_icon_name(icon)
+        self.sum_icon.add_css_class(state)
+        if message:
+            self.step_label.set_label(message)
+        if not self.sum_head.get_label():
+            self.sum_head.set_label(self.section_label.get_label())
+            self.sum_body.set_label(message)
+        self.switcher.set_visible(True)
+        if code != "0":
+            self.stack.set_visible_child_name("activity")
+        self.stop_btn.set_label("_Close")
+        self.stop_btn.remove_css_class("destructive-action")
+        self.stop_btn.add_css_class("suggested-action")
+        self.stop_btn.set_tooltip_text("Close this window (Ctrl+W)")
+        self.stop_btn.grab_focus()
+        self.question.set_reveal_child(False)
+        self.pending_ask = None
+        self.update_progress()
+        self.tick()
+        self.dump_state()
+
+    def dump_state(self):
+        """Test hook: with FH_GUI_STATE set, write what the window shows to that file."""
+        path = os.environ.get("FH_GUI_STATE")
+        if not path:
+            return
+        asking = f"{self.pending_ask[1]}|{self.q_label.get_label()}" if self.pending_ask else ""
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
+            print(f"exit={self.exit_code if self.finished else ''}", file=fh)
+            print(f"sections={len(self.order)} done={self.done_count()}", file=fh)
+            print(f"ok={self.counts['ok']} warn={self.counts['warn']} "
+                  f"error={self.counts['error']} lines={len(self.lines)}", file=fh)
+            print(f"items={self.item_count}", file=fh)
+            print(f"headline={self.sum_head.get_label()}", file=fh)
+            print(f"asks={self.asks}", file=fh)
+            print(f"asking={asking}", file=fh)
+        os.replace(path + ".tmp", path)
+
+    def tick(self):
+        if self.finished and getattr(self, "_clock_frozen", False):
+            return True
+        text = fmt_clock(time.monotonic() - self.started)
+        remaining = len(self.order) - self.done_count()
+        if not self.finished and self.section_durations and remaining > 0:
+            per = sum(self.section_durations) / len(self.section_durations)
+            mins = max(1, round(per * remaining / 60))
+            text += f"\nabout {mins} min left"
+        self.clock_label.set_label(text)
+        self._clock_frozen = self.finished
+        return True
+
+    # ── Closing, copying, output ─────────────────────────────────────────────
+    def request_close(self):
+        if self.finished or self.exit_code is not None:
+            self.get_application().quit()
+            return
+        dialog = Adw.AlertDialog(
+            heading="Stop the run?",
+            body="The current step finishes first. Changes made so far stay in place; "
+                 "undo them with: sudo ./fedora-harden.sh --rollback")
+        dialog.add_response("keep", "_Keep running")
+        dialog.add_response("stop", "_Stop")
+        dialog.set_response_appearance("stop", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("keep")
+        dialog.set_close_response("keep")
+        dialog.connect("response", self.on_stop_response)
+        dialog.present(self)
+
+    def on_stop_response(self, _dialog, response):
+        if response != "stop" or self.cancel_sent:
+            return
+        self.cancel_sent = True
+        self.stop_btn.set_sensitive(False)
+        self.section_label.set_label("Stopping…")
+        self.step_label.set_label("Waiting for the current step to finish")
+        if self.pending_ask:
+            self.question.set_reveal_child(False)
+            self.pending_ask = None
+        self.send("CANCEL")
+
+    def on_close_request(self, *_):
+        if self.finished:
+            return False
+        self.request_close()
+        return True
+
+    def on_close_key(self, *_):
+        self.request_close()
+        return True
+
+    def on_f9(self, *_):
+        self.sidebar_btn.set_active(not self.sidebar_btn.get_active())
+        return True
+
+    def copy_text(self, text, toast):
+        Gdk.Display.get_default().get_clipboard().set_content(
+            Gdk.ContentProvider.new_for_bytes("text/plain;charset=utf-8",
+                                              GLib.Bytes.new(text.encode())))
+        self.toasts.add_toast(Adw.Toast(title=toast, timeout=2))
+
+    def copy_log(self, problems_only):
+        keep = ("warn", "error", "section") if problems_only else None
+        text = "\n".join(f"{ts}  {LEVELS[lv][0] if lv in LEVELS else ''} {t}".rstrip()
+                         for lv, ts, t in self.lines if keep is None or lv in keep)
+        self.copy_text(text, "Problems copied" if problems_only else "Activity log copied")
+
+    def send(self, *fields):
+        try:
+            sys.stdout.write("\t".join(escape(str(f)) for f in fields) + "\n")
+            sys.stdout.flush()
+        except (BrokenPipeError, OSError):
+            pass  # the script has exited; the window stays for reading
+
+
+class HardenApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=None, flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.win = None
+
+    def do_activate(self):
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+        css = Gtk.CssProvider()
+        css.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+        self.win = HardenWindow(self)
+        self.win.present()
+        self.stream = Gio.DataInputStream.new(UnixInputStream.new(0, False))
+        self.read_next()
+        self.win.send("READY")
+
+    def read_next(self):
+        self.stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.on_line)
+
+    def on_line(self, stream, result):
+        try:
+            data, _ = stream.read_line_finish_utf8(result)
+        except GLib.Error:
+            data = None
+        if data is None:  # the script exited
+            if not self.win.finished:
+                self.win.end("1", "The run ended without saying how; see the log.")
+            return
+        if data:
+            self.win.handle(data)
+        self.read_next()
+
+
+if __name__ == "__main__":
+    sys.exit(HardenApp().run([sys.argv[0]]))
+GUIAPP_EOF
+	chmod 600 "$app"
+
+	# Root often has no UTF-8 locale (sudo -i, pkexec); the window text needs one.
+	local -a env_add=(PYTHONDONTWRITEBYTECODE=1)
+	[[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" =~ [Uu][Tt][Ff]-?8 ]] || env_add+=(LC_ALL=C.UTF-8)
+	# Writing to the window after it closed must not kill the script (SIGPIPE).
+	trap '' PIPE
+	coproc GUI_APP { exec env "${env_add[@]}" python3 "$app" 2>>"$GUI_DIR/window.log"; }
+	GUI_APP_PID="${GUI_APP_PID:-}"
+	# Plain descriptors (not the coproc's) so subshells such as log_stream can use them.
+	exec {GUI_TX_FD}>&"${GUI_APP[1]}" {GUI_RX_FD}<&"${GUI_APP[0]}"
+	local ready=""
+	read -r -t 30 -u "$GUI_RX_FD" ready 2>/dev/null || true
+	if [[ "$ready" != READY ]]; then
+		[[ -n "$GUI_APP_PID" ]] && kill "$GUI_APP_PID" 2>/dev/null
+		exec {GUI_TX_FD}>&- {GUI_RX_FD}<&-
+		GUI_TX_FD="" GUI_RX_FD="" GUI_APP_PID=""
+		trap - PIPE
+		warn "The --gui window did not open (see $GUI_DIR/window.log) — using the terminal."
+		return 0
 	fi
+	GUI_FULL_MODE=1
+	printf '%s[INFO]%s  Running in the "Fedora Hardening" window. Closing it asks before stopping.\n' "$C_BLU" "$C_RST"
+	local mode="Applying changes"
+	((DRY_RUN)) && mode="Dry run — nothing is changed"
+	gui_send MODE "$mode"
 }
 
-# calc_section_total() - Estimate number of sections that will run for progress display.
-# Uses current --only/--skip filters against the fixed execution plan.
+# gui_send() - Send one event to the window: gui_send <KIND> [field...]
+# Fields are escaped (backslash, tab, newline) so every event is one line.
+gui_send() {
+	[[ -n "$GUI_TX_FD" ]] || return 0
+	local out="$1" f
+	shift
+	for f in "$@"; do
+		f="${f//\\/\\\\}"
+		f="${f//$'\t'/\\t}"
+		out+=$'\t'"${f//$'\n'/\\n}"
+	done
+	printf '%s\n' "$out" 1>&"$GUI_TX_FD" 2>/dev/null || true
+	return 0
+}
+
+# gui_text() - Messages written for the terminal use a literal "\n" for line breaks.
+gui_text() {
+	printf '%s' "${1//\\n/$'\n'}"
+}
+
+# calc_section_total() - Count the sections this run will execute (--only/--skip
+# applied) and, with --gui, show them in the window in execution order.
 calc_section_total() {
-	local planned=("${SECTIONS[@]}")
-	local s n=0
-	for s in "${planned[@]}"; do
+	local s n=0 num title
+	if ((GUI_FULL_MODE)); then
+		while read -r num title; do
+			[[ "$num" =~ ^[0-9]+$ ]] && GUI_SECTION_TITLES[$num]="${title%:}"
+		done < <(list_sections | sed '/^$/q')
+	fi
+	for s in "${SECTIONS[@]}"; do
 		[[ -n "$ONLY_LIST" ]] && ! in_list "$s" "$ONLY_LIST" && continue
 		[[ -n "$SKIP_LIST" ]] && in_list "$s" "$SKIP_LIST" && continue
 		((++n))
+		gui_send PLAN "$s" "${GUI_SECTION_TITLES[$s]:-Section $s}"
 	done
-	((n > 0)) && UI_SECTION_TOTAL="$n" || UI_SECTION_TOTAL="${#planned[@]}"
+	((n > 0)) && UI_SECTION_TOTAL="$n" || UI_SECTION_TOTAL="${#SECTIONS[@]}"
 	UI_SECTION_DONE=0
 }
 
-# gui_markup_escape() - Escape text for zenity, which renders dialog and progress text
-# as Pango markup: a bare '&', '<' or '>' makes GTK drop the whole message.
-# Usage: gui_markup_escape <text>
-gui_markup_escape() {
-	local t="${1//&/&amp;}"
-	t="${t//</&lt;}"
-	t="${t//>/&gt;}"
-	printf '%s' "$t"
-}
-
-# gui_progress_active() - True while the --gui-full progress window is open.
-gui_progress_active() {
-	case "$GUI_TOOL" in
-	zenity) [[ -n "$GUI_PROGRESS_PIPE_FD" ]] ;;
-	kdialog) [[ -n "$GUI_PROGRESS_REF" ]] ;;
-	*) return 1 ;;
-	esac
-}
-
-# gui_kdialog_dbus() - Call a method on the kdialog progress dialog over D-Bus.
-# kdialog --progressbar prints "<service> <object-path>"; qdbus needs them as two
-# separate arguments.
-# Usage: gui_kdialog_dbus <method> [args...]
-gui_kdialog_dbus() {
-	[[ -n "$GUI_PROGRESS_REF" && -n "${QDBUS_CMD:-}" ]] || return 1
-	local svc path
-	read -r svc path <<<"$GUI_PROGRESS_REF"
-	[[ -n "$svc" && -n "$path" ]] || return 1
-	"$QDBUS_CMD" "$svc" "$path" "$@" 2>/dev/null
-}
-
-# gui_alert() - Show concise GUI notifications for summary and fatal errors.
-# While the --gui-full progress window is open, messages go into that window.
-# Afterwards (end of run, aborts) they are shown as dialogs that do not block the
-# script, so it can finish and exit while the user reads them.
-# Usage: gui_alert <info|warning|error> <message>
+# gui_alert() - Something the user should read: a notice in the window (it stays
+# until dismissed). Usage: gui_alert <info|warning|error> <message>
 gui_alert() {
-	local level="$1" message="$2"
-	((GUI_MODE)) || return 0
-
-	if ((GUI_FULL_MODE && GUI_SINGLE_WINDOW_MODE)) && gui_progress_active; then
-		local one_line="$message"
-		one_line="${one_line//$'\n'/ | }"
-		one_line="${one_line//\\n/ | }"
-		case "$level" in
-		info) gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$one_line" ;;
-		warning) gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "Warning: $one_line" ;;
-		error) gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "Error: $one_line" ;;
-		esac
-		return 0
-	fi
-
-	# Interactive --gui mode keeps modal dialogs; --gui-full end-of-run dialogs are detached.
-	local -a dlg=()
-	case "$GUI_TOOL" in
-	kdialog)
-		case "$level" in
-		info) dlg=(gui_kdialog --title "$SCRIPT_NAME" --msgbox "$message") ;;
-		warning) dlg=(gui_kdialog --title "$SCRIPT_NAME" --sorry "$message") ;;
-		error) dlg=(gui_kdialog --title "$SCRIPT_NAME" --error "$message") ;;
-		esac
-		;;
-	zenity)
-		local text
-		text="$(gui_markup_escape "$message")"
-		case "$level" in
-		info) dlg=(gui_zenity --info --title="$SCRIPT_NAME" --text="$text" --width=460) ;;
-		warning) dlg=(gui_zenity --warning --title="$SCRIPT_NAME" --text="$text" --width=460) ;;
-		error) dlg=(gui_zenity --error --title="$SCRIPT_NAME" --text="$text" --width=460) ;;
-		esac
-		;;
-	esac
-	((${#dlg[@]})) || return 0
-	if ((GUI_FULL_MODE)); then
-		"${dlg[@]}" >/dev/null 2>&1 &
-		disown "$!" 2>/dev/null || true
-	else
-		"${dlg[@]}" >/dev/null 2>&1 || true
-	fi
-	return 0
+	((GUI_FULL_MODE)) || return 0
+	gui_send NOTICE "$1" "$(gui_text "$2")"
 }
 
-# gui_final_summary() - One end-of-run window. With follow-up items (zenity) it is
-# a sortable list (HIGH first) with the summary as its header; otherwise a message.
-# Non-blocking in --gui-full so the script can exit while the user reads it.
+# gui_send_items() - Show the follow-up items (open ones by priority, then the ones
+# resolved this run) on the window's summary page.
+gui_send_items() {
+	((GUI_FULL_MODE)) || return 0
+	local item section priority tag desc
+	gui_send ITEMS
+	for item in "${ACTIONABLE_ITEMS[@]}"; do
+		IFS='|' read -r section priority tag desc <<<"$item"
+		gui_send ITEM "$priority" "$section" "$desc"
+	done
+	for item in "${REMEDIATED_ITEMS[@]}"; do
+		IFS='|' read -r section priority tag desc <<<"$item"
+		gui_send ITEM DONE "$section" "$desc"
+	done
+}
+
+# gui_final_summary() - Switch the window to its summary page.
 # Usage: gui_final_summary <headline> <details>
-GUI_SUMMARY_SHOWN=0
 gui_final_summary() {
-	local headline="$1" details="$2"
-	((GUI_MODE)) || return 0
-	GUI_SUMMARY_SHOWN=1
-	if ((${#ACTIONABLE_ITEMS[@]} == 0)) || [[ "$GUI_TOOL" != zenity ]]; then
-		local body="${headline}\n\n${details}"
-		if ((${#ACTIONABLE_ITEMS[@]} > 0)); then
-			local item section priority tag desc
-			body+="\n\nFollow-up items:"
-			for item in "${ACTIONABLE_ITEMS[@]}"; do
-				IFS='|' read -r section priority tag desc <<<"$item"
-				body+="\n• [${priority}] §${section}: ${desc}"
-			done
-		fi
-		gui_alert info "$body"
-		return 0
-	fi
+	((GUI_FULL_MODE)) || return 0
+	gui_send SUMMARY "$1" "$(gui_text "$2")"
+	gui_send_items
+}
 
-	# Text view (not a list): it wraps long items and lets the user select and copy
-	# the commands they contain.
-	local report="${GUI_THEME_DIR:-/tmp}/summary-${RUN_STAMP}.txt"
-	local line rank section priority tag desc current=""
-	{
-		printf '%s\n\n' "$headline"
-		printf '%b\n' "$details"
-		printf '\n──────────── Follow-up items ────────────\n'
-		for line in "${ACTIONABLE_ITEMS[@]}"; do
-			IFS='|' read -r section priority tag desc <<<"$line"
-			case "$priority" in HIGH) rank=1 ;; MEDIUM) rank=2 ;; *) rank=3 ;; esac
-			printf '%s|%s|%s|%s\n' "$rank" "${section#S}" "$priority" "$desc"
-		done | sort -t'|' -k1,1n -k2,2n | while IFS='|' read -r rank section priority desc; do
-			if [[ "$priority" != "$current" ]]; then
-				printf '\n%s\n' "$priority"
-				current="$priority"
-			fi
-			printf '  • §%-3s %s\n' "$section" "$desc"
-		done
-	} >"$report" 2>/dev/null || return 0
-	chmod 600 "$report" 2>/dev/null || true
-	local -a dlg=(gui_zenity --text-info --title="$SCRIPT_NAME" --filename="$report"
-		--width=900 --height=600 --ok-label=Done)
-	if ((GUI_FULL_MODE)); then
-		"${dlg[@]}" >/dev/null 2>&1 &
-		disown "$!" 2>/dev/null || true
-	else
-		"${dlg[@]}" >/dev/null 2>&1 || true
-	fi
+# gui_finish() - Tell the window the run is over (once; called from the EXIT trap).
+# The window stays open for reading; the script does not wait for it.
+gui_finish() {
+	local rc="$1" msg
+	((GUI_FULL_MODE && !GUI_ENDED)) || return 0
+	GUI_ENDED=1
+	case "$rc" in
+	0) msg="Finished. A reboot is recommended to apply kernel, sysctl and PAM changes." ;;
+	130) msg="Stopped at your request. Undo changes with: sudo $SCRIPT_NAME --rollback" ;;
+	*) msg="Stopped by an error (exit $rc). Log: ${LOG_WHERE:-$LOG_FILE}" ;;
+	esac
+	gui_send_items
+	gui_send END "$rc" "$msg"
+	exec {GUI_TX_FD}>&- {GUI_RX_FD}<&- 2>/dev/null
+	GUI_TX_FD="" GUI_RX_FD=""
+	[[ -n "$GUI_APP_PID" ]] && disown "$GUI_APP_PID" 2>/dev/null
+	trap - PIPE
 	return 0
 }
 
-# gui_dialog_failed() - Handle a dialog that exited with an error (not Yes/No/Cancel):
-# typically no usable display (missing XAUTHORITY, dead session). Treating that as
-# "No" would silently decline every prompt, so fall back to terminal prompts instead.
-# Usage: gui_dialog_failed <exit-code>
-gui_dialog_failed() {
-	warn "GUI dialog failed (exit $1, display unusable?) — falling back to terminal prompts."
-	GUI_MODE=0
-	GUI_FULL_MODE=0
-	GUI_SINGLE_WINDOW_MODE=0
+# gui_lost() - The window went away mid-run: the user closed it (it asks first) or it
+# crashed. Either way the run stops instead of going on unseen.
+gui_lost() {
+	GUI_CANCEL_REQUESTED=1
+	[[ -n "$GUI_DIR" ]] && : >"$GUI_DIR/cancelled" 2>/dev/null
+	return 0
+}
+
+# gui_read_line() - Read one line from the window into the named variable; on EOF
+# (window gone) mark the run as cancelled. Usage: gui_read_line <var> [timeout]
+gui_read_line() {
+	local -n _line="$1"
+	local -a t=()
+	[[ -n "${2:-}" ]] && t=(-t "$2")
+	if ! IFS= read -r "${t[@]}" -u "$GUI_RX_FD" _line 2>/dev/null; then
+		gui_lost
+		return 1
+	fi
+	[[ "$_line" == CANCEL ]] && gui_lost
+	return 0
+}
+
+# gui_ask() - Ask in the window and wait for the answer.
+# Usage: gui_ask <confirm|input> <default> <text> <result-var>
+# Returns 1 when there is no answer (window gone or the user stopped the run).
+gui_ask() {
+	local -n _answer="$4"
+	[[ -n "$GUI_RX_FD" ]] && ((!GUI_CANCEL_REQUESTED)) || return 1
+	# The id must be unique in subshells too (prompt_input runs inside $(...)).
+	local id="$BASHPID-$RANDOM" line
+	gui_send ASK "$id" "$1" "$2" "$(gui_text "$3")"
+	while gui_read_line line; do
+		[[ "$line" == CANCEL ]] && return 1
+		if [[ "$line" == ANSWER$'\t'"$id"$'\t'* ]]; then
+			line="${line#ANSWER$'\t'"$id"$'\t'}"
+			line="${line//\\n/$'\n'}"
+			line="${line//\\t/$'\t'}"
+			_answer="${line//\\\\/\\}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# gui_check_cancel() - True once the user stopped the run (Stop button, or closing the
+# window and confirming) or the window went away.
+gui_check_cancel() {
+	((GUI_FULL_MODE)) || return 1
+	((GUI_CANCEL_REQUESTED)) && return 0
+	[[ -n "$GUI_DIR" && -e "$GUI_DIR/cancelled" ]] && GUI_CANCEL_REQUESTED=1 && return 0
+	local line
+	while [[ -n "$GUI_RX_FD" ]] && read -r -t 0 -u "$GUI_RX_FD" 2>/dev/null; do
+		gui_read_line line 1 || break
+	done
+	((GUI_CANCEL_REQUESTED)) && return 0
+	if [[ -n "$GUI_APP_PID" ]] && ! kill -0 "$GUI_APP_PID" 2>/dev/null; then
+		gui_lost
+		return 0
+	fi
+	return 1
+}
+
+# abort_if_cancelled() - Stop the run when the user asked to.
+abort_if_cancelled() {
+	if gui_check_cancel; then
+		err "Execution cancelled by user from the window."
+		exit 130
+	fi
 }
 
 # prompt_input() - Request free-form input from user in GUI or terminal mode.
@@ -1000,200 +1458,15 @@ prompt_input() {
 		return 0
 	fi
 
-	if ((GUI_MODE)); then
-		local rc=0
-		case "$GUI_TOOL" in
-		kdialog)
-			value="$(gui_kdialog --title "$SCRIPT_NAME" --inputbox "$prompt" "$default_value" 2>/dev/null)" || rc=$?
-			;;
-		zenity)
-			value="$(gui_zenity --entry --title="$SCRIPT_NAME" --text="$(gui_markup_escape "$prompt")" --entry-text="$default_value" --width=520 2>/dev/null)" || rc=$?
-			;;
-		esac
-		if ((rc > 1)); then
-			gui_dialog_failed "$rc"
-			value=""
-		else
-			printf '%s' "$value"
-			return 0
-		fi
+	if ((GUI_FULL_MODE)); then
+		# No answer means the run was stopped: return nothing; the next step exits.
+		gui_ask input "$default_value" "$prompt" value || value=""
+		printf '%s' "$value"
+		return 0
 	fi
 	read -r -p "$(printf '%s[??]%s  %s ' "$C_YEL" "$C_RST" "$prompt")" value || true
 
 	printf '%s' "$value"
-}
-
-# gui_progress_start() - Open the --gui-full progress window.
-gui_progress_start() {
-	((GUI_FULL_MODE)) || return 0
-
-	case "$GUI_TOOL" in
-	kdialog)
-		if [[ -n "${QDBUS_CMD:-}" ]]; then
-			# Read only the first line, with a timeout: $(...) waits for EOF and hangs if a
-			# helper process keeps kdialog's stdout open.
-			GUI_PROGRESS_REF=""
-			read -r -t 10 GUI_PROGRESS_REF < <(gui_kdialog --title "$SCRIPT_NAME" --progressbar "Initializing hardening..." "$UI_SECTION_TOTAL" 2>/dev/null) || true
-			[[ -n "$GUI_PROGRESS_REF" ]] || warn "kdialog progress window did not start — continuing without it."
-			if [[ -n "$GUI_PROGRESS_REF" ]]; then
-				gui_kdialog_dbus showCancelButton true >/dev/null || true
-				gui_kdialog_dbus setLabelText "Preparing section execution..." >/dev/null || true
-				gui_kdialog_dbus Set "" value 0 >/dev/null || true
-			fi
-		else
-			warn "qdbus not found; kdialog progress updates are limited."
-		fi
-		;;
-	zenity)
-		# Writing to the window after it closed must not kill the script with SIGPIPE;
-		# a failed write is handled explicitly in gui_progress_update instead.
-		trap '' PIPE
-		# No --auto-close: the window closes when gui_progress_close says so, not when
-		# the bar first reaches 100% (later status writes would then fail).
-		# exec: the coproc PID must be zenity itself, or closing would orphan the window.
-		coproc GUI_ZENITY_PROGRESS {
-			exec env "${GUI_ZENITY_ENV[@]}" zenity --progress \
-				--title="$SCRIPT_NAME" \
-				--text="Preparing section execution..." \
-				--percentage=0 \
-				--width=640 2>/dev/null
-		}
-		GUI_PROGRESS_PIPE_FD="${GUI_ZENITY_PROGRESS[1]:-}"
-		# A named coproc stores its PID in <NAME>_PID (COPROC_PID is only for unnamed ones).
-		GUI_PROGRESS_PID="${GUI_ZENITY_PROGRESS_PID:-}"
-		;;
-	esac
-}
-
-# gui_progress_update() - Stream progress updates directly to GUI widgets.
-# Usage: gui_progress_update <current> <total> <message>
-gui_progress_update() {
-	local current="$1" total="$2" message="$3"
-	((GUI_FULL_MODE)) || return 0
-	((total <= 0)) && total=1
-	((current < 0)) && current=0
-	((current > total)) && current=total
-	local pct=$((current * 100 / total))
-	# 100% is reserved for gui_progress_close: the run is not finished when the last
-	# section starts.
-	((pct >= 100)) && pct=99
-	GUI_LAST_STATUS="$message"
-
-	case "$GUI_TOOL" in
-	kdialog)
-		[[ -n "$GUI_PROGRESS_REF" ]] || return 0
-		if [[ "$(gui_kdialog_dbus wasCancelled || echo false)" == "true" ]]; then
-			GUI_CANCEL_REQUESTED=1
-			return 0
-		fi
-		gui_kdialog_dbus Set "" value "$current" >/dev/null || true
-		gui_kdialog_dbus setLabelText "$message" >/dev/null || true
-		;;
-	zenity)
-		[[ -n "$GUI_PROGRESS_PIPE_FD" ]] || return 0
-		# zenity exits only when the user presses Cancel or closes the window.
-		if [[ -n "$GUI_PROGRESS_PID" ]] && ! kill -0 "$GUI_PROGRESS_PID" 2>/dev/null; then
-			GUI_CANCEL_REQUESTED=1
-			return 0
-		fi
-		printf '%s\n# %s\n' "$pct" "$(gui_markup_escape "$message")" 1>&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null || true
-		;;
-	esac
-	return 0
-}
-
-# gui_progress_close() - Finish and close the progress window (idempotent).
-gui_progress_close() {
-	((GUI_FULL_MODE)) || return 0
-
-	case "$GUI_TOOL" in
-	kdialog)
-		if [[ -n "$GUI_PROGRESS_REF" ]]; then
-			gui_kdialog_dbus Set "" value "$UI_SECTION_TOTAL" >/dev/null || true
-			gui_kdialog_dbus close >/dev/null || true
-			GUI_PROGRESS_REF=""
-		fi
-		;;
-	zenity)
-		if [[ -n "$GUI_PROGRESS_PIPE_FD" ]]; then
-			printf '100\n# %s\n' "Finished." 1>&"$GUI_PROGRESS_PIPE_FD" 2>/dev/null || true
-			exec {GUI_PROGRESS_PIPE_FD}>&- 2>/dev/null || true
-			GUI_PROGRESS_PIPE_FD=""
-		fi
-		if [[ -n "$GUI_PROGRESS_PID" ]]; then
-			# Without --auto-close zenity waits for "OK" at 100%; close it ourselves —
-			# the end-of-run summary is shown in its own dialog.
-			kill "$GUI_PROGRESS_PID" 2>/dev/null || true
-			wait "$GUI_PROGRESS_PID" 2>/dev/null || true
-			GUI_PROGRESS_PID=""
-		fi
-		trap - PIPE
-		;;
-	esac
-	return 0
-}
-
-# gui_status_event() - Route status messages to GUI widgets without file polling.
-# Usage: gui_status_event <info|ok|warning|error> <message>
-gui_status_event() {
-	local level="$1" message="$2"
-	((GUI_FULL_MODE)) || return 0
-	local popup_ok=1
-	((GUI_SINGLE_WINDOW_MODE)) && popup_ok=0
-
-	case "$level" in
-	info | ok)
-		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-		;;
-	warning)
-		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-		# Must not end the function on a false test: callers (warn/err) run under set -e.
-		if ((popup_ok)); then
-			gui_alert warning "$message"
-		fi
-		;;
-	error)
-		gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$message"
-		# Must not end the function on a false test: callers (warn/err) run under set -e.
-		if ((popup_ok)); then
-			gui_alert error "$message"
-		fi
-		;;
-	esac
-}
-
-# gui_check_cancel() - Poll for GUI cancel requests across supported frontends.
-gui_check_cancel() {
-	((GUI_FULL_MODE)) || return 1
-	((GUI_CANCEL_REQUESTED)) && return 0
-
-	case "$GUI_TOOL" in
-	kdialog)
-		if [[ "$(gui_kdialog_dbus wasCancelled || echo false)" == "true" ]]; then
-			GUI_CANCEL_REQUESTED=1
-			return 0
-		fi
-		;;
-	zenity)
-		# The progress window only exits early when the user cancels or closes it.
-		if [[ -n "$GUI_PROGRESS_PIPE_FD" && -n "$GUI_PROGRESS_PID" ]] &&
-			! kill -0 "$GUI_PROGRESS_PID" 2>/dev/null; then
-			GUI_CANCEL_REQUESTED=1
-			return 0
-		fi
-		;;
-	esac
-	return 1
-}
-
-# abort_if_cancelled() - Gracefully terminate when user cancels from GUI frontend.
-# Includes the last status message in the error for context when available.
-abort_if_cancelled() {
-	if gui_check_cancel; then
-		local ctx="${GUI_LAST_STATUS:+ (last: $GUI_LAST_STATUS)}"
-		err "Execution cancelled by user from GUI frontend.${ctx}"
-		exit 130
-	fi
 }
 
 # ---------- Logging helpers -------------------------------------------------
@@ -1250,6 +1523,7 @@ log_stream() {
 	local line
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		log "  | $line"
+		gui_send LOG out "$line"
 	done
 }
 
@@ -1259,7 +1533,7 @@ log_stream() {
 info() {
 	((!GUI_FULL_MODE)) && printf '%s[INFO]%s  %s\n' "$C_BLU" "$C_RST" "$*"
 	log "[INFO]  $*"
-	gui_status_event info "$*"
+	gui_send LOG info "$*"
 }
 
 # ok() - Write success message to stdout and log (green color).
@@ -1268,7 +1542,7 @@ info() {
 ok() {
 	((!GUI_FULL_MODE)) && printf '%s[ OK ]%s  %s\n' "$C_GRN" "$C_RST" "$*"
 	log "[OK]    $*"
-	gui_status_event ok "$*"
+	gui_send LOG ok "$*"
 }
 
 # warn() - Write warning message to stdout and log (yellow color).
@@ -1277,7 +1551,7 @@ ok() {
 warn() {
 	((!GUI_FULL_MODE)) && printf '%s[WARN]%s  %s\n' "$C_YEL" "$C_RST" "$*"
 	log "[WARN]  $*"
-	gui_status_event warning "$*"
+	gui_send LOG warn "$*"
 }
 
 # err() - Write error message to stderr and log (red color).
@@ -1287,7 +1561,7 @@ err() {
 	((++ERR_COUNT))
 	((!GUI_FULL_MODE)) && printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2
 	log "[ERROR] $*"
-	gui_status_event error "$*"
+	gui_send LOG error "$*"
 }
 
 # capture_error_context() - Log detailed error information including command, exit code, and stderr.
@@ -1319,7 +1593,7 @@ section() {
 		printf '%s Progress:%s %s %d/%d (%d%%)\n' "$C_BLU" "$C_RST" "$pb" "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$pct"
 		printf '%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
 	fi
-	gui_progress_update "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "Section $n: $*"
+	gui_send SECTION "$n" "$*"
 	log "==== Section $n: $* ===="
 }
 
@@ -1333,11 +1607,12 @@ run() {
 	LAST_RUN_CMD="$*"
 	if ((DRY_RUN)); then
 		((!GUI_FULL_MODE)) && printf '%s[DRY ]%s  %s\n' "$C_YEL" "$C_RST" "$*"
-		((GUI_FULL_MODE)) && gui_status_event info "DRY RUN: $*"
+		gui_send LOG dry "$*"
 		log "[DRY]   $*"
 		return 0
 	fi
 	log "[RUN]   $*"
+	gui_send LOG run "$*"
 	_track_units "$*"
 	local rc=0
 	if ((GUI_FULL_MODE)); then
@@ -1773,19 +2048,15 @@ confirm() {
 		return 0
 	fi
 
-	if ((GUI_MODE)); then
-		local rc=0
-		case "$GUI_TOOL" in
-		kdialog)
-			gui_kdialog --title "$SCRIPT_NAME" --yesno "$prompt" 2>/dev/null || rc=$?
-			;;
-		zenity)
-			gui_zenity --question --title="$SCRIPT_NAME" --text="$(gui_markup_escape "$prompt")" --width=480 2>/dev/null || rc=$?
-			;;
-		esac
-		# 0 = Yes, 1 = No/closed; anything else means the dialog itself failed.
-		((rc <= 1)) && return "$rc"
-		gui_dialog_failed "$rc"
+	if ((GUI_FULL_MODE)); then
+		local answer=""
+		if gui_ask confirm "$default" "$prompt" answer; then
+			[[ "$answer" == yes ]]
+			return
+		fi
+		# No answer: the user stopped the run (or closed the window).
+		abort_if_cancelled
+		return 1
 	fi
 
 	local reply
@@ -2247,7 +2518,7 @@ diagnose_failures() {
 trap_cleanup() {
 	local rc=$?
 	[[ "$BASHPID" == "$$" ]] || return "$rc" # subshells never clean up for the run
-	gui_progress_close || true
+	gui_finish "$rc"
 	release_run_lock
 	# Clean all registered temp files (registered via register_tmp())
 	local _f
@@ -2276,10 +2547,9 @@ trap_err() {
 		exit "$rc"
 	fi
 	SESSION_STATUS="aborted"
-	trap_cleanup || true
 	capture_error_context "$line" "$cmd_ctx" "$rc" "$ERROR_CAPTURE_FILE" 2>/dev/null || true
 	err "Aborted at line $line (exit $rc). Log: ${LOG_WHERE:-$LOG_FILE}"
-	gui_alert error "Hardening aborted at line $line (exit $rc).\n\nLog: ${LOG_WHERE:-$LOG_FILE}"
+	trap_cleanup || true
 	exit "$rc"
 }
 # Enable error and exit traps to catch unexpected failures and clean resources.
@@ -2640,6 +2910,12 @@ _apply_rollback_journal() {
 				_rjl "  [WARN] SERVICE_ENABLE  $detail"
 				((++_RBJ_ERRORS))
 			fi
+			;;
+
+		SNAPSHOT_DATA)
+			# Snapshots and copies are the person's data: never deleted by rollback.
+			info "Kept home snapshots/copies in $detail — delete them yourself if you no longer want them."
+			_rjl "  [KEEP] SNAPSHOT_DATA  $detail"
 			;;
 
 		SYSFS)
@@ -3373,6 +3649,7 @@ list_sections() {
  22  OpenSCAP (image-based: from a container)
  23  Container security (Podman + toolbox/distrobox / containerized-mindset setup)
  24  Your routine: upkeep, health and drift checks for your use cases (--profile)
+ 25  Home snapshots (Btrfs) or incremental copies, as often as the machine is used
 
  Optimized execution order (guide section numbers):
     2,3,6,13,4,5,7,9,10,11,14,18,15,16,17,21,22,23,12,19,20,8
@@ -3394,7 +3671,7 @@ EOF
 }
 
 # parse_args() - Parse command-line arguments and set global flags.
-# Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui, --gui-full,
+# Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui,
 # --report, --resume, --wireguard-config, --skip, --only, --list, -h/--help
 # Validates option syntax and applies settings globally for use throughout script.
 # Usage: parse_args "$@" (called in main before preflight)
@@ -3413,6 +3690,14 @@ parse_args() {
 		-y | --yes)
 			ASSUME_YES=1
 			shift
+			;;
+		--backup-target)
+			if [[ -z "${2:-}" || ! -d "$2" ]]; then
+				err "--backup-target needs an existing directory (on a second drive)."
+				exit 2
+			fi
+			BACKUP_TARGET="$(realpath -- "$2")"
+			shift 2
 			;;
 		--profile)
 			if [[ ! "${2:-}" =~ ^(everyday|gaming|creative|dev|laptop)(,(everyday|gaming|creative|dev|laptop))*$ ]]; then
@@ -3441,10 +3726,6 @@ parse_args() {
 			;;
 		--gui)
 			FORCE_GUI=1
-			shift
-			;;
-		--gui-full)
-			FORCE_GUI_FULL=1
 			shift
 			;;
 		--report)
@@ -3563,7 +3844,7 @@ release_run_lock() {
 # Usage: preflight (called in main after parse_args)
 preflight() {
 	local privilege_source="direct root login/session"
-	((FORCE_GUI_FULL)) || draw_banner
+	((FORCE_GUI)) || draw_banner
 	setup_ui_mode
 	if ((EUID != 0)); then
 		err "This script must be run as root (use sudo)."
@@ -4859,7 +5140,7 @@ sec_12_ids() {
 		if ((!DRY_RUN)); then
 			log "[RUN]   rkhunter --check --sk --rwo"
 			if ((GUI_FULL_MODE)); then
-				rkhunter --check --sk --rwo >"$rk_tmp" 2>&1 || true
+				rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" | log_stream || true
 			else
 				rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" || true
 			fi
@@ -5824,6 +6105,158 @@ VPNEOF
 }
 
 # ============================================================================
+#  SECTION 25 — Home snapshots and copies
+# ============================================================================
+# sec_25_snapshots() - Protect the home folder against deleted or overwritten files,
+# with what the system already ships: Snapper where it is installed (Bazzite),
+# read-only Btrfs snapshots on other Btrfs systems, and hard-link incremental copies
+# (rsync) elsewhere — to a second drive when one is configured. How often follows how
+# actively the machine is used; nothing is taken when nothing changed. A home index
+# flags large replaceable folders; each is left out only with approval.
+sec_25_snapshots() {
+	should_run 25 || return 0
+	section 25 "Home snapshots and copies"
+	install_routine_helper || return 0
+
+	local home backend target="" fstype
+	home="$(readlink -f /home)"
+	fstype="$(findmnt -no FSTYPE -T "$home" 2>/dev/null)"
+	local home_pending=0
+	if [[ "$fstype" == btrfs ]]; then
+		backend=btrfs
+		cmd_exists snapper && backend=snapper
+		# Installed with bootc, home is a plain folder on Btrfs: make it its own
+		# subvolume at the next boot, before anyone logs in; snapshots start then.
+		btrfs subvolume show "$home" >/dev/null 2>&1 || home_pending=1
+	else
+		backend=rsync
+		pkg_install rsync
+		if ((!DRY_RUN)) && ! cmd_exists rsync; then
+			warn "rsync is not available — home copies not set up."
+			return 0
+		fi
+		target="$(_backup_target "$home")"
+	fi
+	info "Home folder $home ($fstype): $backend$([[ -n "$target" ]] && echo " → $target")"
+
+	write_new_file /etc/fedora-harden/snapshots 0644 <<EOF || return 0
+# Written by fedora-harden.sh (section 25).
+BACKEND=$backend
+HOME_DIR=$home
+TARGET=$target
+EXCLUDES=""
+EOF
+	# The snapshot store is created by the helper on the first snapshot (Snapper's
+	# config on Bazzite: it thins to 24 recent, 7 daily, 4 weekly).
+	if ((!DRY_RUN)); then
+		if [[ "$backend" == rsync ]]; then
+			install -d -m 700 "$target" && record_change SNAPSHOT_DATA "$target"
+		else
+			record_change SNAPSHOT_DATA "$home/.snapshots"
+			if ((home_pending)); then
+				install -d -m 700 /var/lib/fedora-harden
+				grep -qx '\.' /var/lib/fedora-harden/exclude-queue 2>/dev/null ||
+					echo . >>/var/lib/fedora-harden/exclude-queue
+				add_action_item 25 MEDIUM "HOME_SUBVOLUME_PENDING" \
+					"Restart once to finish setting up home snapshots: at the next boot, before anyone logs in, $home becomes its own Btrfs subvolume (contents and permissions kept)."
+			fi
+		fi
+	fi
+
+	_routine_timer snapshot "Home snapshot when due (frequency follows how actively this machine is used)" hourly || return 0
+	_routine_timer index "Weekly home index: note what grew, flag new large folders" weekly || return 0
+	if [[ "$backend" != rsync ]]; then
+		write_new_file /etc/systemd/system/fedora-harden-exclude.service 0644 <<EOF || return 0
+[Unit]
+Description=Leave approved folders out of home snapshots (fedora-harden), before anyone logs in
+Before=systemd-user-sessions.service
+ConditionFileNotEmpty=/var/lib/fedora-harden/exclude-queue
+
+[Service]
+Type=oneshot
+ExecStart=$ROUTINE_HELPER exclude-convert
+
+[Install]
+WantedBy=multi-user.target
+EOF
+		backup_file /etc/systemd/system/multi-user.target.wants/fedora-harden-exclude.service || return 0
+		run "systemctl daemon-reload && systemctl enable fedora-harden-exclude.service" || true
+	fi
+
+	if ((!DRY_RUN)); then
+		info "Indexing the home folder (folders of 5 GB or more)..."
+		FH_NO_WAIT=1 "$ROUTINE_HELPER" index >/dev/null 2>&1 || true
+		_snapshot_exclusions "$backend"
+	fi
+	_offsite_options "$home"
+	ok "Home protection on: $backend. The first snapshot comes within the hour; how often depends on how much the machine is used."
+}
+
+# _backup_target <home> - Where copies go without Btrfs: --backup-target, or a drive
+# configured for backups (/backup, /mnt/backup) — only if it is a different device;
+# otherwise /var/lib/fedora-harden/home-copies on the same disk.
+_backup_target() {
+	local home="$1" t
+	for t in "$BACKUP_TARGET" /backup /mnt/backup; do
+		[[ -n "$t" && -d "$t" ]] || continue
+		if [[ "$(stat -c %d "$t")" != "$(stat -c %d "$home")" ]]; then
+			echo "$t/fedora-harden-home"
+			return 0
+		fi
+		[[ "$t" == "$BACKUP_TARGET" ]] && warn "$t is on the same drive as $home; using the default location."
+	done
+	add_action_item 25 MEDIUM "COPIES_SAME_DISK" \
+		"Home copies are kept on the same disk ($home): they help with deleted files, not a failed disk. With a second drive: sudo ./fedora-harden.sh --only 25 --backup-target /path/on/that/drive"
+	echo /var/lib/fedora-harden/home-copies
+}
+
+# _snapshot_exclusions <backend> - Offer to leave each large replaceable folder of
+# the index out of snapshots (asked one by one; off under --yes).
+_snapshot_exclusions() {
+	local backend="$1" index=/var/lib/fedora-harden/home-index.tsv path size class excl=""
+	[[ -s "$index" ]] || return 0
+	while IFS=$'\t' read -r path size class; do
+		[[ "$class" == replaceable ]] || continue
+		confirm "Leave $path ($size GB, replaceable) out of home snapshots?" no || continue
+		if [[ "$backend" == rsync ]]; then
+			excl+="$path "
+		else
+			printf '%s\n' "$path" >>/var/lib/fedora-harden/exclude-queue
+			info "$path will become its own subvolume at the next boot, before anyone logs in."
+		fi
+	done < <(sort -t$'\t' -k2 -rn "$index")
+	[[ -n "$excl" ]] && sed -i "s|^EXCLUDES=.*|EXCLUDES=\"${excl% }\"|" /etc/fedora-harden/snapshots
+	return 0
+}
+
+# _offsite_options <home> - Snapshots live on the same disk. Rank the ways to keep a
+# copy elsewhere by what this machine has, and let the person choose.
+_offsite_options() {
+	local usb net have_pika=0 have_dejadup=0
+	usb="$(lsblk -nrpo MOUNTPOINT,HOTPLUG 2>/dev/null | awk '$2 == 1 && $1 != "" {print $1; exit}' || true)"
+	net="$(findmnt -rn -t cifs,nfs,nfs4,smb3 -o TARGET 2>/dev/null | head -1 || true)"
+	flatpak info org.gnome.World.PikaBackup >/dev/null 2>&1 && have_pika=1
+	flatpak info org.gnome.DejaDup >/dev/null 2>&1 && have_dejadup=1
+	local n=1
+	if [[ -n "$usb" ]]; then
+		add_action_item 25 MEDIUM "OFFSITE_${n}" \
+			"Off-machine copy, best fit (external drive at $usb): Pika Backup$( ((have_pika)) && echo ' (installed)' || echo ' — flatpak install flathub org.gnome.World.PikaBackup'). Encrypted, deduplicated, runs on a schedule."
+		((++n))
+	fi
+	if [[ -n "$net" ]]; then
+		add_action_item 25 MEDIUM "OFFSITE_${n}" \
+			"Off-machine copy to the network share at $net: Pika Backup to that folder, or restic in a box for a server you reach over SSH."
+		((++n))
+	fi
+	add_action_item 25 LOW "OFFSITE_${n}" \
+		"Off-machine copy to cloud storage: Déjà Dup$( ((have_dejadup)) && echo ' (installed)' || echo ' — flatpak install flathub org.gnome.DejaDup') (Google Drive, Microsoft OneDrive, a Nextcloud/WebDAV server, or a folder), encrypted."
+	((++n))
+	[[ -z "$usb" ]] && add_action_item 25 LOW "OFFSITE_${n}" \
+		"Off-machine copy to an external drive (plug one in and re-run section 25 for a tailored suggestion): Pika Backup, flatpak install flathub org.gnome.World.PikaBackup"
+	return 0
+}
+
+# ============================================================================
 #  SECTION 24 — Your routine (use-case automation)
 # ============================================================================
 # sec_24_routine() - Set up the upkeep this machine's use cases need, as systemd
@@ -5837,7 +6270,101 @@ sec_24_routine() {
 	should_run 24 || return 0
 	section 24 "Your routine: upkeep for how this machine is used"
 
-	write_new_file "$ROUTINE_HELPER" 0755 <<'ROUTINE_EOF' || return 0
+	install_routine_helper || return 0
+
+	local detected uses u
+	detected="everyday"
+	((DRY_RUN)) || detected="$("$ROUTINE_HELPER" detect 2>/dev/null || echo everyday)"
+	uses="$PROFILE_ARG"
+	if [[ -z "$uses" ]]; then
+		info "This machine looks like: $detected"
+		uses="$(prompt_input "Use cases to automate for (comma-separated: everyday, gaming, creative, dev, laptop)" "${detected// /,}")"
+	fi
+	local -a chosen=(everyday)
+	for u in ${uses//,/ }; do
+		case "$u" in
+		everyday) ;;
+		gaming | creative | dev | laptop) chosen+=("$u") ;;
+		*) warn "Unknown use case '$u' — ignored." ;;
+		esac
+	done
+	uses="${chosen[*]}"
+	info "Routine for: $uses"
+	# A re-run with the same use cases keeps the review date: only a change of use
+	# cases restarts the 90-day relevance review.
+	local reviewed
+	reviewed="$(date +%F)"
+	if [[ "$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"')" == "$uses" ]]; then
+		reviewed="$(sed -n 's/^REVIEWED=//p' /etc/fedora-harden/profile 2>/dev/null)"
+		[[ -n "$reviewed" ]] || reviewed="$(date +%F)"
+	fi
+	write_new_file /etc/fedora-harden/profile 0644 <<EOF || return 0
+# Written by fedora-harden.sh (section 24). Re-run section 24 to change it.
+USE_CASES="$uses"
+REVIEWED=$reviewed
+EOF
+
+	write_new_file /etc/systemd/system/fedora-harden-notify@.service 0644 <<EOF || return 0
+[Unit]
+Description=Tell the desktop that %i needs attention (fedora-harden)
+
+[Service]
+Type=oneshot
+ExecStart=$ROUTINE_HELPER notify-failed %i
+EOF
+
+	# Everyday
+	_routine_timer cleanup "Monthly cleanup: unused Flatpak runtimes, Podman images, OSTree data" monthly || return 0
+	_routine_timer diskspace "Daily free-space check" daily || return 0
+	_routine_timer drift "Weekly check that the hardening is still in effect" weekly || return 0
+	_routine_timer summary "Weekly summary and 90-day relevance review" "Mon *-*-* 10:00:00" || return 0
+	if findmnt -rn -t btrfs >/dev/null 2>&1; then
+		_routine_timer scrub "Monthly Btrfs scrub (finds silent corruption)" monthly || return 0
+	fi
+	write_new_file /etc/systemd/journald.conf.d/50-fedora-harden.conf 0644 <<'EOF' || return 0
+# Written by fedora-harden.sh (section 24): logs never fill the disk.
+[Journal]
+SystemMaxUse=1G
+EOF
+	((DRY_RUN)) || run "systemctl restart systemd-journald" || true
+	# Disk health: Fedora's smartd already notifies desktop users (smartdnotify).
+	pkg_install smartmontools
+	if cmd_exists smartctl; then
+		run "systemctl enable --now smartd" || info "smartd did not start (no SMART-capable disks here?)."
+	fi
+
+	# Use-case additions
+	local uupd=0
+	[[ -r /usr/share/ublue-os/image-info.json ]] && systemctl list-unit-files uupd.timer >/dev/null 2>&1 && uupd=1
+	if [[ " $uses " == *" creative "* || " $uses " == *" dev "* ]] && ((!uupd)); then
+		_routine_timer boxes "Weekly upgrade of toolbox and distrobox containers" weekly || return 0
+	fi
+	if [[ " $uses " == *" dev "* ]]; then
+		_routine_timer devclean "Weekly removal of container build cache older than 30 days" weekly || return 0
+	fi
+	if [[ " $uses " == *" creative "* ]]; then
+		if confirm "Watch Flatpak apps for permission changes after updates?" no; then
+			_routine_timer flatpak-perms "Weekly Flatpak permission watch" weekly || return 0
+		fi
+		if cmd_exists ujust && ujust --list 2>/dev/null | grep -q install-resolve; then
+			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
+				"DaVinci Resolve without layering anything: ujust install-resolve (runs it in its own container, davincibox)."
+		elif ((IS_OSTREE)); then
+			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
+				"DaVinci Resolve without layering: run it in a distrobox made for it (the davincibox project), not as layered packages."
+		fi
+	fi
+	if [[ " $uses " == *" laptop "* ]]; then
+		_battery_limit
+	fi
+	((IS_OSTREE)) && _layer_audit
+	ROUTINE_ACTIVE=1
+	ok "Routine in place for: $uses. Weekly summary every Monday; desktop notifications only when something needs you."
+}
+
+# install_routine_helper() - Write the helper the routine timers call (sections 24, 25).
+install_routine_helper() {
+	write_new_file "$ROUTINE_HELPER" 0755 <<'ROUTINE_EOF'
 #!/usr/bin/bash
 # fedora-harden-routine - installed by fedora-harden.sh (section 24). The timers
 # fedora-harden-*.timer call it; every run is logged to the journal under the tag
@@ -5852,6 +6379,9 @@ sec_24_routine() {
 #   devclean          remove container build cache older than 30 days for each user (weekly)
 #   flatpak-perms     report apps whose permissions changed since last week (weekly)
 #   summary           weekly summary + relevance review every 90 days (weekly)
+#   snapshot          home snapshot or copy when due (hourly check; frequency follows use)
+#   index             index the home folder; note what grew and flag new large folders (weekly)
+#   exclude-convert   at boot: make approved folders their own subvolumes (left out of snapshots)
 #   notify-failed U   desktop notification that unit U failed (OnFailure= hook)
 set -uo pipefail
 
@@ -5904,6 +6434,7 @@ on_mains() { # true on mains power, or when the machine reports no power supply 
 }
 game_running() { command -v gamemoded >/dev/null && gamemoded -s 2>/dev/null | grep -q "is active"; }
 wait_for_quiet() {
+    [[ -n "${FH_NO_WAIT:-}" ]] && return 0 # run by fedora-harden.sh itself
     local i
     for ((i = 0; i < 144; i++)); do
         on_mains && ! game_running && return 0
@@ -6125,8 +6656,298 @@ cmd_notify_failed() {
     notify critical "Needs attention: ${unit%.service}" "$(journalctl -u "$unit" -n 2 -o cat --no-pager 2>/dev/null | tr '\n' ' ') — details: journalctl -u $unit"
 }
 
+# ── Home snapshots and copies (section 25) ──────────────────────────────────────
+# Config (/etc/fedora-harden/snapshots): BACKEND=snapper|btrfs|rsync, HOME_DIR=,
+# TARGET= (rsync copies), EXCLUDES= (space-separated, relative to HOME_DIR).
+SNAPCONF=/etc/fedora-harden/snapshots
+snap_conf() { sed -n "s/^$1=//p" "$SNAPCONF" 2>/dev/null | tr -d '"'; }
+
+# Activity: the hourly run records whether anyone is actively using the machine;
+# the average over 14 days picks how often to snapshot.
+record_activity() {
+    local sid
+    while read -r sid _; do
+        [[ -n "$sid" ]] || continue
+        [[ "$(loginctl show-session "$sid" -p Active --value 2>/dev/null)" == yes ]] || continue
+        [[ "$(loginctl show-session "$sid" -p Class --value 2>/dev/null)" == user ]] || continue
+        date +%s >>"$STATE/activity"
+        break
+    done < <(loginctl list-sessions --no-legend 2>/dev/null)
+    local cutoff=$(($(date +%s) - 14 * 86400))
+    [[ -f "$STATE/activity" ]] && awk -v c="$cutoff" '$1 > c' "$STATE/activity" >"$STATE/activity.new" &&
+        mv -f "$STATE/activity.new" "$STATE/activity"
+}
+activity_tier() { # hourly (≥6 active h/day), regular (1–6), light (<1)
+    local hours=0
+    [[ -f "$STATE/activity" ]] && hours="$(wc -l <"$STATE/activity")"
+    local per_day=$((hours / 14))
+    if ((per_day >= 6)); then
+        echo hourly
+    elif ((per_day >= 1)); then
+        echo regular
+    else
+        echo light
+    fi
+}
+tier_interval() { case "$1" in hourly) echo 3600 ;; regular) echo 21600 ;; *) echo 86400 ;; esac }
+
+home_free_pct() { df --output=pcent "$1" 2>/dev/null | tail -1 | tr -dc 0-9; }
+
+# Change log: a short note of what changed, kept next to each snapshot or copy.
+write_changes() { # write_changes <file> <list of changed paths on stdin>
+    local out="$1" n
+    awk -F/ 'NF >= 3 {print $1 "/" $2 "/" $3} NF < 3 {print}' | sort | uniq -c | sort -rn >"$out.tmp"
+    n="$(awk '{s += $1} END {print s + 0}' "$out.tmp")"
+    {
+        printf 'changed files: %s\ntop folders:\n' "$n"
+        head -10 "$out.tmp"
+    } >"$out"
+    rm -f "$out.tmp"
+    chmod 600 "$out"
+    echo "$n"
+}
+
+# thin <dir> — keep the newest 24, the newest per day for 7 days and per ISO week
+# for 4 weeks; delete the rest (names are YYYYmmdd-HHMMSS).
+thin() {
+    local dir="$1" name keep_recent=24 i=0
+    declare -A keep=() days=() weeks=()
+    while read -r name; do
+        ((++i))
+        local ts d w
+        ts="$(date -d "${name:0:8} ${name:9:2}:${name:11:2}" +%s 2>/dev/null)" || continue
+        d="$(date -d "@$ts" +%F)"
+        w="$(date -d "@$ts" +%G-%V)"
+        ((i <= keep_recent)) && keep[$name]=1
+        if [[ -z "${days[$d]:-}" && ${#days[@]} -lt 7 ]]; then
+            days[$d]=1
+            keep[$name]=1
+        fi
+        if [[ -z "${weeks[$w]:-}" && ${#weeks[@]} -lt 4 ]]; then
+            weeks[$w]=1
+            keep[$name]=1
+        fi
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n' | sort -r)
+    while read -r name; do
+        [[ -n "${keep[$name]:-}" ]] && continue
+        remove_snapshot "$dir/$name"
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n')
+}
+remove_snapshot() {
+    case "$(snap_conf BACKEND)" in
+    btrfs) btrfs subvolume delete "$1" >/dev/null 2>&1 ;;
+    *) rm -rf --one-file-system -- "$1" ;;
+    esac
+    rm -f -- "$1.changes"
+}
+
+cmd_snapshot() {
+    [[ -f "$SNAPCONF" ]] || return 0
+    record_activity
+    local backend home tier interval last=0 now stamp
+    backend="$(snap_conf BACKEND)" home="$(snap_conf HOME_DIR)"
+    tier="$(activity_tier)"
+    if [[ "$tier" != "$(cat "$STATE/snapshot-tier" 2>/dev/null)" ]]; then
+        say NOTE "snapshot frequency now: $tier (from how actively this machine is used)"
+        echo "$tier" >"$STATE/snapshot-tier"
+    fi
+    interval="$(tier_interval "$tier")"
+    now="$(date +%s)"
+    [[ -f "$STATE/snapshot-last" ]] && last="$(cat "$STATE/snapshot-last")"
+    ((now - last >= interval)) || return 0
+    # Space guard: never let snapshots push the disk under 15% free.
+    local target="$home" pct
+    [[ "$backend" == rsync ]] && target="$(snap_conf TARGET)"
+    pct="$(home_free_pct "$target")"
+    if [[ -n "$pct" ]] && ((pct >= 85)); then
+        say ATTENTION "snapshot skipped: $target is ${pct}% full"
+        notify normal "Snapshot skipped" "$target is ${pct}% full; old snapshots are being removed first."
+        prune_for_space
+        return 0
+    fi
+    if [[ "$backend" != rsync ]] && ! btrfs subvolume show "$home" >/dev/null 2>&1; then
+        say NOTE "home snapshots start after the next boot (home becomes a subvolume then)"
+        return 0
+    fi
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    case "$backend" in
+    snapper) ensure_snapper "$home" && snapshot_snapper "$stamp" ;;
+    btrfs) snapshot_btrfs "$home" "$stamp" ;;
+    rsync) snapshot_rsync "$home" "$(snap_conf TARGET)" "$stamp" ;;
+    esac || return 1
+    echo "$now" >"$STATE/snapshot-last"
+}
+
+snapshot_btrfs() {
+    local home="$1" stamp="$2" dir="$1/.snapshots" lastgen gen n
+    if [[ ! -d "$dir" ]]; then
+        btrfs subvolume create "$dir" >/dev/null && chmod 700 "$dir"
+    fi
+    gen="$(btrfs subvolume show "$home" 2>/dev/null | awk '/Generation:/ {print $2; exit}')"
+    lastgen="$(cat "$STATE/snapshot-gen" 2>/dev/null || echo 0)"
+    if [[ -n "$gen" && "$gen" == "$lastgen" ]]; then
+        return 0 # nothing changed since the last snapshot
+    fi
+    btrfs subvolume snapshot -r "$home" "$dir/$stamp" >/dev/null || {
+        say ATTENTION "btrfs snapshot of $home failed"
+        return 1
+    }
+    if [[ "$lastgen" == 0 ]]; then # first snapshot: nothing to compare with
+        printf 'initial snapshot\n' >"$dir/$stamp.changes"
+        chmod 600 "$dir/$stamp.changes"
+        n=initial
+    else
+        n="$(btrfs subvolume find-new "$home" "$lastgen" 2>/dev/null | awk '/^inode/ {print $NF}' | write_changes "$dir/$stamp.changes")"
+    fi
+    echo "$gen" >"$STATE/snapshot-gen"
+    say DONE "home snapshot $stamp ($n changed files)"
+    thin "$dir"
+}
+
+ensure_snapper() { # Snapper's own config for home; it thins to 24 recent, 7 daily, 4 weekly
+    snapper -c home get-config >/dev/null 2>&1 && return 0
+    snapper -c home create-config "$1" >/dev/null 2>&1 || {
+        say ATTENTION "snapper could not set up home snapshots"
+        return 1
+    }
+    snapper -c home set-config TIMELINE_CREATE=no TIMELINE_CLEANUP=yes TIMELINE_LIMIT_HOURLY=24 \
+        TIMELINE_LIMIT_DAILY=7 TIMELINE_LIMIT_WEEKLY=4 TIMELINE_LIMIT_MONTHLY=0 TIMELINE_LIMIT_YEARLY=0 >/dev/null 2>&1
+}
+
+snapshot_snapper() {
+    local stamp="$1" num prev n
+    prev="$(snapper -c home --csvout list --columns number 2>/dev/null | tail -1)"
+    num="$(snapper -c home create -c timeline -d "fedora-harden $stamp" -p 2>/dev/null)" || {
+        say ATTENTION "snapper snapshot of home failed"
+        return 1
+    }
+    if [[ -n "$prev" && "$prev" != 0 && "$prev" != number ]]; then
+        n="$(snapper -c home status "$prev..$num" 2>/dev/null | awk '{print $2}' | write_changes "$STATE/snapper-$num.changes")"
+        if [[ "$n" == 0 ]]; then
+            snapper -c home delete "$num" >/dev/null 2>&1 # nothing changed: keep the older one
+            rm -f "$STATE/snapper-$num.changes"
+            return 0
+        fi
+    fi
+    say DONE "home snapshot $num via snapper (${n:-first} changed files)"
+    snapper -c home cleanup timeline >/dev/null 2>&1
+}
+
+snapshot_rsync() {
+    local home="$1" target="$2" stamp="$3" prev excl=() e n
+    mkdir -p "$target"
+    chmod 700 "$target"
+    for e in $(snap_conf EXCLUDES); do excl+=(--exclude "/$e"); done
+    prev="$(find "$target" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n' | sort | tail -1)"
+    local -a link=()
+    [[ -n "$prev" ]] && link=(--link-dest "$target/$prev")
+    # Nothing changed since the last copy: skip it.
+    # Extended attributes are kept, but not security labels: the copy location has
+    # its own, and some file systems cannot store them.
+    local -a opts=(-aHAX --filter='-x security.*' --delete)
+    if [[ -n "$prev" ]] && [[ -z "$(rsync "${opts[@]}" -n "${excl[@]}" --out-format='%n' "$home/" "$target/$prev/" 2>/dev/null | grep -v '/$' | head -1)" ]]; then
+        return 0
+    fi
+    local rc=0
+    rsync "${opts[@]}" "${excl[@]}" "${link[@]}" --out-format='%n' "$home/" "$target/$stamp/" >"$STATE/rsync.out" 2>"$STATE/rsync.err" || rc=$?
+    if ((rc != 0 && rc != 24)); then # 24: files vanished while copying (normal in a home folder)
+        say ATTENTION "copy of $home to $target failed: $(tail -1 "$STATE/rsync.err")"
+        return 1
+    fi
+    n="$(grep -v '/$' "$STATE/rsync.out" | write_changes "$target/$stamp.changes")"
+    say DONE "home copy $stamp to $target ($n changed files)"
+    thin "$target"
+}
+
+prune_for_space() {
+    local backend dir oldest
+    backend="$(snap_conf BACKEND)"
+    case "$backend" in
+    snapper) snapper -c home cleanup timeline >/dev/null 2>&1 ;;
+    btrfs | rsync)
+        dir="$(snap_conf HOME_DIR)/.snapshots"
+        [[ "$backend" == rsync ]] && dir="$(snap_conf TARGET)"
+        oldest="$(find "$dir" -mindepth 1 -maxdepth 1 -name '2*' ! -name '*.changes' -printf '%f\n' | sort | head -1)"
+        [[ -n "$oldest" ]] && remove_snapshot "$dir/$oldest" && say NOTE "removed oldest snapshot $oldest to free space"
+        ;;
+    esac
+}
+
+# Index of the home folder: written once, then updated with notes when it changes.
+# Large, replaceable folders are flagged; they are excluded only with approval.
+REPLACEABLE='\.cache$|/\.local/share/containers$|/\.local/share/Steam$|/steamapps$|/\.local/share/libvirt$|/\.local/share/gnome-boxes$|/\.var/app/[^/]+/cache$'
+cmd_index() {
+    local home index="$STATE/home-index.tsv" new="$STATE/home-index.new" notes="$STATE/home-index.notes"
+    home="$(snap_conf HOME_DIR)"
+    [[ -n "$home" ]] || return 0
+    wait_for_quiet || return 0
+    du -x -k --max-depth=4 "$home" 2>/dev/null | awk -v min=$((5 * 1024 * 1024)) '$1 >= min' |
+        while read -r kb path; do
+            local class=keep
+            [[ "$path" =~ $REPLACEABLE ]] && class=replaceable
+            printf '%s\t%s\t%s\n' "${path#"$home"/}" "$((kb / 1024 / 1024))" "$class"
+        done | sort >"$new"
+    if [[ ! -f "$index" ]]; then
+        mv -f "$new" "$index"
+        printf '%s indexed %s folder(s) of 5 GB or more\n' "$(date +%F)" "$(wc -l <"$index")" >>"$notes"
+        say NOTE "home index created"
+        return 0
+    fi
+    local path size class old
+    while IFS=$'\t' read -r path size class; do
+        old="$(awk -F'\t' -v p="$path" '$1 == p {print $2}' "$index")"
+        if [[ -z "$old" ]]; then
+            printf '%s new: %s (%s GB, %s)\n' "$(date +%F)" "$path" "$size" "$class" >>"$notes"
+            [[ "$class" == replaceable ]] && say ATTENTION "new large replaceable folder $path ($size GB) — exclude it from snapshots: sudo fedora-harden.sh --only 25"
+        elif ((size > old + old / 4 + 1)); then
+            printf '%s grew: %s %s → %s GB\n' "$(date +%F)" "$path" "$old" "$size" >>"$notes"
+        fi
+    done <"$new"
+    mv -f "$new" "$index"
+    chmod 600 "$index" "$notes" 2>/dev/null
+}
+
+# exclude-convert — at boot, before anyone logs in, turn approved folders into their
+# own subvolumes so Btrfs snapshots leave them out. Verified before the old copy goes.
+cmd_exclude_convert() {
+    local queue="$STATE/exclude-queue" home path new old
+    [[ -s "$queue" ]] || return 0
+    home="$(snap_conf HOME_DIR)"
+    local dir
+    while read -r path; do
+        [[ -n "$path" ]] || continue
+        # "." is the home folder itself (Btrfs installs where home is a plain folder)
+        dir="$home/$path"
+        [[ "$path" == . ]] && dir="$home"
+        [[ -d "$dir" ]] || continue
+        btrfs subvolume show "$dir" >/dev/null 2>&1 && continue # already one
+        new="$dir.fh-new" old="$dir.fh-old"
+        if btrfs subvolume create "$new" >/dev/null &&
+            chown --reference="$dir" "$new" && chmod --reference="$dir" "$new" &&
+            { chcon --reference="$dir" "$new" 2>/dev/null || true; } &&
+            cp -a --reflink=always "$dir/." "$new/" &&
+            [[ "$(find "$dir" | wc -l)" == "$(find "$new" | wc -l)" ]] &&
+            mv "$dir" "$old" && mv "$new" "$dir"; then
+            rm -rf --one-file-system -- "$old"
+            if [[ "$path" == . ]]; then
+                say DONE "home is now its own subvolume; snapshots start"
+            else
+                say DONE "excluded $path from snapshots (now its own subvolume)"
+            fi
+        else
+            [[ -d "$new" ]] && btrfs subvolume delete "$new" >/dev/null 2>&1
+            [[ -d "$old" && ! -e "$dir" ]] && mv "$old" "$dir"
+            say ATTENTION "could not make $path its own subvolume; nothing was changed"
+        fi
+    done <"$queue"
+    : >"$queue"
+}
+
 case "${1:-}" in
 detect) cmd_detect ;;
+snapshot) cmd_snapshot ;;
+index) cmd_index ;;
+exclude-convert) cmd_exclude_convert ;;
 cleanup) cmd_cleanup ;;
 scrub) cmd_scrub ;;
 diskspace) cmd_diskspace ;;
@@ -6137,100 +6958,11 @@ flatpak-perms) cmd_flatpak_perms ;;
 summary) cmd_summary ;;
 notify-failed) cmd_notify_failed "${2:?unit}" ;;
 *)
-    sed -n '2,15p' "$0"
+    sed -n '2,18p' "$0"
     exit 2
     ;;
 esac
 ROUTINE_EOF
-
-	local detected uses u
-	detected="everyday"
-	((DRY_RUN)) || detected="$("$ROUTINE_HELPER" detect 2>/dev/null || echo everyday)"
-	uses="$PROFILE_ARG"
-	if [[ -z "$uses" ]]; then
-		info "This machine looks like: $detected"
-		uses="$(prompt_input "Use cases to automate for (comma-separated: everyday, gaming, creative, dev, laptop)" "${detected// /,}")"
-	fi
-	local -a chosen=(everyday)
-	for u in ${uses//,/ }; do
-		case "$u" in
-		everyday) ;;
-		gaming | creative | dev | laptop) chosen+=("$u") ;;
-		*) warn "Unknown use case '$u' — ignored." ;;
-		esac
-	done
-	uses="${chosen[*]}"
-	info "Routine for: $uses"
-	# A re-run with the same use cases keeps the review date: only a change of use
-	# cases restarts the 90-day relevance review.
-	local reviewed
-	reviewed="$(date +%F)"
-	if [[ "$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"')" == "$uses" ]]; then
-		reviewed="$(sed -n 's/^REVIEWED=//p' /etc/fedora-harden/profile 2>/dev/null)"
-		[[ -n "$reviewed" ]] || reviewed="$(date +%F)"
-	fi
-	write_new_file /etc/fedora-harden/profile 0644 <<EOF || return 0
-# Written by fedora-harden.sh (section 24). Re-run section 24 to change it.
-USE_CASES="$uses"
-REVIEWED=$reviewed
-EOF
-
-	write_new_file /etc/systemd/system/fedora-harden-notify@.service 0644 <<EOF || return 0
-[Unit]
-Description=Tell the desktop that %i needs attention (fedora-harden)
-
-[Service]
-Type=oneshot
-ExecStart=$ROUTINE_HELPER notify-failed %i
-EOF
-
-	# Everyday
-	_routine_timer cleanup "Monthly cleanup: unused Flatpak runtimes, Podman images, OSTree data" monthly || return 0
-	_routine_timer diskspace "Daily free-space check" daily || return 0
-	_routine_timer drift "Weekly check that the hardening is still in effect" weekly || return 0
-	_routine_timer summary "Weekly summary and 90-day relevance review" "Mon *-*-* 10:00:00" || return 0
-	if findmnt -rn -t btrfs >/dev/null 2>&1; then
-		_routine_timer scrub "Monthly Btrfs scrub (finds silent corruption)" monthly || return 0
-	fi
-	write_new_file /etc/systemd/journald.conf.d/50-fedora-harden.conf 0644 <<'EOF' || return 0
-# Written by fedora-harden.sh (section 24): logs never fill the disk.
-[Journal]
-SystemMaxUse=1G
-EOF
-	((DRY_RUN)) || run "systemctl restart systemd-journald" || true
-	# Disk health: Fedora's smartd already notifies desktop users (smartdnotify).
-	pkg_install smartmontools
-	if cmd_exists smartctl; then
-		run "systemctl enable --now smartd" || info "smartd did not start (no SMART-capable disks here?)."
-	fi
-
-	# Use-case additions
-	local uupd=0
-	[[ -r /usr/share/ublue-os/image-info.json ]] && systemctl list-unit-files uupd.timer >/dev/null 2>&1 && uupd=1
-	if [[ " $uses " == *" creative "* || " $uses " == *" dev "* ]] && ((!uupd)); then
-		_routine_timer boxes "Weekly upgrade of toolbox and distrobox containers" weekly || return 0
-	fi
-	if [[ " $uses " == *" dev "* ]]; then
-		_routine_timer devclean "Weekly removal of container build cache older than 30 days" weekly || return 0
-	fi
-	if [[ " $uses " == *" creative "* ]]; then
-		if confirm "Watch Flatpak apps for permission changes after updates?" no; then
-			_routine_timer flatpak-perms "Weekly Flatpak permission watch" weekly || return 0
-		fi
-		if cmd_exists ujust && ujust --list 2>/dev/null | grep -q install-resolve; then
-			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
-				"DaVinci Resolve without layering anything: ujust install-resolve (runs it in its own container, davincibox)."
-		elif ((IS_OSTREE)); then
-			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
-				"DaVinci Resolve without layering: run it in a distrobox made for it (the davincibox project), not as layered packages."
-		fi
-	fi
-	if [[ " $uses " == *" laptop "* ]]; then
-		_battery_limit
-	fi
-	((IS_OSTREE)) && _layer_audit
-	ROUTINE_ACTIVE=1
-	ok "Routine in place for: $uses. Weekly summary every Monday; desktop notifications only when something needs you."
 }
 
 # _routine_timer <name> <description> <OnCalendar> - service + timer for one helper
@@ -7415,14 +8147,8 @@ show_actionable_items() {
 			((++idx))
 		done
 		printf '%s════════════════════════════════════════════%s\n\n' "$C_YEL" "$C_RST"
-	elif ((!GUI_SUMMARY_SHOWN)); then
-		local msg="Actionable Items (${#ACTIONABLE_ITEMS[@]}):"$'\n'
-		for item in "${ACTIONABLE_ITEMS[@]}"; do
-			local section priority tag desc
-			IFS='|' read -r section priority tag desc <<<"$item"
-			msg+="[${priority}][${section}] ${desc}"$'\n'
-		done
-		gui_alert warning "$msg"
+	else
+		gui_send_items
 	fi
 }
 
@@ -7488,7 +8214,7 @@ remediate_item() {
 		register_tmp "$scan_tmp"
 		log "[RUN]   clamscan -r --infected $scan_home"
 		if ((GUI_FULL_MODE)); then
-			clamscan -r --infected "$scan_home" >"$scan_tmp" 2>&1 || true
+			clamscan -r --infected "$scan_home" 2>&1 | tee "$scan_tmp" | log_stream || true
 		else
 			clamscan -r --infected "$scan_home" 2>&1 | tee "$scan_tmp" || true
 		fi
@@ -7858,7 +8584,7 @@ main() {
 
 	# --list-sessions: show past sessions without running a full preflight
 	if ((LIST_SESSIONS_MODE)); then
-		((FORCE_GUI_FULL)) || draw_banner
+		((FORCE_GUI)) || draw_banner
 		list_sessions_cmd
 		EXPECTED_ABORT=1
 		exit 0
@@ -7897,7 +8623,6 @@ main() {
 		exit "$rs_rc"
 	fi
 	calc_section_total
-	gui_progress_start
 	abort_if_cancelled
 
 	# Execution order is optimized for dependency flow and operational safety.
@@ -7920,6 +8645,7 @@ main() {
 	sec_22_openscap
 	sec_23_containers
 	sec_24_routine
+	sec_25_snapshots
 	sec_12_ids
 	sec_19_services
 	sec_20_perms
@@ -7928,7 +8654,6 @@ main() {
 	record_routine_state
 
 	diagnose_failures
-	gui_progress_close
 	final_summary
 	save_followups
 
