@@ -2,6 +2,15 @@
 
 ## Unreleased — privacy and review fixes
 
+Project layout:
+- `fedora-harden.sh` is now a short entry point that loads `lib/NN-*.sh` (shared code)
+  and `sections/NN-*.sh` (one file per section) in a fixed order. The `--gui` window
+  and the routine helper are files in `libexec/` instead of heredocs; they are
+  installed to the same places as before. Run the script from a clone (it says so
+  when its parts are missing); a symlink to it works.
+- Error reports name the file as well as the line (`Aborted at line 42 of
+  sections/05-selinux.sh`).
+
 Privacy:
 - Session and rollback reports moved out of the script's folder to
   `/var/lib/fedora-harden/sessions` (root-only). `/etc/fedora-harden/profile` and
