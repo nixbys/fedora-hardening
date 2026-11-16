@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # setup-dev.sh - Initialize the development environment for fedora-harden.sh
 #
-# The supported development platform is Fedora 44 (the release the script targets).
-# All tooling comes from Fedora 44 RPMs, so local runs, pre-commit hooks and CI use
+# The development platform is the latest Fedora (45), the release the tests run on.
+# All tooling comes from Fedora RPMs, so local runs, pre-commit hooks and CI use
 # the same tool versions:
 #   ShellCheck shfmt yamllint ruff hadolint gitleaks pre-commit python3-mcp podman
 #
 # On an rpm-ostree host (Silverblue, Kinoite, Bazzite, ...) run this inside a
-# Fedora 44 toolbox:
-#   toolbox create --image registry.fedoraproject.org/fedora-toolbox:44 fh-dev
+# Fedora 45 toolbox:
+#   toolbox create --image registry.fedoraproject.org/fedora-toolbox:45 fh-dev
 #   toolbox enter fh-dev && ./setup-dev.sh
 
 set -Eeuo pipefail
@@ -187,7 +187,7 @@ main() {
         fi
     fi
 
-    # shfmt: RPM on Fedora 44; on 45+ the same pinned version is built with Go.
+    # shfmt: the pinned version, built with Fedora's Go.
     if ! cmd_exists shfmt; then
         if ((DRY_RUN)); then
             echo "  Would run: tests/install-shfmt.sh ${HOME}/.local/bin"

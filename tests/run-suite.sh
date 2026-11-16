@@ -8,10 +8,8 @@
 #   quick   runs in the fedora-minimal:N "test-only" image
 #   full    runs in the fedora-minimal:N systemd "base" image
 #   gui     runs in the fedora:N "gui" image (Xvfb + zenity + kdialog)
-#   atomic  runs on real Fedora Atomic images of release N (Silverblue, Universal
-#           Blue), booted with systemd in privileged containers
-#   vm      installs those images on a virtual disk (bootc, in a Fedora CoreOS VM)
-#           and boots them with KVM
+#   vm      installs real Fedora Atomic images of release N (Silverblue, Universal
+#           Blue) on a virtual disk (bootc, in a Fedora CoreOS VM), boots them with KVM
 #   fault   runs in the quick and full images of release N
 #
 # Tiers (run in order; each includes only its own tests):
@@ -25,13 +23,11 @@
 #             WireGuard peer (tests/wireguard-test.sh: kill switch, DNS, rollback)
 #   gui     - --gui on a virtual display: no hang, progress window closed,
 #             one Material-dark end-of-run window, Cancel exits 130
-#   atomic  - image-based behaviour with the images' own rpm-ostree, Flatpak, Podman
-#             quadlets, distrobox/toolbox: nothing layered, real Flathub installs, a
-#             real ClamAV container scan, OpenSCAP from a container, rollback
-#             (tests/atomic-real.sh). Not in "all": pulls ~3 GB per image.
-#   vm      - the same on an installed, booted system, plus what needs an OSTree
-#             sysroot: image-signature finding, /etc baseline and weekly report
-#             (tests/atomic-vm.sh). Not in "all": needs /dev/kvm, ~15 min per image.
+#   vm      - image-based behaviour on an installed, booted system: nothing layered,
+#             real Flathub installs, a real ClamAV container scan, OpenSCAP from a
+#             container, distrobox/toolbox, image-signature finding, /etc baseline
+#             and weekly report, rollback (tests/atomic-vm.sh). Not in "all":
+#             needs /dev/kvm, ~15 min per image.
 #   fault   - fault injection (tests/fault-matrix.sh): bad arguments, odd locales and
 #             paths, no network, dead DNS, broken repositories, RPM lock held,
 #             missing tools, read-only and full filesystems, malformed configs,
@@ -46,8 +42,8 @@
 #   tests/run-suite.sh --native             # run static tier on this host as-is
 #   tests/run-suite.sh --fedora 44          # test on another Fedora release (default 45)
 #   tests/run-suite.sh --tier fault         # fault injection (about an hour)
-#   tests/run-suite.sh --tier atomic --image quay.io/fedora/fedora-kinoite:45
-#                                           # atomic/vm tiers on other images (repeatable)
+#   tests/run-suite.sh --tier vm --image quay.io/fedora/fedora-kinoite:45
+#                                           # vm tier on other images (repeatable)
 #
 # Everything that changes system state happens inside throwaway rootless podman
 # containers; the host is never modified.
@@ -83,8 +79,8 @@ usage() {
 while (($# > 0)); do
     case "$1" in
         --tier)
-            [[ "${2:-}" =~ ^(static|quick|full|gui|atomic|vm|fault|all)$ ]] || {
-                echo "--tier needs static|quick|full|gui|atomic|vm|fault|all" >&2
+            [[ "${2:-}" =~ ^(static|quick|full|gui|vm|fault|all)$ ]] || {
+                echo "--tier needs static|quick|full|gui|vm|fault|all" >&2
                 exit 2
             }
             TIERS+=("$2")
@@ -800,7 +796,7 @@ tier_gui() {
 }
 
 # ---------------------------------------------------------------------------
-# Tiers: atomic and vm (real Fedora Atomic images)
+# Tier: vm (real Fedora Atomic images, installed and booted)
 # ---------------------------------------------------------------------------
 # run_image_test <tier> <driver> <image> [driver args...] — one suite result per
 # PASS:/FAIL: line the driver prints.
@@ -819,18 +815,6 @@ run_image_test() {
         esac
     done <"$out/results.txt"
     grep -qE '^(PASS|FAIL):' "$out/results.txt" || record FAIL "$tier $slug: test ran" "no results, see $out/results.txt"
-}
-
-tier_atomic() {
-    tier_header "atomic (real Fedora Atomic images, Fedora $TARGET_FEDORA)"
-    if ! have podman; then
-        record SKIP "atomic tier" "podman not installed"
-        return 0
-    fi
-    local img
-    for img in "${ATOMIC_IMAGES[@]}"; do
-        run_image_test atomic atomic-real.sh "$img"
-    done
 }
 
 tier_vm() {
