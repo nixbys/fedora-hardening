@@ -80,6 +80,45 @@
       "pinned_var": "ARKENFOX_VERSION",
       "sections": "16",
       "covers": "Firefox user.js installed by section 16"
+    },
+    {
+      "id": "shfmt-release",
+      "title": "shfmt release (lint toolchain)",
+      "repo": "mvdan/sh",
+      "type": "github-release",
+      "pinned_var": "SHFMT_VERSION",
+      "pinned_file": "tests/install-shfmt.sh",
+      "sections": "-",
+      "covers": "shell formatting in the static tier"
+    },
+    {
+      "id": "actionlint-release",
+      "title": "actionlint release (workflow lint)",
+      "repo": "rhysd/actionlint",
+      "type": "github-release",
+      "pinned_var": "ACTIONLINT_VERSION",
+      "pinned_file": ".github/workflows/workflow-security.yml",
+      "sections": "-",
+      "covers": "workflow lint job"
+    },
+    {
+      "id": "zizmor-release",
+      "title": "zizmor release (workflow security lint)",
+      "repo": "zizmorcore/zizmor",
+      "type": "github-release",
+      "pinned_var": "ZIZMOR_VERSION",
+      "pinned_file": ".github/workflows/workflow-security.yml",
+      "sections": "-",
+      "covers": "workflow security job"
+    },
+    {
+      "id": "clamav-release",
+      "title": "ClamAV release (scan container on image-based systems)",
+      "repo": "Cisco-Talos/clamav",
+      "type": "github-release",
+      "pinned_var": "CLAMAV_IMAGE",
+      "sections": "21",
+      "covers": "ClamAV image tag used by the scan quadlet"
     }
   ]
 }
