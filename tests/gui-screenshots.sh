@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # tests/gui-screenshots.sh - Regenerate docs/screenshots/*.png (runs INSIDE the "gui" image).
 #
-# Renders each dialog type fedora-harden.sh uses with the Material-dark theme
-# embedded in the script itself (extracted between the GTKCSS markers), so the
-# README images always match what the script ships.
+# Extracts the --gui window app embedded in fedora-harden.sh and plays a sample run
+# into it, so the README images always match what the script ships:
+#   running.png   sections, progress, a notice and the activity log mid-run
+#   question.png  a question answered inside the window
+#   stop.png      Stop asks before ending the run
+#   summary.png   the summary page with follow-up items
 #
 # Usage:
 #   podman build -f Dockerfile.test --target gui -t localhost/fedora-harden:gui .
@@ -16,71 +19,97 @@ set -uo pipefail
 [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] || exec dbus-run-session -- "$0" "$@"
 
 OUT="${OUT:-/out}"
-THEME="$(mktemp -d)"
-mkdir -p "$OUT" "$THEME/gtk-4.0"
-awk '/<<.GTKCSS.$/{f=1; next} /^GTKCSS$/{f=0} f' /root/fedora-harden.sh >"$THEME/gtk-4.0/gtk.css"
-[[ -s "$THEME/gtk-4.0/gtk.css" ]] || {
-    echo "could not extract theme from fedora-harden.sh" >&2
+APP="$(mktemp -d)/fedora-harden-gui.py"
+mkdir -p "$OUT"
+sed -n "/<<'GUIAPP_EOF'/,/^GUIAPP_EOF\$/p" /root/fedora-harden.sh | sed '1d;$d' >"$APP"
+[[ -s "$APP" ]] || {
+    echo "could not extract the window app from fedora-harden.sh" >&2
     exit 1
 }
-export XDG_CONFIG_HOME="$THEME" ADW_DEBUG_COLOR_SCHEME=prefer-dark LC_ALL=C.UTF-8
-Xvfb :99 -screen 0 1100x760x24 >/dev/null 2>&1 &
+export LC_ALL=C.UTF-8 GTK_A11Y=none
+Xvfb :99 -screen 0 1180x800x24 >/dev/null 2>&1 &
 export DISPLAY=:99
 sleep 1
-# Neutral backdrop so the window edge is visible in the crop
-magick -size 1100x760 xc:'#0B0A0D' /tmp/bg.png 2>/dev/null
 
-capture() { # capture <name> — crop the single visible dialog plus a margin
+capture() { # capture <name> — crop the window plus a margin
     local wid X Y WIDTH HEIGHT
-    sleep 3
-    wid="$(xdotool search --onlyvisible --name . 2>/dev/null | tail -n 1)"
-    [[ -n "$wid" ]] || {
-        echo "no window for $1" >&2
-        return 1
-    }
+    sleep 1.5
+    wid="$(xdotool search --onlyvisible --name '^Fedora Hardening$' | head -n 1)"
     eval "$(xdotool getwindowgeometry --shell "$wid")"
-    import -window root /tmp/full.png 2>/dev/null
-    magick /tmp/full.png -crop "${WIDTH}x${HEIGHT}+${X}+${Y}" +repage \
-        -bordercolor '#0B0A0D' -border 24 "$OUT/$1.png"
-    pkill -x zenity 2>/dev/null
-    sleep 1
-    echo "wrote $OUT/$1.png (${WIDTH}x${HEIGHT})"
+    import -window root -crop "$((WIDTH + 24))x$((HEIGHT + 24))+$((X > 12 ? X - 12 : 0))+$((Y > 12 ? Y - 12 : 0))" \
+        +repage "$OUT/$1.png"
+    echo "wrote $OUT/$1.png"
 }
 
-(
-    printf '45\n# Section 10: Kernel &amp; network sysctl hardening\n'
-    sleep 30
-) | zenity --progress --title=fedora-harden.sh --text="Preparing..." --percentage=0 --width=640 2>/dev/null &
-capture progress
+coproc WIN { exec python3 "$APP" 2>/dev/null; }
+exec {TX}>&"${WIN[1]}" {RX}<&"${WIN[0]}"
+read -r -t 30 -u "$RX" _ready
+ev() { # ev <tab-separated event> [pause]
+    printf '%s\n' "$1" >&"$TX"
+    sleep "${2:-0.05}"
+}
 
-zenity --question --title=fedora-harden.sh --width=480 \
-    --text="Allow 'ssh' through the firewall? (you'll harden sshd in section 7)" 2>/dev/null &
+ev $'MODE\tApplying changes'
+while read -r n title; do
+    ev "PLAN	$n	$title" 0
+done <<'PLAN'
+2 System updates
+3 Automatic security updates
+6 Secure Boot verification
+13 Flatpak + Flathub
+4 SELinux (verify enforcing + install tools)
+5 firewalld — drop-by-default
+7 SSH hardening
+17 WireGuard tunnel with kill switch
+24 Your routine
+25 Home snapshots
+PLAN
+ev $'SECTION\t2\tSystem updates'
+ev $'LOG\tinfo\tChecking for updates'
+ev $'LOG\trun\tdnf -y upgrade --refresh'
+for p in "Updating and loading repositories:" " Fedora 44 - x86_64 - Updates   100% |  41.3 KiB/s |  21.6 KiB" "Nothing to do."; do ev "LOG	out	$p"; done
+ev $'LOG\tok\tSystem is up to date.' 0.4
+ev $'SECTION\t3\tAutomatic security updates'
+ev $'LOG\trun\tsystemctl enable --now dnf5-automatic.timer'
+ev $'LOG\tok\tAutomatic security updates: applied daily at 06:00.' 0.4
+ev $'SECTION\t6\tSecure Boot verification'
+ev $'LOG\twarn\tSecure Boot is disabled in the firmware. Enable it in the UEFI setup.' 0.4
+ev $'SECTION\t13\tFlatpak + Flathub'
+ev $'LOG\trun\tflatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo'
+ev $'LOG\tok\tFlathub enabled; global Flatpak restrictions applied.' 0.4
+ev $'SECTION\t4\tSELinux (verify enforcing + install tools)'
+ev $'LOG\tok\tSELinux is enforcing (targeted policy).' 0.4
+ev $'SECTION\t5\tfirewalld — drop-by-default'
+ev $'LOG\tinfo\tDefault zone: drop. Allowing DHCPv6 client only.'
+ev $'LOG\trun\tfirewall-cmd --permanent --set-default-zone=drop'
+ev $'NOTICE\twarning\tUSBGuard can block unapproved USB devices, including keyboard and mouse.\\nConnect every device you need before section 8 runs.' 0.6
+capture running
+
+ev $'ASK\t1\tconfirm\tno\tAllow SSH logins on this machine?\\nNo keeps the SSH server off; you can turn it on later.' 0.6
 capture question
+xdotool key Return
+read -r -t 5 -u "$RX" _answer
 
-zenity --entry --title=fedora-harden.sh --width=520 --entry-text="alice" \
-    --text="Enter the primary username to harden (blank to skip user-specific tweaks):" 2>/dev/null &
-capture entry
+ev $'SECTION\t7\tSSH hardening'
+ev $'LOG\tok\tsshd stays off.'
+xdotool key ctrl+w
+capture stop
+xdotool key Escape
+sleep 0.5
 
-cat >/tmp/summary.txt <<'EOF'
-Fedora hardening finished.
-
-3 item(s) need follow-up (listed below).
-A reboot is recommended.
-
-Log: /var/log/fedora-harden/harden-20261110-120000.log
-Backups: /root/harden-backups-20261110-120000
-
-──────────── Follow-up items ────────────
-
-HIGH
-  • §7   Install a public key for alice in /home/alice/.ssh/authorized_keys
-         (ssh-copy-id from your client), then re-run: sudo ./fedora-harden.sh --only 7
-
-MEDIUM
-  • §13  Review Flatpak app permissions with Flatseal (com.github.tchx84.Flatseal).
-  • §17  Configure WireGuard tunnel: install provider config to /etc/wireguard/wg0.conf
-         (chmod 600) then run: sudo systemctl enable --now wg-quick@wg0
-EOF
-zenity --text-info --title=fedora-harden.sh --filename=/tmp/summary.txt \
-    --width=900 --height=560 --ok-label=Done 2>/dev/null &
+ev $'SECTION\t17\tWireGuard tunnel with kill switch'
+ev $'LOG\terror\tWireGuard tunnel wg0 did not start: journalctl -u wg-quick@wg0'
+ev $'SECTION\t24\tYour routine'
+ev $'LOG\tok\tUpkeep timers set for: gaming, dev.'
+ev $'SECTION\t25\tHome snapshots'
+ev $'LOG\tok\tHome snapshots: hourly while this machine is in active use.'
+ev $'SUMMARY\tFedora hardening finished.\t3 items need follow-up. A reboot is recommended.\\n\\nLog: journalctl -t fedora-harden FH_SESSION=20261115-101500\\nBackups: /root/harden-backups-20261115-101500'
+ev $'ITEMS'
+ev $'ITEM\tHIGH\tS17\tWireGuard tunnel wg0 did not start. Check: journalctl -u wg-quick@wg0'
+ev $'ITEM\tMEDIUM\tS6\tSecure Boot is disabled. Enable it in the UEFI firmware setup, then check: mokutil --sb-state'
+ev $'ITEM\tLOW\tS16\tReview the arkenfox defaults and add local exceptions in user-overrides.js.'
+ev $'END\t0\tFinished. A reboot is recommended to apply kernel, sysctl and PAM changes.' 0.6
 capture summary
+
+exec {TX}>&-
+kill "$WIN_PID" 2>/dev/null
