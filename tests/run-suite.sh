@@ -748,6 +748,19 @@ tier_full() {
         record FAIL "full: --list-sessions exits 0 and lists sessions" "exit $rc (see $log)"
     fi
 
+    # Rollback never removes what something outside the session still needs: a fake
+    # session claims to have installed libacl, which sed and coreutils depend on.
+    log="$ARTIFACTS/full_rollback_keeps_needed.log"
+    rc=0
+    fx bash -c 'd=/root/harden-backups-20000101-000000; mkdir -p "$d" &&
+        printf "2000-01-01 00:00:00|PKG_INSTALL|libacl.x86_64\n" >"$d/.rollback-journal"'
+    fx /root/fedora-harden.sh --yes --rollback 20000101-000000 >"$log" 2>&1 || rc=$?
+    if fx rpm -q libacl coreutils sed >/dev/null && grep -q 'Keeping libacl' "$log"; then
+        record PASS "full: rollback keeps a package that installed software still needs"
+    else
+        record FAIL "full: rollback keeps a package that installed software still needs" "exit $rc (see $log)"
+    fi
+
     log="$ARTIFACTS/full_rollback_all.log"
     rc=0
     fx /root/fedora-harden.sh --yes --rollback all >"$log" 2>&1 || rc=$?
