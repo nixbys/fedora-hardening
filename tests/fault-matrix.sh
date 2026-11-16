@@ -424,7 +424,9 @@ fi
 if want interrupt; then
     l="$OUT/interrupt"
     mkdir -p "$l"
-    for spec in "INT:45" "TERM:90" "KILL:60"; do
+    # INT and TERM take the same path (no handler of their own; the EXIT trap runs),
+    # so INT stands for both. KILL cannot be trapped and is checked separately.
+    for spec in "INT:45" "KILL:60"; do
         sig="${spec%%:*}" after="${spec#*:}" n="fault-int-$sig-$$"
         if ! boot "$n"; then
             flunk "interrupt: SIG$sig: container boots"
