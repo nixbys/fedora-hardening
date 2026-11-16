@@ -268,8 +268,9 @@ FORCE_GUI=0      # Run in one window (--gui)
 KERNEL_HARDENING=0
 
 # ---------- GUI mode state ------------------------------------------------
-GUI_FULL_MODE=0        # Set to 1 while the --gui window is open
-GUI_CANCEL_REQUESTED=0 # Set to 1 when the user stops the run from the window
+AIDE_BASELINE_PENDING=0 # Section 24 asks for the AIDE baseline; it is recorded last
+GUI_FULL_MODE=0         # Set to 1 while the --gui window is open
+GUI_CANCEL_REQUESTED=0  # Set to 1 when the user stops the run from the window
 
 # Sections run in numeric order, which follows the dependency flow (see main). --only/--skip accept these.
 SECTIONS=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24)
@@ -8497,7 +8498,18 @@ UNIT
 		backup_file /etc/cron.weekly/aide-check && run "rm -f /etc/cron.weekly/aide-check"
 	fi
 
-	# Record the baseline. The database is moved into place only when init succeeds.
+	# The baseline itself is recorded at the very end of the run (start_aide_baseline),
+	# after everything else has written its files.
+	AIDE_BASELINE_PENDING=1
+	add_action_item 24 LOW "AIDE_RECHECK" \
+		"After package updates, record a new AIDE baseline: sudo sh -c 'aide --init && mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
+}
+
+# start_aide_baseline() - Record the AIDE baseline last, in the background, so it
+# includes every file this run wrote (the recovery file included).
+start_aide_baseline() {
+	((AIDE_BASELINE_PENDING)) || return 0
+	# The database is moved into place only when init succeeds.
 	local init='aide --init && mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'
 	if ((DRY_RUN)); then
 		info "Would record the AIDE baseline in the background: $init"
@@ -8510,8 +8522,6 @@ UNIT
 		warn "aide --init failed."
 		add_action_item 24 MEDIUM "AIDE_INIT_FAILED" "AIDE baseline failed — run: sudo sh -c '$init'"
 	fi
-	add_action_item 24 LOW "AIDE_RECHECK" \
-		"After package updates, record a new AIDE baseline: sudo sh -c '$init'"
 }
 
 # ---------- Protection scorecard (--score, summary, --report) ----------------
@@ -9186,7 +9196,7 @@ write_recovery_file() {
 	local new
 	new="$(mktemp)" || return 0
 	register_tmp "$new"
-	cat >"$new" <<EOF
+	cat >"$new" <<EOF || {
 # fedora-harden recovery file: what this machine was set up with, kept up to date
 # after every run. After a reinstall or a recovery, put things back with:
 #   sudo ./fedora-harden.sh --restore $f
@@ -9215,6 +9225,9 @@ BACKUP_COPY=$copy
 # Answers to the questions (Q = the question; --restore gives the same answers).
 $(for key in $(printf '%s\n' "${!all[@]}" | sort); do printf '# Q %s\nANSWER_%s=%s\n' "${text[$key]//$'\n'/ }" "$key" "${all[$key]}"; done)
 EOF
+		warn "Could not write the recovery file (disk full?) — keeping the previous one."
+		return 0
+	}
 	# Rewrite only when something besides the date and session changed, so a
 	# repeated run leaves /etc as it was.
 	if [[ -f "$f" ]] && diff -q <(grep -vE '^(UPDATED|SESSION)=' "$f") <(grep -vE '^(UPDATED|SESSION)=' "$new") >/dev/null 2>&1; then
@@ -9929,14 +9942,18 @@ main() {
 	sec_22_perms
 	sec_23_usbguard
 	sec_24_ids
-	record_etc_baseline
 	record_routine_state
 
 	diagnose_failures
 	final_summary
 	show_protection_scorecard
-	save_followups
 	write_recovery_file
+	# Last to write: the /etc and AIDE baselines include everything this run wrote,
+	# the recovery file and any follow-ups applied included, so the first checks
+	# start clean. Follow-ups are saved after them so a late item is kept.
+	record_etc_baseline
+	start_aide_baseline
+	save_followups
 
 	SESSION_STATUS="completed"
 	ok "Script execution complete. See logs for full details."
