@@ -778,8 +778,11 @@ tier_full() {
         record FAIL "full: rollback removed drop-ins and restored pwquality.conf" \
             "$hardened_left drop-in(s) remain; residual diff in $ARTIFACTS/full_rollback.residual"
     fi
-    check "full: rollback removes the sandbox and avahi-daemon keeps running" \
-        fx bash -c 'systemctl is-active --quiet avahi-daemon && systemctl show -p ProtectHome avahi-daemon | grep -q =no'
+    # (The package rollback can remove avahi itself: it was installed above, but
+    # depends on avahi-libs, which an earlier run pulled in.)
+    check "full: rollback removes the sandbox drop-in (avahi, if still installed, keeps running)" \
+        fx bash -c 'test ! -e /etc/systemd/system/avahi-daemon.service.d/50-fedora-harden-sandbox.conf &&
+            { ! rpm -q avahi >/dev/null 2>&1 || systemctl is-active --quiet avahi-daemon; }'
     check "full: rollback keeps home copies (the person's data) but removes their timer" \
         fx bash -c 'ls -d /var/lib/fedora-harden/home-copies/2*[0-9] >/dev/null && ! systemctl is-enabled --quiet fedora-harden-snapshot.timer'
 
