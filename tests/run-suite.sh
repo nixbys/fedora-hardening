@@ -830,7 +830,11 @@ tier_fault() {
     fi
     local out="$ARTIFACTS/fault" line
     mkdir -p "$out"
-    "$ROOT/tests/fault-matrix.sh" "$TARGET_FEDORA" "$out" >"$out/results.txt" 2>&1 || true
+    # FAULT_GROUPS (e.g. "net pkg") runs only those groups; CI runs each group as its
+    # own job so the tier finishes in about a quarter of the time.
+    local -a groups=()
+    read -r -a groups <<<"${FAULT_GROUPS:-}"
+    "$ROOT/tests/fault-matrix.sh" "$TARGET_FEDORA" "$out" "${groups[@]}" >"$out/results.txt" 2>&1 || true
     while IFS= read -r line; do
         case "$line" in
             "PASS: "*) record PASS "fault ${line#PASS: }" ;;
