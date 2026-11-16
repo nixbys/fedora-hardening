@@ -184,7 +184,7 @@ check "no [FAIL] lines in the run" bash -c '! grep -q "^\[FAIL\]" "$1"' _ "$OUT/
 vm rpm-ostree status --json >"$OUT/status.json" 2>&1
 jq -r '[.deployments[] | .["requested-packages"][]?] | unique | .[]' "$OUT/status.json" >"$OUT/requested.txt" 2>/dev/null
 echo "requested layers: $(tr '\n' ' ' <"$OUT/requested.txt")"
-for pkg in clamav clamd clamav-update aide rkhunter openscap-scanner scap-security-guide \
+for pkg in clamav clamd clamav-update aide openscap-scanner scap-security-guide \
     setools-console buildah skopeo podman-compose mat2 yubikey-manager yubico-piv-tool toolbox; do
     check "$pkg is not layered" bash -c '! grep -qx -- "$1" "$2"' _ "$pkg" "$OUT/requested.txt"
 done

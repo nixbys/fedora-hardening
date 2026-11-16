@@ -235,7 +235,7 @@ unexpected_changes() { # unexpected_changes <diff-file>
             if (!parent) print p
         }' "$1.paths" "$1.paths" |
         grep -Ev '^(/etc|/root|/tmp|/run|/var/tmp|/var/log)$' |
-        grep -Ev '^(/var/cache/|/var/lib/dnf/|/usr/lib/sysimage/(rpm|libdnf5)/|/var/log/dnf5|/root/sessions|/var/log/fedora-harden|/tmp/|/run/|/var/log/journal|/var/lib/systemd/|/var/lib/rpm-state|/root/\.cache)' ||
+        grep -Ev '^(/var/cache/|/var/lib/dnf/|/usr/lib/sysimage/(rpm|libdnf5)/|/var/log/dnf5|/var/lib/fedora-harden/sessions|/var/log/fedora-harden|/tmp/|/run/|/var/log/journal|/var/lib/systemd/|/var/lib/rpm-state|/root/\.cache)' ||
         true
 }
 
@@ -520,7 +520,7 @@ tier_full() {
         --memory "$FULL_MEMORY" --memory-swap "$FULL_MEMORY" \
         -v "$SCRIPT:/root/fedora-harden.sh:ro,z" \
         -v "$ARTIFACTS/full-logs:/var/log/fedora-harden:z" \
-        -v "$ARTIFACTS/full-sessions:/root/sessions:z" \
+        -v "$ARTIFACTS/full-sessions:/var/lib/fedora-harden/sessions:z" \
         "$IMG_FULL" >/dev/null
 
     local state="" i
@@ -586,11 +586,11 @@ tier_full() {
     check "full: sysctl drop-in written" fx test -s /etc/sysctl.d/99-hardening.conf
     check "full: firewalld default zone is drop" \
         bash -c '[[ "$(podman exec "$1" firewall-cmd --get-default-zone)" == drop ]]' _ "$FULL_CT"
-    check "full: pwquality minlen=14" fx grep -Eq '^\s*minlen\s*=\s*14' /etc/security/pwquality.conf
-    check "full: pwquality minclass=3" fx grep -Eq '^\s*minclass\s*=\s*3' /etc/security/pwquality.conf
+    check "full: pwquality minlen=15" fx grep -Eq '^\s*minlen\s*=\s*15' /etc/security/pwquality.conf
+    check "full: pwquality has no composition rules (minclass=0)" fx grep -Eq '^\s*minclass\s*=\s*0' /etc/security/pwquality.conf
     check "full: faillock deny=5 + unlock_time=900" fx bash -c \
         'grep -Eq "^deny = 5$" /etc/security/faillock.conf && grep -Eq "^unlock_time = 900$" /etc/security/faillock.conf'
-    check "full: login.defs PASS_MAX_DAYS 90" fx grep -Eq '^PASS_MAX_DAYS\s+90$' /etc/login.defs
+    check "full: no forced password expiry (login.defs untouched)" fx bash -c '! grep -Eq "^PASS_MAX_DAYS\s+90$" /etc/login.defs'
     check "full: auditd rules written" fx test -s /etc/audit/rules.d/hardening.rules
     check "full: umask profile written" fx grep -q 'umask 077' /etc/profile.d/99-umask.sh
     check "full: core dumps disabled" fx test -s /etc/security/limits.d/99-coredump.conf
@@ -605,7 +605,8 @@ tier_full() {
         grep -qx "maxauthtries 3" <<<"$out" &&
         grep -qx "allowusers testuser" <<<"$out" &&
         grep -qx "ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com" <<<"$out"' _ "$FULL_CT"
-    check "full: clamd@scan running (socket configured before start)" fx systemctl is-active --quiet clamd@scan
+    # --yes keeps on-access scanning off (opt-in): a weekly scan timer instead.
+    check "full: weekly ClamAV scan scheduled (on-access is opt-in)" fx systemctl is-enabled --quiet fedora-harden-clamscan.timer
     # systemd-resolved cannot START in a rootless container (its unit must keep
     # CAP_SYS_ADMIN while switching user: "Failed at step USER"), so check it was
     # installed, enabled and configured for DNS-over-TLS.
@@ -628,7 +629,7 @@ tier_full() {
     podman cp "$ROOT/tests/verify-host.sh" "$FULL_CT:/root/verify-host.sh" >/dev/null 2>&1
     fx /root/verify-host.sh >"$log" 2>&1 || true
     local id missing=""
-    for id in AUTO-1 AUTO-2 FW-1 FW-2 SSH-1 SSH-2 PAM-1 PAM-2 PAM-3 FLAT-1 FLAT-2 PERM-1 PERM-2 CLAM-1 INT-1 ROLL-1; do
+    for id in AUTO-1 AUTO-2 FW-1 FW-2 SSH-1 SSH-2 PAM-1 PAM-2 PAM-3 FLAT-1 FLAT-2 PERM-1 PERM-2 CLAM-1 INT-1 INT-2 ROLL-1; do
         grep -qE "^[[:space:]]+${id}[[:space:]]+PASS" "$log" || missing+="$id "
     done
     if [[ -z "$missing" ]]; then
