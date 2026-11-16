@@ -354,6 +354,13 @@ tier_static() {
             sed -n "/<<'"'"'ROUTINE_EOF'"'"'/,/^ROUTINE_EOF\$/p" "$1" | sed "1d;\$d" >"$2" &&
             [[ -s "$2" ]] && shellcheck -s bash "$2"' _ "$SCRIPT" "$ARTIFACTS/fedora-harden-routine"
     fi
+    # --gui runs a window app embedded in the script; compile and lint it too.
+    check "static: embedded --gui window app compiles" bash -c '
+        sed -n "/<<'"'"'GUIAPP_EOF'"'"'/,/^GUIAPP_EOF\$/p" "$1" | sed "1d;\$d" >"$2" &&
+        [[ -s "$2" ]] && python3 -m py_compile "$2"' _ "$SCRIPT" "$ARTIFACTS/fedora-harden-gui.py"
+    if need_tool ruff "static: embedded --gui window app"; then
+        check "static: embedded --gui window app passes ruff" ruff check --no-cache "$ARTIFACTS/fedora-harden-gui.py"
+    fi
 
     # Regression guard: under `set -e` a post-increment of a zero counter inside (( ))
     # evaluates to 0, returns status 1 and aborts the script.
