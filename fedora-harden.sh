@@ -8542,7 +8542,7 @@ _disk_unlock() {
 	record_change LUKS_TOKEN "$dev:$kind"
 	# Ask for the token at boot: <name> <device> <key> <options>
 	opt="$kind-device=auto"
-	name="$(awk -v u="$(blkid -s UUID -o value "$dev")" '$2 == "UUID=" u {print $1}' /etc/crypttab 2>/dev/null)"
+	name="$(awk -v u="$(blkid -s UUID -o value "$dev")" '$2 == "UUID=" u {print $1}' /etc/crypttab 2>/dev/null || true)"
 	if [[ -n "$name" ]] && backup_file /etc/crypttab; then
 		awk -v n="$name" -v o="$opt" 'BEGIN{OFS="\t"} $1 == n && $4 !~ o {$4 = ($4 == "" || $4 == "none") ? o : $4 "," o} {print}' \
 			/etc/crypttab >/etc/crypttab.fh-new && cat /etc/crypttab.fh-new >/etc/crypttab
@@ -8665,7 +8665,7 @@ EOF
 # (section 20 snapshots or copies everything under it), or remove it.
 _recovery_backup_copy() {
 	local want="$1" home dest
-	home="$(sed -n 's/^HOME_DIR=//p' /etc/fedora-harden/snapshots 2>/dev/null)"
+	home="$(sed -n 's/^HOME_DIR=//p' /etc/fedora-harden/snapshots 2>/dev/null || true)"
 	[[ -n "$home" && -d "$home" ]] || return 0
 	dest="$home/.fedora-harden/machine.conf"
 	if [[ "$want" != yes ]]; then
