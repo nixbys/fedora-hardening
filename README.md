@@ -49,7 +49,7 @@ This is a personal hardening script that has grown a substantial feature set and
 | 9 | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941) |
 | 10 | auditd | Identity, privilege escalation, module, time/network/mount syscalls, deletes under /etc |
 | 11 | DNS over TLS | systemd-resolved with Quad9 only (installed if missing; warns if DNS bypasses it); LLMNR off, mDNS only for gaming/creative; NTS time (11c) |
-| 11b | MAC randomization | NetworkManager network-layer privacy |
+| 11b | MAC randomization | Random MAC for Wi-Fi, stable per-network MAC for Ethernet (home DHCP reservations keep working) |
 | 12 | Fail2Ban | Intrusion detection + auto-ban |
 | 13 | Desktop settings | Screen lock, recent docs, Bluetooth, location — per DE, verified after applying; microphone off only if you choose |
 | 14 | Firefox | Flatpak + pinned arkenfox + GPC/DNT + DNS-over-HTTPS (ECH) + extensions + VPN detection |
@@ -117,6 +117,8 @@ sudo ./fedora-harden.sh [options]
   -n, --dry-run           Print what would run; make no changes
       --gui               Windowed frontend: progress window, dialogs and summary
       --report [file]     Write an HTML report of the last session and exit
+                          (host, user names, home paths and addresses replaced
+                          with placeholders; add --full to keep them)
       --resume            Review the last session's open follow-ups and exit
       --wireguard-config <file>  Install this WireGuard config with a kill switch (section 15)
       --profile <list>    Use cases for section 19: everyday,gaming,creative,dev,laptop
@@ -236,9 +238,43 @@ ujust distrobox-assemble CONTAINER=fedora-harden-tools FILE=$HOME/.config/distro
 
 ---
 
+## Privacy
+
+The script hardens privacy and security. It does not make you anonymous: a VPN or DNS
+provider still sees your traffic, and browser fingerprinting and account logins still
+identify you. For anonymity, use Tor Browser, Tails or Whonix.
+
+**What it stores, and who can read it.** Everything stays on this machine.
+
+| What | Where | Readable by |
+|---|---|---|
+| Backups of changed files and the change journal | `/root/harden-backups-<timestamp>/` | root |
+| Session and rollback reports | `/var/lib/fedora-harden/sessions/` | root |
+| Your use cases and snapshot settings | `/etc/fedora-harden/` | root |
+| Routine state and checksums | `/var/lib/fedora-harden/` | root |
+| Log | the journal (`journalctl -t fedora-harden`) | root and members of `wheel`, `adm`, `systemd-journal` |
+| Reports you ask for (`--report`) and section reports | your `Downloads/fedora-hardening/` | you |
+
+The `--report` page is meant to be shared, so the host name, user names, home paths
+and IP/MAC addresses in it are replaced with placeholders; `--report --full` keeps
+them for your own use. Log messages never contain keys or passwords.
+
+**What it contacts.** Only what the work needs: Fedora's package repositories,
+Flathub, addons.mozilla.org (Firefox extensions), GitHub for one pinned,
+checksum-verified file (arkenfox), the ClamAV signature servers, and the container
+registries of the images it uses. There is no telemetry. After a run the system
+itself contacts less: DNS goes only to Quad9 over TLS, the host name is no longer
+announced on the local network (LLMNR off; mDNS off unless you game or create),
+Fedora's countme, ABRT crash reports and fwupd report uploads stay off, and
+NetworkManager's connectivity check can be turned off (it is asked).
+
+---
+
 ## Rollback
 
-Every file the script modifies is backed up before the change, and every file it creates is journaled, so a rollback restores modified files **and removes created ones** (drop-ins, rules, cron jobs). A session journal is written to `/root/harden-backups-<timestamp>/`.
+Every file the script modifies is backed up before the change, and every file it creates is journaled, so a rollback restores modified files **and removes created ones** (drop-ins, rules, timers). A session journal is written to `/root/harden-backups-<timestamp>/`.
+
+Before changing anything, a run also sets a **safety point**: on image-based systems the booted deployment is pinned (it stays in the boot menu whatever updates follow); on traditional Fedora with Btrfs a read-only snapshot of `/` is kept in `/var/lib/fedora-harden/root-snapshots/` (the three newest). Rollback keeps that snapshot; it is the way back if something outside the script's own changes goes wrong.
 
 ```bash
 # Undo the most recent run
