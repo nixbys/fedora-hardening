@@ -65,6 +65,22 @@ New:
   before and after is reported. sshd is left alone (its sandbox would apply to
   every login session). `--rollback` removes the drop-ins and restarts the service.
 
+## Unreleased — personal setup
+
+- **Section 19 also sets up what your use cases need, once each:** a `dev` box with
+  build tools and the `davincibox` container for DaVinci Resolve (created for you,
+  nothing layered), a `private` use case with Tor Browser and Mullvad Browser,
+  Flathub limited to verified apps, your security key as a second factor for sudo
+  and login, unlocking an encrypted disk with the TPM plus a PIN or a FIDO2 key (the
+  passphrase keeps working), and a pointer to OpenSnitch. Each is a question; with
+  `--yes` only what a chosen use case implies happens. `--rollback` undoes all of it.
+- **Recovery file:** `/etc/fedora-harden/machine.conf` (root-only, no secrets) records
+  what the machine was set up with, including every answer, and is copied into the
+  home backups (`--recovery-backup off` to stop). `--restore FILE` reapplies it
+  without questions. `--report` names it without its contents; `--include-setup`
+  adds them.
+- The use-case profile (`/etc/fedora-harden/profile`) is now readable by root only.
+
 ## Unreleased — sections numbered in the order they run
 
 - **Sections are renumbered 1–24 in execution order.** The order was already chosen
