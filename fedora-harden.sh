@@ -8258,7 +8258,7 @@ protection_scorecard() {
 
 	# Automatic updates
 	if ((IS_OSTREE)); then
-		policy="$(sed -n 's/^AutomaticUpdatePolicy=//p' /etc/rpm-ostreed.conf 2>/dev/null | tail -n 1)"
+		policy="$(sed -n 's/^AutomaticUpdatePolicy=//p' /etc/rpm-ostreed.conf 2>/dev/null | tail -n 1 || true)"
 		if systemctl is-enabled --quiet uupd.timer 2>/dev/null; then
 			_score ok "Automatic updates" "uupd updates the system, Flatpaks and boxes"
 		elif [[ "$policy" =~ ^(stage|apply)$ ]] && systemctl is-enabled --quiet rpm-ostreed-automatic.timer 2>/dev/null; then
@@ -8286,7 +8286,7 @@ protection_scorecard() {
 	if ! systemctl is-active --quiet sshd 2>/dev/null && ! systemctl is-enabled --quiet sshd 2>/dev/null; then
 		_score ok "SSH server" "off"
 	else
-		v="$(sshd -T 2>/dev/null | awk '$1 == "passwordauthentication" || $1 == "permitrootlogin" {print $1 "=" $2}' | sort | paste -sd' ' -)"
+		v="$(sshd -T 2>/dev/null | awk '$1 == "passwordauthentication" || $1 == "permitrootlogin" {print $1 "=" $2}' | sort | paste -sd' ' - || true)"
 		if [[ "$v" == *"passwordauthentication=no"* && "$v" == *"permitrootlogin=no"* ]]; then
 			_score ok "SSH server" "on, keys only, no root login"
 		else
@@ -8396,7 +8396,8 @@ KERNEL_HARDENING_ARGS=(init_on_free=1 slab_nomerge page_alloc.shuffle=1 randomiz
 
 _kernel_boot_hardening() {
 	local current add=() a profile
-	profile="${PROFILE_ARG:-$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"')}"
+	profile="$PROFILE_ARG"
+	[[ -n "$profile" ]] || profile="$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"' || true)"
 	if [[ ",${profile// /,}," == *,gaming,* ]] && ((!KERNEL_HARDENING)); then
 		info "Kernel boot hardening skipped for the gaming use case (it costs a few % of performance); --kernel-hardening turns it on."
 		return 0
@@ -8408,7 +8409,7 @@ _kernel_boot_hardening() {
 	if ((IS_OSTREE)); then
 		current="$(rpm-ostree kargs 2>/dev/null || true)"
 	elif have_cmd grubby; then
-		current="$(grubby --info=DEFAULT 2>/dev/null | sed -n 's/^args="\(.*\)"$/\1/p')"
+		current="$(grubby --info=DEFAULT 2>/dev/null | sed -n 's/^args="\(.*\)"$/\1/p' || true)"
 	else
 		info "Kernel boot hardening: neither rpm-ostree nor grubby is available — skipped."
 		return 0
@@ -8488,7 +8489,7 @@ EOF
 }
 
 _exposure() { # _exposure <service> — systemd-analyze's exposure score (lower is better)
-	systemd-analyze security --no-pager "$1.service" 2>/dev/null | sed -n 's/.*Overall exposure level for [^:]*: \([0-9.]*\).*/\1/p'
+	systemd-analyze security --no-pager "$1.service" 2>/dev/null | sed -n 's/.*Overall exposure level for [^:]*: \([0-9.]*\).*/\1/p' || true
 }
 
 _sandbox_exposed_services() {
