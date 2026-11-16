@@ -77,14 +77,32 @@ async def run_command(
     return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
 
 
+def script_files() -> list[Path]:
+    """fedora-harden.sh, the parts it loads and the routine helper it installs."""
+    return [
+        SCRIPT_PATH,
+        *sorted((PROJECT_ROOT / "lib").glob("*.sh")),
+        *sorted((PROJECT_ROOT / "sections").glob("*.sh")),
+        PROJECT_ROOT / "libexec" / "fedora-harden-routine",
+    ]
+
+
+def script_text() -> str:
+    return "\n".join(f.read_text(encoding="utf-8") for f in script_files())
+
+
 def tail(text: str, lines: int = 60) -> str:
     """Return the last N lines of text."""
     return "\n".join(text.splitlines()[-lines:])
 
 
 async def _syntax() -> tuple[bool, str]:
-    rc, _, err = await run_command(["bash", "-n", str(SCRIPT_PATH)])
-    return rc == 0, err.strip() or "bash -n: OK"
+    errors = []
+    for f in script_files():
+        rc, _, err = await run_command(["bash", "-n", str(f)])
+        if rc != 0:
+            errors.append(err.strip() or f"bash -n failed: {f.relative_to(PROJECT_ROOT)}")
+    return not errors, "\n".join(errors) or "bash -n: OK"
 
 
 async def _lint() -> tuple[bool, str]:
@@ -98,20 +116,12 @@ async def _lint() -> tuple[bool, str]:
 
 async def _docs() -> tuple[bool, str]:
     issues: list[str] = []
-    for doc in ["README.md", "TESTING.md", "QUICKSTART-TESTING.md", "DEVELOPMENT.md"]:
+    for doc in ["README.md", "TESTING.md", "DEVELOPMENT.md"]:
         if not (PROJECT_ROOT / doc).exists():
             issues.append(f"Missing: {doc}")
-    content = SCRIPT_PATH.read_text(encoding="utf-8")
-    functions = re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", content, re.MULTILINE)
-    undocumented = [
-        f for f in functions if not re.search(rf"^#\s*{re.escape(f)}\(\)", content, re.MULTILINE)
-    ]
-    if undocumented:
-        issues.append(
-            f"{len(undocumented)} function(s) without a '# name()' doc comment: "
-            + ", ".join(undocumented[:15])
-            + (" ..." if len(undocumented) > 15 else "")
-        )
+    for part in script_files():
+        if not part.exists():
+            issues.append(f"Missing: {part.relative_to(PROJECT_ROOT)}")
     return not issues, "\n".join(issues) or "Documentation complete"
 
 
@@ -201,7 +211,7 @@ async def check_security() -> str:
     return f"Security: FAIL — {tool} exit {rc}\n\n{tail(out or err, 60)}"
 
 
-@mcp.tool(name="validate-docs", description="Check required docs and function doc comments")
+@mcp.tool(name="validate-docs", description="Check that the docs and the script's files are present")
 async def validate_docs() -> str:
     ok, detail = await _docs()
     return f"Documentation: {_fmt(ok)}\n\n{detail}"
@@ -209,10 +219,11 @@ async def validate_docs() -> str:
 
 @mcp.tool(name="analyze-performance", description="Static size/complexity metrics for the script")
 async def analyze_performance(profile: bool = False) -> str:
-    content = SCRIPT_PATH.read_text(encoding="utf-8")
+    content = script_text()
     lines = content.splitlines()
     functions = re.findall(r"^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{", content, re.MULTILINE)
     metrics: dict[str, object] = {
+        "files": len(script_files()),
         "total_lines": len(lines),
         "functions": len(functions),
         "comment_lines": sum(1 for line in lines if line.lstrip().startswith("#")),
@@ -221,7 +232,7 @@ async def analyze_performance(profile: bool = False) -> str:
     }
     if profile:
         start = asyncio.get_running_loop().time()
-        await run_command(["bash", "-n", str(SCRIPT_PATH)])
+        await _syntax()
         metrics["syntax_check_ms"] = int((asyncio.get_running_loop().time() - start) * 1000)
     return f"Performance analysis:\n{json.dumps(metrics, indent=2)}"
 

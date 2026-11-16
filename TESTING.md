@@ -71,10 +71,17 @@ Results are written to `<artifacts>/results.txt`, with one log per check.
 
 ### static
 
-`bash -n`, ShellCheck (warning level and the strict `.shellcheckrc`
-profile), `shfmt -d` (style from `.editorconfig`), `yamllint --strict`, `hadolint`,
-`ruff`, an MCP server smoke test over stdio, and a regression guard against
-`((x++))`-style increments that abort under `set -e` when `x` is 0.
+`bash -n` on every script and part, ShellCheck (warning level and the strict
+`.shellcheckrc` profile; `lib/` and `sections/` are checked through `fedora-harden.sh`
+with `-x -a`, so globals and functions defined in one part are known in the others),
+`shfmt -d` (style from `.editorconfig`), a check that `fedora-harden.sh` loads every file
+in `lib/` and `sections/`, `yamllint --strict`, `hadolint`, `ruff` and `py_compile`-style
+parsing (including the `--gui` window app, `libexec/fedora-harden-gui.py`), an MCP
+server smoke test over stdio, and a regression guard against `((x++))`-style increments
+that abort under `set -e` when `x` is 0.
+
+Containers get the working tree mounted read-only at `/opt/fedora-hardening` (the
+script names the `Downloads/<project>` report folder after its directory).
 
 ### quick (no systemd)
 
@@ -121,8 +128,8 @@ and keeps running; `--rollback all` removes the drop-in and Avahi still runs.
 
 Section 19 runs with `--profile everyday,dev`: the profile is saved, the timers are
 enabled, the helper's drift check is clean after the run and catches a changed managed
-file, and the weekly summary is written. The static tier extracts the helper embedded
-in the script and lints it with ShellCheck.
+file, and the weekly summary is written. The static tier lints the helper
+(`libexec/fedora-harden-routine`) with ShellCheck and shfmt.
 
 Section 20 runs in the full tier without Btrfs (the rsync path): the first copy
 holds the home folder, nothing is copied when nothing changed, a changed file gives a

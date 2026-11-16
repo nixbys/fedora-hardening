@@ -57,7 +57,7 @@ check() { # check <description> <command...>
     fi
 }
 
-dnf install -y -q --setopt=install_weak_deps=False qemu-system-x86-core qemu-img openssh-clients xz jq \
+dnf install -y -q --setopt=install_weak_deps=False qemu-system-x86-core qemu-img openssh-clients xz jq tar \
     >"$OUT/dnf.log" 2>&1 || {
     echo "FAIL: install QEMU (see $OUT/dnf.log)"
     exit 1
@@ -175,10 +175,12 @@ vm test -r /usr/share/ublue-os/image-info.json && ublue=1
 vm 'grep -m1 "^AutomaticUpdatePolicy" /etc/rpm-ostreed.conf 2>/dev/null || true' >"$OUT/policy-before.txt"
 
 # ── Run the script on the booted image ─────────────────────────────────────────
-scp -q -i "$work/id" -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    /src/fedora-harden.sh /src/tests/verify-host.sh root@127.0.0.1:
+# The script and the parts it loads, in a directory named like the project (the
+# Downloads/<project> report folder is named after it).
+tar -C /src -cf - fedora-harden.sh lib sections libexec tests/verify-host.sh |
+    vm 'mkdir -p fedora-hardening && tar -C fedora-hardening -xf -'
 rc=0
-vm "TERM=dumb ./fedora-harden.sh --yes --only 1,2,4,5,16,17,18,24 --user tester </dev/null" \
+vm "TERM=dumb ./fedora-hardening/fedora-harden.sh --yes --only 1,2,4,5,16,17,18,24 --user tester </dev/null" \
     >"$OUT/run.log" 2>&1 || rc=$?
 check "run exits 0 (got $rc)" test "$rc" -eq 0
 check "no [FAIL] lines in the run" bash -c '! grep -q "^\[FAIL\]" "$1"' _ "$OUT/run.log"
@@ -257,13 +259,13 @@ else
 fi
 check "box tool is not called a security boundary" grep -q 'not a security boundary' "$OUT/run.log"
 for grp in CLAM INT; do
-    vm ./verify-host.sh --only "$grp" >"$OUT/verify-$grp.log" 2>&1
+    vm ./fedora-hardening/tests/verify-host.sh --only "$grp" >"$OUT/verify-$grp.log" 2>&1
     check "verify-host $grp passes" bash -c 'grep -q " PASS" "$1" && ! grep -q " FAIL" "$1"' _ "$OUT/verify-$grp.log"
 done
 
 # ── Section 20: home snapshots on a real Btrfs home ───────────────────────────
 H=/usr/local/libexec/fedora-harden-routine
-vm "TERM=dumb ./fedora-harden.sh --yes --only 20 </dev/null" >"$OUT/snapshots.log" 2>&1
+vm "TERM=dumb ./fedora-hardening/fedora-harden.sh --yes --only 20 </dev/null" >"$OUT/snapshots.log" 2>&1
 expected=btrfs
 vm 'command -v snapper >/dev/null' && expected=snapper
 check "home snapshots use $expected" vm grep -qx "BACKEND=$expected" /etc/fedora-harden/snapshots
@@ -294,7 +296,7 @@ check "an approved folder becomes its own subvolume, contents intact" vm "
 
 # ── Rollback ────────────────────────────────────────────────────────────────────
 rc=0
-vm "./fedora-harden.sh --yes --rollback all </dev/null" >"$OUT/rollback.log" 2>&1 || rc=$?
+vm "./fedora-hardening/fedora-harden.sh --yes --rollback all </dev/null" >"$OUT/rollback.log" 2>&1 || rc=$?
 check "--rollback all exits 0 (got $rc)" test "$rc" -eq 0
 for f in /etc/containers/systemd/fedora-harden-clamscan.container /etc/systemd/system/fedora-harden-etc-check.timer \
     /var/lib/fedora-harden/etc-baseline.txt; do

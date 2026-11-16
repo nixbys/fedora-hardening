@@ -1,7 +1,8 @@
 # Security Policy
 
-`fedora-harden.sh` is a single Bash script that you download, then run as
-**root** (via `sudo`) against a real, in-use Fedora system. That combination —
+`fedora-harden.sh` is a Bash script (with the parts it loads from `lib/`,
+`sections/` and `libexec/`) that you download, then run as **root** (via
+`sudo`) against a real, in-use Fedora system. That combination —
 untrusted-until-reviewed shell code, executed with full privileges, against a
 machine someone actually uses — is the thing this policy exists to protect.
 
@@ -73,10 +74,10 @@ short:
   wherever possible, rather than an unauthenticated `curl | bash`-style
   fetch — the whole point of this project is to reduce that class of exposure
   on the systems it's run against, not add it to the codebase itself.
-- Review diffs to `fedora-harden.sh` for anything that changes *what gets
-  executed* (new `curl`, `wget`, `eval`, or dynamically constructed commands)
-  with more scrutiny than a diff that only changes strings, comments, or
-  section wording.
+- Review diffs to the script (`fedora-harden.sh`, `lib/`, `sections/`,
+  `libexec/`) for anything that changes *what gets executed* (new `curl`,
+  `wget`, `eval`, or dynamically constructed commands) with more scrutiny than
+  a diff that only changes strings, comments, or section wording.
 
 ## Reporting Issues in the MCP Server
 

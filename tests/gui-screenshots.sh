@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/gui-screenshots.sh - Regenerate docs/screenshots/*.png (runs INSIDE the "gui" image).
 #
-# Extracts the --gui window app embedded in fedora-harden.sh and plays a sample run
+# Starts the --gui window app (libexec/fedora-harden-gui.py) and plays a sample run
 # into it, so the README images always match what the script ships:
 #   running.png   sections, progress, a notice and the activity log mid-run
 #   question.png  a question answered inside the window
@@ -10,7 +10,7 @@
 #
 # Usage:
 #   podman build -f Dockerfile.test --target gui -t localhost/fedora-harden:gui .
-#   podman run --rm -v ./fedora-harden.sh:/root/fedora-harden.sh:ro,z \
+#   podman run --rm -v .:/opt/fedora-hardening:ro,z \
 #     -v ./tests/gui-screenshots.sh:/root/gui-screenshots.sh:ro,z \
 #     -v ./docs/screenshots:/out:z --entrypoint /root/gui-screenshots.sh \
 #     localhost/fedora-harden:gui
@@ -19,11 +19,10 @@ set -uo pipefail
 [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] || exec dbus-run-session -- "$0" "$@"
 
 OUT="${OUT:-/out}"
-APP="$(mktemp -d)/fedora-harden-gui.py"
+APP=/opt/fedora-hardening/libexec/fedora-harden-gui.py
 mkdir -p "$OUT"
-sed -n "/<<'GUIAPP_EOF'/,/^GUIAPP_EOF\$/p" /root/fedora-harden.sh | sed '1d;$d' >"$APP"
 [[ -s "$APP" ]] || {
-    echo "could not extract the window app from fedora-harden.sh" >&2
+    echo "$APP not found: mount the project at /opt/fedora-hardening" >&2
     exit 1
 }
 export LC_ALL=C.UTF-8 GTK_A11Y=none

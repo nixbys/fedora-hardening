@@ -7,7 +7,7 @@
 #   ./test-in-podman.sh                      # REAL run inside a throwaway systemd container
 #   ./test-in-podman.sh --quick -it          # interactive shell
 #
-# The working-tree fedora-harden.sh is bind-mounted read-only into the container.
+# The working tree is bind-mounted read-only into the container at /opt/fedora-hardening.
 # Logs and session reports are written to a host artifact directory that is kept
 # after the run (path printed at the end) so they can be inspected.
 
@@ -198,7 +198,7 @@ RUN_OPTS=(
     --memory-swap "$MEMORY_LIMIT"
     --cpus "$CPU_LIMIT"
     --pids-limit 2048
-    --volume "$SCRIPT_DIR/fedora-harden.sh:/root/fedora-harden.sh:ro,z"
+    --volume "$SCRIPT_DIR:/opt/fedora-hardening:ro,z"
     --volume "$ARTIFACT_DIR/logs:/var/log/fedora-harden:rw,z"
     --volume "$ARTIFACT_DIR/sessions:/var/lib/fedora-harden/sessions:rw,z"
 )
@@ -221,7 +221,7 @@ if [[ "$VARIANT" == "quick" ]]; then
     fi
     log_info "Running: fedora-harden.sh ${SCRIPT_ARGS[*]}"
     CONTAINER_STARTED=1
-    podman run "${RUN_OPTS[@]}" --entrypoint /root/fedora-harden.sh \
+    podman run "${RUN_OPTS[@]}" --entrypoint /opt/fedora-hardening/fedora-harden.sh \
         "$IMAGE_TAG" "${SCRIPT_ARGS[@]}" </dev/null 2>&1 | tee "$OUTPUT_LOG" || EXIT_CODE=${PIPESTATUS[0]}
     podman diff "$CONTAINER_NAME" >"$ARTIFACT_DIR/fs-diff.txt" 2>/dev/null || true
 else
@@ -246,7 +246,7 @@ else
     fi
 
     log_info "Running: fedora-harden.sh ${SCRIPT_ARGS[*]}"
-    podman exec "$CONTAINER_NAME" /root/fedora-harden.sh "${SCRIPT_ARGS[@]}" \
+    podman exec "$CONTAINER_NAME" /opt/fedora-hardening/fedora-harden.sh "${SCRIPT_ARGS[@]}" \
         </dev/null 2>&1 | tee "$OUTPUT_LOG" || EXIT_CODE=${PIPESTATUS[0]}
 
     podman exec "$CONTAINER_NAME" journalctl --no-pager -b >"$ARTIFACT_DIR/journal.log" 2>&1 || true

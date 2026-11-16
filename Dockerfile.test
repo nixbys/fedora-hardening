@@ -63,11 +63,16 @@ RUN set -e && \
     mkdir -p /var/log/fedora-harden /root/harden-backups
 
 WORKDIR /root
-ENV PATH="/root:${PATH}"
+ENV PATH="/opt/fedora-hardening:${PATH}"
 
-# Baked-in copy of the script (the test harness bind-mounts the working-tree copy over it)
-COPY --chown=root:root fedora-harden.sh /root/fedora-harden.sh
-RUN chmod 755 /root/fedora-harden.sh && bash -n /root/fedora-harden.sh
+# Baked-in copy of the script and its parts (the test harness bind-mounts the working
+# tree over it). The directory is named like the project: the script names the
+# Downloads/<project> report folder after it.
+COPY --chown=root:root fedora-harden.sh /opt/fedora-hardening/
+COPY --chown=root:root lib /opt/fedora-hardening/lib
+COPY --chown=root:root sections /opt/fedora-hardening/sections
+COPY --chown=root:root libexec /opt/fedora-hardening/libexec
+RUN chmod 755 /opt/fedora-hardening/fedora-harden.sh && bash -n /opt/fedora-hardening/fedora-harden.sh
 
 STOPSIGNAL SIGRTMIN+3
 ENTRYPOINT ["/usr/sbin/init"]
@@ -106,10 +111,13 @@ RUN set -e && \
     mkdir -p /var/log/fedora-harden
 
 WORKDIR /root
-ENV PATH="/root:${PATH}"
+ENV PATH="/opt/fedora-hardening:${PATH}"
 
-COPY --chown=root:root fedora-harden.sh /root/fedora-harden.sh
-RUN chmod 755 /root/fedora-harden.sh && bash -n /root/fedora-harden.sh
+COPY --chown=root:root fedora-harden.sh /opt/fedora-hardening/
+COPY --chown=root:root lib /opt/fedora-hardening/lib
+COPY --chown=root:root sections /opt/fedora-hardening/sections
+COPY --chown=root:root libexec /opt/fedora-hardening/libexec
+RUN chmod 755 /opt/fedora-hardening/fedora-harden.sh && bash -n /opt/fedora-hardening/fedora-harden.sh
 
 ENTRYPOINT ["/bin/bash"]
 
