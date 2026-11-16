@@ -320,13 +320,15 @@ REPORT_DATE="$RUN_STAMP"
 declare -ga TEMP_FILES=() # All temp paths to auto-clean on EXIT
 
 # ---------- Rollback & session-tracking globals ------------------------------
-ROLLBACK_JOURNAL=""                  # Path to per-run change journal inside BACKUP_DIR
-SESSION_DIR="/var/lib/fedora-harden/sessions" # Session reports: root-only, outside the checkout
-SESSION_REPORT_FILE=""               # Path to current session's report in SESSION_DIR
-SESSION_STATUS="running"             # Updated to 'completed' or 'aborted' on exit
-SESSION_REPORT_WRITTEN=0             # Guards against double-write on abort path
-ROLLBACK_SESSION_ID=""               # Session ID to roll back (set by --rollback)
-LIST_SESSIONS_MODE=0                 # Set by --list-sessions
+FH_STATE="/var/lib/fedora-harden" # Root-only state of this script (not in its folder)
+
+ROLLBACK_JOURNAL=""              # Path to per-run change journal inside BACKUP_DIR
+SESSION_DIR="$FH_STATE/sessions" # Session and rollback reports (root-only)
+SESSION_REPORT_FILE=""           # Path to current session's report in SESSION_DIR
+SESSION_STATUS="running"         # Updated to 'completed' or 'aborted' on exit
+SESSION_REPORT_WRITTEN=0         # Guards against double-write on abort path
+ROLLBACK_SESSION_ID=""           # Session ID to roll back (set by --rollback)
+LIST_SESSIONS_MODE=0             # Set by --list-sessions
 
 # Colors (disabled if not a tty)
 if [[ -t 1 ]]; then
