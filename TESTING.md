@@ -2,18 +2,21 @@
 
 ## Platform policy
 
-`fedora-harden.sh` targets **Fedora 44 and 45**. Every test runs on the release it
-tests (`--fedora 44` is the default, `--fedora 45` the other):
+`fedora-harden.sh` supports **Fedora 44 and 45**. Tests run on the latest release
+only (45, the default of `--fedora`); the script stays compatible with the previous
+release, so code must not rely on commands or options that exist only in the newest
+one. `--fedora 44` is still available when a change needs checking there. Every test
+runs on the release it tests:
 
 | What | Runs on |
 |------|---------|
-| Static tier (lint, formatting, MCP smoke test) | `registry.fedoraproject.org/fedora:44` — the `lint` image from `Dockerfile.test`, or natively when the host is Fedora 44 |
-| Quick tier | `registry.fedoraproject.org/fedora-minimal:44` (`test-only` image, no systemd) |
-| Full tier | `registry.fedoraproject.org/fedora-minimal:44` with systemd as PID 1 (`base` image) |
-| GUI tier | `registry.fedoraproject.org/fedora:44` + Xvfb, GTK4/libadwaita for Python (`gui` image) |
-| Atomic tier | the real image-based systems: `quay.io/fedora/fedora-silverblue:N` and a Universal Blue desktop (`ghcr.io/ublue-os/bluefin:44`, `ghcr.io/ublue-os/bazzite:stable` for 45), booted with systemd |
+| Static tier (lint, formatting, MCP smoke test) | `registry.fedoraproject.org/fedora:45` — the `lint` image from `Dockerfile.test`, or natively when the host is Fedora 45 |
+| Quick tier | `registry.fedoraproject.org/fedora-minimal:45` (`test-only` image, no systemd) |
+| Full tier | `registry.fedoraproject.org/fedora-minimal:45` with systemd as PID 1 (`base` image) |
+| GUI tier | `registry.fedoraproject.org/fedora:45` + Xvfb, GTK4/libadwaita for Python (`gui` image) |
+| Atomic tier | the real image-based systems: `quay.io/fedora/fedora-silverblue:45` and a Universal Blue desktop (`ghcr.io/ublue-os/bazzite:stable`), booted with systemd |
 | VM tier | the same images installed on a virtual disk with `bootc install to-disk` and booted with KVM |
-| CI (`.github/workflows/ci.yml`) | static and container jobs run as a 44/45 matrix in a container of that release; repository scans run on `fedora:44` |
+| CI (`.github/workflows/ci.yml`) | static and container jobs run in a `fedora:45` container; repository scans use `fedora:44` as a tool host |
 | Developer tooling (`setup-dev.sh`, pre-commit) | Fedora RPMs (`ShellCheck yamllint ruff hadolint gitleaks pre-commit python3-mcp`); shfmt is an RPM on 44 and built at the same pinned version with Fedora's Go on 45 (`tests/install-shfmt.sh`) |
 
 On an rpm-ostree host (Silverblue, Kinoite, Bazzite, …) do development inside a
@@ -227,7 +230,7 @@ systemd variant, `journal.log` and `failed-units.txt`.
 | `base` | `fedora-minimal:44` + systemd and the services the script manages | full tier |
 | `test-only` | `fedora-minimal:44`, no systemd | quick tier |
 | `lint` | `fedora:44` + the lint toolchain RPMs | static tier |
-| `gui` | `fedora:44` + Xvfb, python3-gobject, gtk4, libadwaita, xdotool, ImageMagick | gui tier |
+| `gui` | `fedora:45` + Xvfb, python3-gobject, gtk4, libadwaita, xdotool, ImageMagick | gui tier |
 
 ```bash
 podman build -f Dockerfile.test --target base      -t localhost/fedora-harden:test .
@@ -239,25 +242,25 @@ podman build -f Dockerfile.test --target lint      -t localhost/fedora-harden:li
 
 `.github/workflows/ci.yml` runs on push, pull request, nightly and on demand. The
 static, scan and container jobs run inside a `registry.fedoraproject.org/fedora`
-container of the release under test (44 and 45). The atomic-images jobs run on the
+container of the release under test (45). The atomic-images jobs run on the
 runner itself, so they can free disk space and use KVM; the runner only starts
 containers and VMs, and every check runs on the Fedora Atomic image under test:
 
 | Job | What it does |
 |-----|--------------|
-| static | static tier with Fedora 44 RPM tools |
+| static | static tier with Fedora 45 RPM tools |
 | secrets | `gitleaks git` over the full history (Fedora `gitleaks` RPM) |
 | vulnerabilities | `trivy fs` (Fedora `trivy` RPM), SARIF uploaded to code scanning |
 | container-tests | quick, full, gui and fault tiers; podman runs nested in a privileged Fedora job container |
-| atomic-images | atomic and vm tiers for Silverblue and a Universal Blue desktop, Fedora 44 and 45 |
+| atomic-images | atomic and vm tiers for Silverblue 45 and Bazzite |
 
 ## Troubleshooting
 
 - **`podman: command not found`** — `sudo dnf install podman` (or use the toolbox above).
 - **Static tier says the lint image failed to build** — see `<artifacts>/build-lint.log`.
 - **A full-tier check failed** — the container is removed afterwards, but every log
-  is in the artifacts directory: `full_real1.log`, `full_journal.log` (the run's journal),
-  `full_journal.log`, `full_failed_units.txt`, and `etc.*` checksum snapshots.
+  is in the artifacts directory: `full_real1.log`, `full_journal.log` (the container's journal,
+  including the run's own entries), `full_failed_units.txt`, and `etc.*` checksum snapshots.
 - **SELinux denials on bind mounts** — mounts use the shared `:z` label. Avoid
   mounting the repository with `:Z` (private label) from other containers while
   tests run: it relabels the files and locks running test containers out.
