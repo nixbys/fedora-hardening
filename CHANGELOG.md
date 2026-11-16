@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased — sections numbered in the order they run
+
+- **Sections are renumbered 1–24 in execution order.** The order was already chosen
+  for dependencies; now the numbers match it, in `--list`, the README and the code.
+  **`--only` and `--skip` numbers change.** Old → new:
+
+  | Old | New | Section | | Old | New | Section |
+  |---|---|---|---|---|---|---|
+  | 2 | 1 | System updates | | 17 | 15 | WireGuard |
+  | 3 | 2 | Automatic updates | | 21 | 16 | ClamAV |
+  | 6 | 3 | Secure Boot (6b → 3b GRUB note) | | 22 | 17 | OpenSCAP |
+  | 13 | 4 | Flatpak / Flathub | | 23 | 18 | Container security |
+  | 4 | 5 | SELinux | | 24 | 19 | Your routine |
+  | 5 | 6 | firewalld | | 25 | 20 | Home snapshots |
+  | 7 | 7 | SSH | | 19 | 21 | Service trim |
+  | 9 | 8 | Passwords and PAM | | 20 | 22 | File permissions |
+  | 10 | 9 | Kernel sysctl | | 8 | 23 | USBGuard |
+  | 11 | 10 | auditd | | 12 | 24 | rkhunter + AIDE |
+  | 14 | 11 | DNS over TLS (14b → 11b MAC randomization) | | | | |
+  | 18 | 12 | Fail2Ban | | | | |
+  | 15 | 13 | Desktop settings | | | | |
+  | 16 | 14 | Firefox (16b → 14b VPN check) | | | | |
+
+- **The file-integrity baseline (AIDE) now runs last.** Before, it was recorded
+  before the service trim, the file permissions and USBGuard (which installs a
+  package), so the first check reported changes the run itself had made.
+- Follow-up items and session reports from earlier runs keep their old numbers.
+
 ## Unreleased — one GUI mode
 
 - **`--gui` runs the whole session in one window.** The script no longer opens a
@@ -27,7 +55,7 @@
 
 ## Unreleased — home snapshots (section 25)
 
-- **New section 25:** snapshots of the home folder on every supported system:
+- **New section 20:** snapshots of the home folder on every supported system:
   Snapper on Bazzite, read-only Btrfs snapshots on other Btrfs systems (home is made
   its own subvolume at boot where needed), and hard-link incremental copies with
   `rsync` without Btrfs — to a second drive when one is configured.
@@ -40,7 +68,7 @@
 
 ## Unreleased — your routine (section 24)
 
-- **New section 24:** detects how the machine is used (everyday, gaming, creative,
+- **New section 19:** detects how the machine is used (everyday, gaming, creative,
   development, laptop), asks once or takes `--profile`, and adds only the timers those
   use cases need: monthly cleanup, daily free-space check, monthly Btrfs scrub, weekly
   drift check of the hardening, weekly summary, box upgrades, build-cache cleanup and
@@ -65,7 +93,7 @@
   self-contained HTML page per session (changes, open follow-ups, warnings, and live
   checks when `tests/verify-host.sh` is present), and the open follow-ups of the last
   session, with the fixes offered again. No `enscript`/`ps2pdf` dependency.
-- **Section 17 rebuilt:** with `--wireguard-config FILE` it installs the tunnel, a
+- **Section 15 rebuilt:** with `--wireguard-config FILE` it installs the tunnel, a
   firewalld kill switch (nothing leaves outside the tunnel, also while it is down)
   and DNS routing through the tunnel; refuses incomplete and split-tunnel configs;
   all of it is undone by `--rollback`. Without a config it does nothing (it used to
@@ -98,9 +126,9 @@ failure it found is fixed and covered by the tier.
   strings starting with `---` no longer print bash errors in every run.
 - **Fixed:** with `set -E`, the error handler also ran in subshells and could clean
   up (lock, temporary files, session report) in the middle of a run.
-- **Fixed:** duplicate keys in a config file collapse to one; section 11 says
-  plainly when the audit tools are missing; section 21 no longer tries to scan
-  without ClamAV; section 23 merges into an existing image policy instead of
+- **Fixed:** duplicate keys in a config file collapse to one; section 10 says
+  plainly when the audit tools are missing; section 16 no longer tries to scan
+  without ClamAV; section 18 merges into an existing image policy instead of
   replacing it, keeping signature rules such as Universal Blue's.
 
 ## Unreleased — image-based systems keep tools out of the image
@@ -118,13 +146,13 @@ longer layers tools into the image; package-based Fedora behaves as before.
 - **OpenSCAP from a throwaway container** that scans the host read-only with
   `oscap-chroot`.
 - **File integrity:** instead of AIDE and rkhunter (the image already guarantees
-  `/usr`), section 12 checks that the booted image is signature-verified and adds a
+  `/usr`), section 24 checks that the booted image is signature-verified and adds a
   weekly report of `/etc` changes since the end of the hardening run.
 - **Tools box:** `buildah`, `skopeo`, `podman-compose`, `setools` and OpenSCAP go in a
   `fedora-harden-tools` box; with distrobox (Universal Blue) the script writes a
   manifest usable with `distrobox assemble` and `ujust distrobox-assemble`. Toolbox
   is no longer layered on Universal Blue.
-- **Docs:** section 23 and the README say plainly that toolbox and distrobox are not
+- **Docs:** section 18 and the README say plainly that toolbox and distrobox are not
   a security boundary. The README no longer claims the image policy requires
   signature verification (it rejects unknown registries).
 - **Fixed:** the OpenSCAP summary always reported 0 passed / 0 failed and never
@@ -133,7 +161,7 @@ longer layers tools into the image; package-based Fedora behaves as before.
 - **Fixed:** two runs started in the same second shared a session, and the second
   truncated the first one's rollback journal.
 - **Fixed:** a failed write to the run log could abort the run (rpm-ostree output).
-  Section 12 recognises images verified through an OSTree remote (Fedora CoreOS).
+  Section 24 recognises images verified through an OSTree remote (Fedora CoreOS).
 - **Tested on the real images:** new `atomic` tier (real Silverblue and Universal Blue
   desktop images booted with systemd: real rpm-ostree, Flathub installs, quadlets, a
   real ClamAV scan of a test file) and `vm` tier (the images installed with
@@ -159,10 +187,10 @@ OS Telemetry Guide):
 - **New checks:** unencrypted disk swap (prefer ZRAM) and X11 sessions (prefer
   Wayland) are reported with follow-up items. `mat2` is offered for removing file
   metadata. OpenSnitch is suggested for outbound connection control.
-- **Universal Blue (Bazzite, Bluefin, Aurora):** section 3 no longer enables
+- **Universal Blue (Bazzite, Bluefin, Aurora):** section 2 no longer enables
   rpm-ostreed's automatic updates next to `uupd`, which already updates the image,
   Flatpaks and distroboxes; it confirms `uupd.timer` is on and points to `ujust update`.
-- **Fixed:** the countme opt-out never ran on rpm-ostree systems (section 3 returned
+- **Fixed:** the countme opt-out never ran on rpm-ostree systems (section 2 returned
   before reaching it).
 - **Housekeeping:** `TOOLCHAIN.md` merged into an up-to-date `DEVELOPMENT.md`; the
   unused Trunk configuration removed (its `.shellcheckrc` now lives at the repository
@@ -193,7 +221,7 @@ Earlier versions reported some hardening as applied when it was not. Re-run them
 after updating (preview first with `--dry-run`):
 
 ```bash
-sudo ./fedora-harden.sh --only 3,7,9,15,21
+sudo ./fedora-harden.sh --only 2,7,8,13,16
 ```
 
 | Section | What was wrong | Now |

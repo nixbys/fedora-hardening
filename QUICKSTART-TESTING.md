@@ -28,7 +28,7 @@ toolbox enter fh-dev
 
 ```bash
 ./test-in-podman.sh --quick --dry-run         # fastest, no systemd (256 MB)
-./test-in-podman.sh --dry-run --only 5,10     # systemd container, selected sections
+./test-in-podman.sh --dry-run --only 6,9     # systemd container, selected sections
 ./test-in-podman.sh                           # REAL run inside the throwaway container
 ./test-in-podman.sh --quick -it               # interactive shell
 ```

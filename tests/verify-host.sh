@@ -72,7 +72,7 @@ fi
 printf '%sfedora-harden verification%s — %s, %s\n' "$B" "$N" \
     "$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")" "$(date '+%F %T')"
 
-# --- Automatic updates (section 3) -----------------------------------------------
+# --- Automatic updates (section 2) -----------------------------------------------
 group AUTO "Automatic security updates"
 if ((IS_OSTREE)) && [[ -r /usr/share/ublue-os/image-info.json ]]; then
     # Universal Blue: uupd updates the image, Flatpaks and boxes; rpm-ostreed stays off.

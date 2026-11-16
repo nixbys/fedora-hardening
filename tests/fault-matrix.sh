@@ -225,20 +225,20 @@ if want env; then
     quick_sh "$l/paths.log" -- 'set -e
         mkdir -p "/opt/my scripts" && cp /opt/fh/fedora-harden.sh "/opt/my scripts/" && chmod +x "/opt/my scripts/fedora-harden.sh"
         ln -s "/opt/my scripts/fedora-harden.sh" /usr/local/bin/harden
-        "/opt/my scripts/fedora-harden.sh" --yes --dry-run --only 19 >/tmp/a 2>&1
-        harden --yes --dry-run --only 19 >/tmp/b 2>&1
-        bash /opt/fh/fedora-harden.sh --yes --dry-run --only 19 >/tmp/c 2>&1
+        "/opt/my scripts/fedora-harden.sh" --yes --dry-run --only 21 >/tmp/a 2>&1
+        harden --yes --dry-run --only 21 >/tmp/b 2>&1
+        bash /opt/fh/fedora-harden.sh --yes --dry-run --only 21 >/tmp/c 2>&1
         cat /tmp/a /tmp/b /tmp/c' || rc=$?
     verdict "env: path with spaces, symlink and 'bash script' invocations (exit $rc)" \
         "$( ((rc == 0)) && clean_log "$l/paths.log" && echo 1 || echo 0)" "$(bash_errors "$l/paths.log")"
     rc=0
-    quick_sh "$l/sh.log" -- 'sh /opt/fh/fedora-harden.sh --yes --dry-run --only 19' || rc=$?
+    quick_sh "$l/sh.log" -- 'sh /opt/fh/fedora-harden.sh --yes --dry-run --only 21' || rc=$?
     verdict "env: 'sh script' either works or refuses clearly (exit $rc)" \
         "$(clean_log "$l/sh.log" && echo 1 || echo 0)" "$(tail -2 "$l/sh.log" | tr '\n' ' ')"
     # A permissive umask must not leave world-writable files behind.
     rc=0
     quick_sh "$l/umask.log" -- 'umask 000; touch /tmp/marker; sleep 1
-        /opt/fh/fedora-harden.sh --yes --only 9,20 --user testuser >/tmp/run 2>&1; rc=$?
+        /opt/fh/fedora-harden.sh --yes --only 8,22 --user testuser >/tmp/run 2>&1; rc=$?
         cat /tmp/run; echo "--- world-writable files created by the run:"
         find /etc /root /var/log/fedora-harden -xdev -newer /tmp/marker -type f -perm -o+w
         exit $rc' || rc=$?
@@ -302,8 +302,8 @@ fcntl.lockf(f, fcntl.LOCK_EX)
 time.sleep(3600)" >/dev/null 2>&1 &'
         sleep 2
         start=$SECONDS rc=0
-        # Section 17 installs wireguard-tools, which the image does not have.
-        FAULT_RUN_TIMEOUT=900 harden "$n" "$l/rpm-lock.log" --yes --only 17 || rc=$?
+        # Section 15 installs wireguard-tools, which the image does not have.
+        FAULT_RUN_TIMEOUT=900 harden "$n" "$l/rpm-lock.log" --yes --only 15 || rc=$?
         took=$((SECONDS - start))
         verdict "pkg: RPM lock held elsewhere: run does not hang (exit $rc, ${took}s)" \
             "$( ((rc != 124)) && clean_log "$l/rpm-lock.log" && echo 1 || echo 0)" \
@@ -317,8 +317,8 @@ time.sleep(3600)" >/dev/null 2>&1 &'
     if boot "$n" --network=none; then
         sx "$n" bash -c 'rpm -e --nodeps openssh-server firewalld audit >/dev/null 2>&1'
         rc=0
-        harden "$n" "$l/missing-tools.log" --yes --only 5,7,11 --user testuser || rc=$?
-        verdict "pkg: sshd, firewalld and auditd absent (offline): sections 5/7/11 end cleanly (exit $rc)" \
+        harden "$n" "$l/missing-tools.log" --yes --only 6,7,10 --user testuser || rc=$?
+        verdict "pkg: sshd, firewalld and auditd absent (offline): sections 6/7/10 end cleanly (exit $rc)" \
             "$( ((rc == 0)) && clean_log "$l/missing-tools.log" && echo 1 || echo 0)" "$(bash_errors "$l/missing-tools.log")"
     else
         flunk "pkg: missing tools: container boots"
@@ -358,7 +358,7 @@ if want fs; then
             sx "$n" bash -c "dd if=/dev/zero of=$dir/.filler bs=1k count=$((${size%k} - 1)) 2>/dev/null; true"
             sx "$n" cp /etc/security/pwquality.conf /etc/security/pwquality.conf.orig-test
             rc=0
-            harden "$n" "$l/full-$what.log" --yes --only 9,10,20 --user testuser || rc=$?
+            harden "$n" "$l/full-$what.log" --yes --only 8,9,22 --user testuser || rc=$?
             # Without room for backups the run must refuse before changing anything.
             if [[ "$what" == backup ]]; then
                 verdict "fs: full $dir: run refuses before any change (exit $rc)" \
@@ -392,7 +392,7 @@ if want fs; then
             ln -s sysctl-real.conf /etc/sysctl.conf'
         etc_snap "$n" "$l/malformed.etc0"
         rc=0
-        harden "$n" "$l/malformed.log" --yes --only 9,10 --user testuser || rc=$?
+        harden "$n" "$l/malformed.log" --yes --only 8,9 --user testuser || rc=$?
         verdict "fs: CRLF, duplicate keys, no final newline, symlinked config: run ends cleanly (exit $rc)" \
             "$( ((rc == 0)) && clean_log "$l/malformed.log" && echo 1 || echo 0)" "$(bash_errors "$l/malformed.log")"
         sx "$n" bash -c 'grep -cE "^\s*minlen\s*=\s*14\s*$" /etc/security/pwquality.conf' >"$l/minlen.count" 2>&1
@@ -468,7 +468,7 @@ if want interrupt; then
         podman exec "$n" /opt/fh/fedora-harden.sh --yes --user testuser </dev/null >"$l/concurrent-a.log" 2>&1 &
         sleep 15
         rc_b=0
-        harden "$n" "$l/concurrent-b.log" --yes --only 9,10,20 --user testuser || rc_b=$?
+        harden "$n" "$l/concurrent-b.log" --yes --only 8,9,22 --user testuser || rc_b=$?
         wait
         verdict "interrupt: a second concurrent run refuses clearly (exit $rc_b)" \
             "$( ((rc_b != 0)) && grep -qiE 'already running|another .*run' "$l/concurrent-b.log" && echo 1 || echo 0)" \

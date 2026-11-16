@@ -100,9 +100,9 @@ fi
 close_app
 
 # --- 2. questions are answered in the window ---------------------------------------
-# Without --yes, section 24 asks for use cases (typed) and the run ends with a Yes/No
+# Without --yes, section 19 asks for use cases (typed) and the run ends with a Yes/No
 # question about follow-ups; the user name prompt may come first.
-/root/fedora-harden.sh --gui --dry-run --only 24 >"$OUT/gui-questions.log" 2>&1 &
+/root/fedora-harden.sh --gui --dry-run --only 19 >"$OUT/gui-questions.log" 2>&1 &
 pid=$!
 asked=0 typed=0
 for _ in $(seq 1 240); do
@@ -139,9 +139,9 @@ fi
 close_app
 
 # --- 3. Stop in the window ends the run with exit 130 ------------------------------
-# A real (non-dry) run of section 13 is slow enough (package + Flathub work) to stop.
+# A real (non-dry) run of section 4 is slow enough (package + Flathub work) to stop.
 rm -f /var/log/fedora-harden/harden-*.log
-/root/fedora-harden.sh --gui --yes --only 13 >"$OUT/gui-cancel.log" 2>&1 &
+/root/fedora-harden.sh --gui --yes --only 4 >"$OUT/gui-cancel.log" 2>&1 &
 pid=$!
 wait_for 60 test -n "$(window)"
 sleep 3
@@ -168,7 +168,7 @@ if [[ "$(state exit)" == 130 ]]; then pass "window shows the run stopped"; else 
 close_app
 
 # --- 4. a window that disappears stops the run -------------------------------------
-/root/fedora-harden.sh --gui --yes --only 13 >"$OUT/gui-killed.log" 2>&1 &
+/root/fedora-harden.sh --gui --yes --only 4 >"$OUT/gui-killed.log" 2>&1 &
 pid=$!
 wait_for 60 test -n "$(window)"
 sleep 3

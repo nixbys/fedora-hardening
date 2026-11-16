@@ -82,7 +82,7 @@ ev $'LOG\tok\tSELinux is enforcing (targeted policy).' 0.4
 ev $'SECTION\t5\tfirewalld — drop-by-default'
 ev $'LOG\tinfo\tDefault zone: drop. Allowing DHCPv6 client only.'
 ev $'LOG\trun\tfirewall-cmd --permanent --set-default-zone=drop'
-ev $'NOTICE\twarning\tUSBGuard can block unapproved USB devices, including keyboard and mouse.\\nConnect every device you need before section 8 runs.' 0.6
+ev $'NOTICE\twarning\tUSBGuard can block unapproved USB devices, including keyboard and mouse.\\nConnect every device you need before section 23 runs.' 0.6
 capture running
 
 ev $'ASK\t1\tconfirm\tno\tAllow SSH logins on this machine?\\nNo keeps the SSH server off; you can turn it on later.' 0.6

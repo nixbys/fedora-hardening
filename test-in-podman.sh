@@ -54,8 +54,8 @@ OPTIONS:
     --dry-run            Pass --dry-run to the script (no changes made)
     --interactive, -it   Open an interactive shell in the container instead
     --list-sections      List available hardening sections and exit
-    --only <list>        Run only these sections (e.g. --only 5,7,10)
-    --skip <list>        Skip these sections (e.g. --skip 12,19)
+    --only <list>        Run only these sections (e.g. --only 6,7,9)
+    --skip <list>        Skip these sections (e.g. --skip 21,24)
     --memory <size>      Memory limit (default: 1g; quick default: 256m)
     --cpus <n>           CPU limit (default: 2; quick default: 1)
     --artifacts <dir>    Host directory for logs/session reports (default: mktemp)
@@ -68,7 +68,7 @@ throwaway container, never on the host.
 
 EXAMPLES:
     ./test-in-podman.sh --quick --dry-run
-    ./test-in-podman.sh --dry-run --only 5,7,10
+    ./test-in-podman.sh --dry-run --only 6,7,9
     ./test-in-podman.sh --artifacts ./out
     ./test-in-podman.sh --quick -it
 EOF
