@@ -100,26 +100,51 @@ def fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def pinned(var: str) -> str:
-    match = re.search(rf'^{re.escape(var)}="([^"]+)"', SCRIPT.read_text(), re.MULTILINE)
-    return match.group(1) if match else ""
+def pinned(var: str, file: str = "") -> str:
+    """The pinned value of VAR="x" (shell) or VAR: x (workflow env) in file."""
+    path = SCRIPT.parent / file if file else SCRIPT
+    match = re.search(rf'^\s*{re.escape(var)}(?:="([^"]+)"|: *"?([^"\s]+)"?)', path.read_text(),
+                      re.MULTILINE)
+    if not match:
+        return ""
+    value = match.group(1) or match.group(2)
+    return value.rsplit(":", 1)[-1]  # an image reference pins its tag
 
 
-def latest_release(repo: str) -> str:
-    data = json.loads(fetch(f"https://api.github.com/repos/{repo}/releases/latest"))
-    return data["tag_name"]
+def version(tag: str) -> str:
+    """Release tag -> plain version: v1.7.12 / clamav-1.5.4 / 144.0 -> 1.7.12 / 1.5.4 / 144.0."""
+    match = re.search(r"\d+(?:\.\d+)*", tag)
+    return match.group(0) if match else tag
+
+
+MIN_AGE_DAYS = 14  # a release must be this old before the pin should move to it
+
+
+def latest_release(repo: str) -> tuple[str, str]:
+    """(tag of the newest release at least MIN_AGE_DAYS old, tag of the newest release)."""
+    data = json.loads(fetch(f"https://api.github.com/repos/{repo}/releases?per_page=20"))
+    stable = [r for r in data if not r.get("prerelease") and not r.get("draft")]
+    if not stable:
+        raise ValueError(f"no releases for {repo}")
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=MIN_AGE_DAYS)
+    aged = [r for r in stable
+            if dt.datetime.fromisoformat(r["published_at"].replace("Z", "+00:00")) <= cutoff]
+    return (aged[0] if aged else stable[-1])["tag_name"], stable[0]["tag_name"]
 
 
 def check(source: dict) -> tuple[str, str]:
     """Return (status, detail); status is ok, changed or error."""
     try:
         if source["type"] == "github-release":
-            latest = latest_release(source["repo"])
-            current = pinned(source["pinned_var"])
+            latest, newest = latest_release(source["repo"])
+            current = pinned(source["pinned_var"], source.get("pinned_file", ""))
             source["_new"] = latest
-            if latest == current:
-                return "ok", f"pinned {current} is the latest release"
-            return "changed", f"new release {latest} (script pins {current})"
+            want, have = version(latest), version(current)
+            # A minor-version pin (an image tag like 1.5) follows its patch releases.
+            if want == have or want.startswith(have + "."):
+                note = "" if newest == latest else f"; {newest} is newer than {MIN_AGE_DAYS} days, not yet"
+                return "ok", f"pinned {current} is the latest stable release{note}"
+            return "changed", f"new release {latest} (pinned {current} in {source.get('pinned_file') or SCRIPT.name})"
         text = main_text(fetch(source["url"]), source["type"], source.get("selector", ""))
         new = fingerprint(text)
         source["_new"] = new
