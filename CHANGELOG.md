@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased — privacy and review fixes
+
+Privacy:
+- Session and rollback reports moved out of the script's folder to
+  `/var/lib/fedora-harden/sessions` (root-only). `/etc/fedora-harden/profile` and
+  `/etc/fedora-harden/snapshots` are root-only (600).
+- `--report` replaces the host name, user names, home paths and IP/MAC addresses with
+  placeholders, since the page is meant to be shared; `--report --full` keeps them.
+- DNS over TLS goes to Quad9 only (Cloudflare removed), `DNSSEC=allow-downgrade` so
+  captive portals and odd networks still resolve; LLMNR off; mDNS off unless the
+  routine's use cases include gaming or creative work.
+- README: a Privacy section (what is stored, where, who can read it, what is
+  contacted; privacy and security, not anonymity).
+
+Review fixes (nothing here makes the system worse any more):
+- Passwords: at least 15 characters, no composition rules, no forced expiry (NIST SP
+  800-63B). `login.defs` and account ageing are left as Fedora ships them.
+- sysctl: `kernel.pid_max = 65536` and `kernel.core_pattern = |/bin/false` removed
+  (they broke heavy workloads and crash reports for no security gain).
+  `ptrace_scope` stays at Fedora's default for the dev use case.
+- auditd logs deletes and renames under `/etc` only, not every file everywhere.
+- GNOME/Budgie: the microphone is turned off only when you choose it.
+- Service trim (21): printing, discovery, Bluetooth, modems and network storage are
+  only disabled when you say so (default No, also under `--yes`); unencrypted
+  telnet/rsh/rlogin sockets are still switched off.
+- `umask 077` applies to regular users only; root keeps the default so services can
+  read what root creates.
+- SSH (7) is skipped when no SSH server is installed instead of installing one;
+  Fail2Ban (12) only runs when sshd is enabled.
+- rkhunter is dropped (false alarms after updates; AIDE covers file integrity).
+  AIDE's weekly check is a systemd timer instead of a cron job (image-based Fedora
+  has no cron) and the baseline is recorded in the background at the end of the run.
+- USBGuard (23) and ClamAV on-access scanning (16) are opt-in: never turned on by
+  `--yes`. Without on-access scanning, a weekly idle-priority scan of `/home` runs.
+- MAC randomization: random for Wi-Fi, stable per network for Ethernet.
+- Subordinate IDs for rootless Podman are added with `usermod` only, and backed up.
+
+New:
+- A safety point before the run: the booted deployment is pinned on image-based
+  systems; a read-only snapshot of `/` is taken on traditional Fedora with Btrfs.
+- Time sync prefers NTS (authenticated) servers (11c).
+- Unused kernel modules (dccp, sctp, rds, tipc, cramfs, freevxfs, jffs2, hfs) are
+  blocked unless loaded right now (9b).
+- Firmware security (fwupd Host Security ID) is reported, with what only the owner
+  can fix in the firmware setup.
+- fwupd report uploads and ABRT automatic crash reporting stay off;
+  NetworkManager's connectivity check can be turned off (asked; default keep).
+- The weekly summary says when a reboot is waiting for installed updates.
+
 ## Unreleased — sections numbered in the order they run
 
 - **Sections are renumbered 1–24 in execution order.** The order was already chosen
