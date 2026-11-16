@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — one GUI mode
+
+- **`--gui` runs the whole session in one window.** The script no longer opens a
+  progress window, separate question dialogs and a separate summary. One GTK4/libadwaita
+  window shows:
+  - the planned sections with their status: running, done, warnings, errors, or
+    skipped when a section does not apply;
+  - a progress bar with elapsed time and an estimate of the time left;
+  - a live activity log with every message, command and command output. It can be
+    filtered (done, warnings, errors, commands), searched, and copied;
+  - questions answered inside the window. Yes/No and text entry work from the
+    keyboard;
+  - notices to read (USBGuard, GRUB password, VPN), which stay until dismissed;
+  - a summary page with the follow-up items grouped by priority, each with a copy
+    button.
+
+  The window stays open after the run so you can read the results. Closing it during
+  a run, or pressing **Stop**, asks first, then stops after the current step
+  (exit 130). If the window disappears, the run stops instead of going on unseen.
+  Narrow windows fold the section list away (F9 toggles it).
+- GTK4, libadwaita and their Python bindings ship with Fedora Workstation and every
+  Atomic desktop (Silverblue, Kinoite, Bazzite, Bluefin), so nothing is layered for
+  the GUI. On other package-based systems `--gui` installs them.
+- zenity and kdialog are no longer used. `--gui-full` is removed: use `--gui`.
+
+## Unreleased — home snapshots (section 25)
+
+- **New section 25:** snapshots of the home folder on every supported system:
+  Snapper on Bazzite, read-only Btrfs snapshots on other Btrfs systems (home is made
+  its own subvolume at boot where needed), and hard-link incremental copies with
+  `rsync` without Btrfs — to a second drive when one is configured.
+- Frequency follows how actively the machine is used; nothing is taken when nothing
+  changed; 24 recent, 7 daily and 4 weekly are kept; 15% of the disk always stays free.
+- A home index notes growth and flags large replaceable folders, which are left out
+  only with approval; each snapshot keeps a note of what changed.
+- Off-machine backup options are ranked for the machine as follow-ups.
+- Rollback never deletes snapshots or copies.
+
 ## Unreleased — your routine (section 24)
 
 - **New section 24:** detects how the machine is used (everyday, gaming, creative,
