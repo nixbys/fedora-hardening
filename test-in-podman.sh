@@ -200,7 +200,7 @@ RUN_OPTS=(
     --pids-limit 2048
     --volume "$SCRIPT_DIR/fedora-harden.sh:/root/fedora-harden.sh:ro,z"
     --volume "$ARTIFACT_DIR/logs:/var/log/fedora-harden:rw,z"
-    --volume "$ARTIFACT_DIR/sessions:/root/sessions:rw,z"
+    --volume "$ARTIFACT_DIR/sessions:/var/lib/fedora-harden/sessions:rw,z"
 )
 
 SCRIPT_ARGS=(--yes)
