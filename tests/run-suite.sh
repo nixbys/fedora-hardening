@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/run-suite.sh - Full test suite for fedora-harden.sh
 #
-# Platform: every tier runs on the Fedora release under test (default 44, --fedora N).
+# Platform: every tier runs on the Fedora release under test (default 45, the latest;
+# --fedora N for another).
 #   static  runs natively when the host is that release (e.g. the CI job container),
 #           otherwise inside the matching "lint" image built from Dockerfile.test
 #   quick   runs in the fedora-minimal:N "test-only" image
@@ -43,7 +44,7 @@
 #   tests/run-suite.sh --artifacts DIR      # where logs go (default: mktemp)
 #   tests/run-suite.sh --no-build           # reuse existing images
 #   tests/run-suite.sh --native             # run static tier on this host as-is
-#   tests/run-suite.sh --fedora 45          # test on another Fedora release (default 44)
+#   tests/run-suite.sh --fedora 44          # test on another Fedora release (default 45)
 #   tests/run-suite.sh --tier fault         # fault injection (about an hour)
 #   tests/run-suite.sh --tier atomic --image quay.io/fedora/fedora-kinoite:45
 #                                           # atomic/vm tiers on other images (repeatable)
@@ -56,7 +57,7 @@ set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
 SCRIPT="$ROOT/fedora-harden.sh"
-TARGET_FEDORA="${TARGET_FEDORA:-44}"
+TARGET_FEDORA="${TARGET_FEDORA:-45}"
 NATIVE=0
 TIERS=()
 ATOMIC_IMAGES=() # --image; default: Silverblue + Universal Blue base for the release
@@ -762,6 +763,7 @@ tier_full() {
     while IFS= read -r line; do
         case "$line" in
             "PASS: "*) record PASS "full: wireguard: ${line#PASS: }" ;;
+            "SKIP: "*) record SKIP "full: wireguard: ${line#SKIP: }" ;;
             "FAIL: "*) record FAIL "full: wireguard: ${line#FAIL: }" "logs in $wg_out" ;;
         esac
     done <"$wg_out/results.txt"
