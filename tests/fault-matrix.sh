@@ -395,16 +395,16 @@ if want fs; then
         harden "$n" "$l/malformed.log" --yes --only 8,9 --user testuser || rc=$?
         verdict "fs: CRLF, duplicate keys, no final newline, symlinked config: run ends cleanly (exit $rc)" \
             "$( ((rc == 0)) && clean_log "$l/malformed.log" && echo 1 || echo 0)" "$(bash_errors "$l/malformed.log")"
-        sx "$n" bash -c 'grep -cE "^\s*minlen\s*=\s*14\s*$" /etc/security/pwquality.conf' >"$l/minlen.count" 2>&1
+        sx "$n" bash -c 'grep -cE "^\s*minlen\s*=\s*15\s*$" /etc/security/pwquality.conf' >"$l/minlen.count" 2>&1
         # A CR left in an untouched comment is harmless; setting lines must be clean.
-        verdict "fs: CRLF pwquality.conf ends with exactly one clean minlen = 14" \
+        verdict "fs: CRLF pwquality.conf ends with exactly one clean minlen = 15" \
             "$([[ "$(cat "$l/minlen.count")" == 1 ]] && ! sx "$n" grep -qE $'^[^#].*\r' /etc/security/pwquality.conf && echo 1 || echo 0)" \
             "$(sx "$n" cat -A /etc/security/pwquality.conf | tr '\n' ' ')"
         verdict "fs: duplicate deny keys collapse to one effective deny = 5" \
             "$([[ "$(sx "$n" bash -c 'grep -E "^\s*deny\s*=" /etc/security/faillock.conf' | tr -d ' ')" == "deny=5" ]] && echo 1 || echo 0)" \
             "$(sx "$n" grep -E '^\s*deny' /etc/security/faillock.conf | tr '\n' ' ')"
-        verdict "fs: login.defs without final newline keeps PASS_MAX_DAYS on its own line" \
-            "$(sx "$n" grep -qE '^PASS_MAX_DAYS\s+90$' /etc/login.defs && echo 1 || echo 0)"
+        verdict "fs: login.defs is left as it was (no forced expiry)" \
+            "$(sx "$n" grep -qE '^PASS_MAX_DAYS\s+90$' /etc/login.defs && echo 0 || echo 1)"
         verdict "fs: symlinked /etc/sysctl.conf stays a symlink" "$(sx "$n" test -L /etc/sysctl.conf && echo 1 || echo 0)"
         rc=0
         harden "$n" "$l/malformed-rollback.log" --yes --rollback all || rc=$?
