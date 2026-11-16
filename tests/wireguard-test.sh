@@ -33,7 +33,7 @@ fail=0
 # tunnel_check <description> <command...> — a check that needs the tunnel to run;
 # reported as SKIP (with the reason) where this environment cannot run nft.
 tunnel_check() {
-    if ((!NFT_OK)); then
+    if ((! NFT_OK)); then
         echo "SKIP: $1 — the host denies wg-quick its nft call ($NFT_WHY)"
         return 0
     fi
