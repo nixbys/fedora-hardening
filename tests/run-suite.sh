@@ -736,10 +736,10 @@ tier_full() {
     check "full: --report includes the protection scorecard" fx grep -q "<h2>Protection now</h2>" /tmp/report.html
     log="$ARTIFACTS/full_score.log"
     local sessions_before sessions_after
-    sessions_before="$(fx bash -c 'ls -d /root/harden-backups-* /root/sessions/session-* 2>/dev/null | wc -l')"
+    sessions_before="$(fx bash -c 'ls -d /root/harden-backups-* /var/lib/fedora-harden/sessions/session-*.txt 2>/dev/null | wc -l')"
     rc=0
     fx /root/fedora-harden.sh --score >"$log" 2>&1 || rc=$?
-    sessions_after="$(fx bash -c 'ls -d /root/harden-backups-* /root/sessions/session-* 2>/dev/null | wc -l')"
+    sessions_after="$(fx bash -c 'ls -d /root/harden-backups-* /var/lib/fedora-harden/sessions/session-*.txt 2>/dev/null | wc -l')"
     if ((rc == 0)) && grep -qE '\[ OK \].*Firewall' "$log" && grep -qE '\[ OK \].*SELinux|\[ NO \].*SELinux' "$log" &&
         [[ "$sessions_before" == "$sessions_after" ]]; then
         record PASS "full: --score reads the live system (firewall on) and creates no session"
