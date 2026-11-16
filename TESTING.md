@@ -16,7 +16,7 @@ runs on the release it tests:
 | GUI tier | `registry.fedoraproject.org/fedora:44` + Xvfb, zenity, kdialog (`gui` image) |
 | Atomic tier | the real image-based systems: `quay.io/fedora/fedora-silverblue:45` and a Universal Blue desktop (`ghcr.io/ublue-os/bazzite:stable`), booted with systemd |
 | VM tier | the same images installed on a virtual disk with `bootc install to-disk` and booted with KVM |
-| CI (`.github/workflows/ci.yml`) | static and container jobs run in a `fedora:45` container; repository scans use `fedora:44` as a tool host |
+| CI (`.github/workflows/ci.yml`) | static jobs run in a `fedora:45` container; container tests run on a Fedora CoreOS 45 VM (`tests/fedora-host.sh`); repository scans use `fedora:44` as a tool host |
 | Developer tooling (`setup-dev.sh`, pre-commit) | Fedora RPMs (`ShellCheck yamllint ruff hadolint gitleaks pre-commit python3-mcp`); shfmt is an RPM on 44 and built at the same pinned version with Fedora's Go on 45 (`tests/install-shfmt.sh`) |
 
 On an rpm-ostree host (Silverblue, Kinoite, Bazzite, …) do development inside a
@@ -236,8 +236,23 @@ containers and VMs, and every check runs on the Fedora Atomic image under test:
 | static | static tier with Fedora 45 RPM tools |
 | secrets | `gitleaks git` over the full history (Fedora `gitleaks` RPM) |
 | vulnerabilities | `trivy fs` (Fedora `trivy` RPM), SARIF uploaded to code scanning |
-| container-tests | quick, full, gui and fault tiers; podman runs nested in a privileged Fedora job container |
+| container-tests | quick, full, gui and the six fault groups (one job each), on a Fedora CoreOS VM booted with KVM: Fedora kernel, SELinux enforcing, real nftables |
 | atomic-images | atomic and vm tiers for Silverblue 45 and Bazzite |
+
+### Running tiers on a Fedora host
+
+GitHub's runners are Ubuntu: a container there shares Ubuntu's kernel and AppArmor,
+so SELinux cannot enforce and the host's policy blocks `wg-quick` from running
+`nft`. `tests/fedora-host.sh` boots Fedora CoreOS for the release under test (the
+first of the stable, testing and next streams that runs it; checksum-verified,
+cached) with KVM, copies the repository in and runs `run-suite.sh` there:
+
+```bash
+tests/fedora-host.sh <artifacts-dir> --tier full          # any run-suite.sh arguments
+FAULT_GROUPS="net pkg" tests/fedora-host.sh out --tier fault
+```
+
+On a Fedora host the WireGuard tunnel checks run instead of being skipped.
 
 ## Troubleshooting
 
