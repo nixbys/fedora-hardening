@@ -54,8 +54,8 @@ OPTIONS:
     --dry-run            Pass --dry-run to the script (no changes made)
     --interactive, -it   Open an interactive shell in the container instead
     --list-sections      List available hardening sections and exit
-    --only <list>        Run only these sections (e.g. --only 5,7,10)
-    --skip <list>        Skip these sections (e.g. --skip 12,19)
+    --only <list>        Run only these sections (e.g. --only 6,7,9)
+    --skip <list>        Skip these sections (e.g. --skip 21,24)
     --memory <size>      Memory limit (default: 1g; quick default: 256m)
     --cpus <n>           CPU limit (default: 2; quick default: 1)
     --artifacts <dir>    Host directory for logs/session reports (default: mktemp)
@@ -68,7 +68,7 @@ throwaway container, never on the host.
 
 EXAMPLES:
     ./test-in-podman.sh --quick --dry-run
-    ./test-in-podman.sh --dry-run --only 5,7,10
+    ./test-in-podman.sh --dry-run --only 6,7,9
     ./test-in-podman.sh --artifacts ./out
     ./test-in-podman.sh --quick -it
 EOF
@@ -158,14 +158,14 @@ fi
 
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
-    if ((CONTAINER_STARTED && !KEEP_CONTAINER)); then
+    if ((CONTAINER_STARTED && ! KEEP_CONTAINER)); then
         podman rm -f -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
 
 # Step 1: Build container image if needed
-if ((!SKIP_BUILD)); then
+if ((! SKIP_BUILD)); then
     log_info "Building container image: $IMAGE_TAG (target: $BUILD_TARGET)"
     build_log="$(mktemp "${TMPDIR:-/tmp}/fedora-harden-build.XXXXXX.log")"
     if podman build -f "$SCRIPT_DIR/Dockerfile.test" --target "$BUILD_TARGET" \
@@ -200,7 +200,7 @@ RUN_OPTS=(
     --pids-limit 2048
     --volume "$SCRIPT_DIR/fedora-harden.sh:/root/fedora-harden.sh:ro,z"
     --volume "$ARTIFACT_DIR/logs:/var/log/fedora-harden:rw,z"
-    --volume "$ARTIFACT_DIR/sessions:/root/sessions:rw,z"
+    --volume "$ARTIFACT_DIR/sessions:/var/lib/fedora-harden/sessions:rw,z"
 )
 
 SCRIPT_ARGS=(--yes)

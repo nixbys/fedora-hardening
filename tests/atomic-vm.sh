@@ -178,7 +178,7 @@ vm 'grep -m1 "^AutomaticUpdatePolicy" /etc/rpm-ostreed.conf 2>/dev/null || true'
 scp -q -i "$work/id" -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     /src/fedora-harden.sh /src/tests/verify-host.sh root@127.0.0.1:
 rc=0
-vm "TERM=dumb ./fedora-harden.sh --yes --only 2,3,4,12,13,21,22,23 --user tester </dev/null" \
+vm "TERM=dumb ./fedora-harden.sh --yes --only 1,2,4,5,16,17,18,24 --user tester </dev/null" \
     >"$OUT/run.log" 2>&1 || rc=$?
 check "run exits 0 (got $rc)" test "$rc" -eq 0
 check "no [FAIL] lines in the run" bash -c '! grep -q "^\[FAIL\]" "$1"' _ "$OUT/run.log"
@@ -187,7 +187,7 @@ check "no [FAIL] lines in the run" bash -c '! grep -q "^\[FAIL\]" "$1"' _ "$OUT/
 vm rpm-ostree status --json >"$OUT/status.json" 2>&1
 jq -r '[.deployments[] | .["requested-packages"][]?] | unique | .[]' "$OUT/status.json" >"$OUT/requested.txt" 2>/dev/null
 echo "requested layers: $(tr '\n' ' ' <"$OUT/requested.txt")"
-for pkg in clamav clamd clamav-update aide rkhunter openscap-scanner scap-security-guide \
+for pkg in clamav clamd clamav-update aide openscap-scanner scap-security-guide \
     setools-console buildah skopeo podman-compose mat2 yubikey-manager yubico-piv-tool toolbox; do
     check "$pkg is not layered" bash -c '! grep -qx -- "$1" "$2"' _ "$pkg" "$OUT/requested.txt"
 done
@@ -202,7 +202,7 @@ check "OpenSCAP results written by the container scan" vm test -s /root/scap-res
 check "OpenSCAP summary counts real results (pass > 0)" \
     grep -qE 'OpenSCAP results — pass: [1-9][0-9]*  fail: [0-9]+' "$OUT/run.log"
 
-# ── Section 12 on a real sysroot ───────────────────────────────────────────────
+# ── Section 24 on a real sysroot ───────────────────────────────────────────────
 # Installed from a local build, the image boots from an unverified reference; some
 # images (Universal Blue) rebase themselves to their signed reference on first boot.
 # The script must report whichever is true.
@@ -261,9 +261,9 @@ for grp in CLAM INT; do
     check "verify-host $grp passes" bash -c 'grep -q " PASS" "$1" && ! grep -q " FAIL" "$1"' _ "$OUT/verify-$grp.log"
 done
 
-# ── Section 25: home snapshots on a real Btrfs home ───────────────────────────
+# ── Section 20: home snapshots on a real Btrfs home ───────────────────────────
 H=/usr/local/libexec/fedora-harden-routine
-vm "TERM=dumb ./fedora-harden.sh --yes --only 25 </dev/null" >"$OUT/snapshots.log" 2>&1
+vm "TERM=dumb ./fedora-harden.sh --yes --only 20 </dev/null" >"$OUT/snapshots.log" 2>&1
 expected=btrfs
 vm 'command -v snapper >/dev/null' && expected=snapper
 check "home snapshots use $expected" vm grep -qx "BACKEND=$expected" /etc/fedora-harden/snapshots

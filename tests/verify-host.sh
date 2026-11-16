@@ -72,7 +72,7 @@ fi
 printf '%sfedora-harden verification%s — %s, %s\n' "$B" "$N" \
     "$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")" "$(date '+%F %T')"
 
-# --- Automatic updates (section 3) -----------------------------------------------
+# --- Automatic updates (section 2) -----------------------------------------------
 group AUTO "Automatic security updates"
 if ((IS_OSTREE)) && [[ -r /usr/share/ublue-os/image-info.json ]]; then
     # Universal Blue: uupd updates the image, Flatpaks and boxes; rpm-ostreed stays off.
@@ -89,7 +89,7 @@ else
                  grep -qE '^\s*apply_updates\s*=\s*yes' /etc/dnf/automatic.conf"
 fi
 
-# --- SELinux (4) -------------------------------------------------------------------
+# --- SELinux (5) -------------------------------------------------------------------
 group SEL "SELinux"
 if want SEL-1; then
     mode="$(getenforce 2>/dev/null || echo unknown)"
@@ -103,7 +103,7 @@ if want SEL-1; then
     fi
 fi
 
-# --- Firewall (5) ------------------------------------------------------------------
+# --- Firewall (6) ------------------------------------------------------------------
 group FW "Firewall"
 check FW-1 "firewalld is running" "running" firewall-cmd --state
 if want FW-2; then
@@ -138,16 +138,16 @@ elif want SSH-1; then
     skip SSH-1 "effective sshd configuration" "(openssh-server not installed)"
 fi
 
-# --- Passwords and lockout (9) -----------------------------------------------------
+# --- Passwords and lockout (8) -----------------------------------------------------
 group PAM "Passwords and lockout"
-check PAM-1 "password minimum length 14, 3 character classes" "minlen = 14, minclass = 3" \
-    bash -c "grep -qE '^minlen = 14$' /etc/security/pwquality.conf && grep -qE '^minclass = 3$' /etc/security/pwquality.conf"
+check PAM-1 "password minimum length 15, no composition rules" "minlen = 15, minclass = 0" \
+    bash -c "grep -qE '^minlen = 15$' /etc/security/pwquality.conf && grep -qE '^minclass = 0$' /etc/security/pwquality.conf"
 check PAM-2 "lockout after 5 failures for 15 minutes" "deny = 5, unlock_time = 900" \
     bash -c "grep -qE '^deny = 5$' /etc/security/faillock.conf && grep -qE '^unlock_time = 900$' /etc/security/faillock.conf"
-check PAM-3 "new accounts expire passwords after 90 days" "PASS_MAX_DAYS 90" \
-    grep -qE '^PASS_MAX_DAYS[[:space:]]+90$' /etc/login.defs
+check PAM-3 "no forced password expiry" "PASS_MAX_DAYS not set to 90" \
+    bash -c "! grep -qE '^PASS_MAX_DAYS[[:space:]]+90$' /etc/login.defs"
 
-# --- Kernel (10) ------------------------------------------------------------------
+# --- Kernel (9) ------------------------------------------------------------------
 group SYS "Kernel settings"
 if want SYS-1; then
     bad=""
@@ -163,12 +163,12 @@ if want SYS-1; then
     verdict SYS-1 "kernel and network sysctl values are active" "$ok" "(differs: $bad)"
 fi
 
-# --- Audit (11) -------------------------------------------------------------------
+# --- Audit (10) -------------------------------------------------------------------
 group AUD "Audit"
 check AUD-1 "audit rules for identity files are loaded" "-w /etc/passwd ... -k identity" \
     bash -c "auditctl -l 2>/dev/null | grep -q 'identity'"
 
-# --- DNS (14) ---------------------------------------------------------------------
+# --- DNS (11) ---------------------------------------------------------------------
 group DNS "Encrypted DNS"
 check DNS-1 "systemd-resolved is running with DNS-over-TLS" "active, +DNSOverTLS" \
     bash -c "systemctl is-active --quiet systemd-resolved && resolvectl status 2>/dev/null | grep -q '+DNSOverTLS'"
@@ -179,7 +179,7 @@ if want DNS-2; then
     verdict DNS-2 "all lookups go through systemd-resolved" "$ok" "(/etc/resolv.conf -> ${target:-missing})"
 fi
 
-# --- ClamAV (21) ------------------------------------------------------------------
+# --- ClamAV (16) ------------------------------------------------------------------
 group CLAM "Antivirus"
 if ((IS_OSTREE)); then
     # Image-based: a weekly scan in a locked-down container instead of layered ClamAV.
@@ -188,23 +188,32 @@ if ((IS_OSTREE)); then
         systemctl is-enabled --quiet fedora-harden-clamscan.timer
     check CLAM-2 "the scan container is read-only and offline" "ReadOnly=true, Network=none in $clam_q" \
         bash -c "grep -qx ReadOnly=true '$clam_q' && grep -qx Network=none '$clam_q'"
+elif ! grep -qs '^OnAccessIncludePath' /etc/clamd.d/scan.conf; then
+    # On-access scanning not chosen (the default): a weekly scan of /home.
+    check CLAM-1 "weekly ClamAV scan of /home is scheduled" "fedora-harden-clamscan.timer enabled" \
+        systemctl is-enabled --quiet fedora-harden-clamscan.timer
+    check CLAM-2 "ClamAV signatures update automatically" "clamav-freshclam enabled" \
+        systemctl is-enabled --quiet clamav-freshclam
 else
     check CLAM-1 "ClamAV scanner daemon is running" "clamd@scan active" systemctl is-active --quiet clamd@scan
     check CLAM-2 "on-access scanning of /home is running" "clamav-clamonacc active" \
         systemctl is-active --quiet clamav-clamonacc
 fi
 
-# --- File integrity (12) ------------------------------------------------------------
+# --- File integrity (24) ------------------------------------------------------------
 group INT "File integrity"
 if ((IS_OSTREE)); then
     check INT-1 "weekly /etc change report is scheduled" "fedora-harden-etc-check.timer enabled" \
         systemctl is-enabled --quiet fedora-harden-etc-check.timer
 else
-    check INT-1 "AIDE database is initialised" "/var/lib/aide/aide.db.gz" \
-        test -s /var/lib/aide/aide.db.gz
+    # The baseline is recorded in the background at the end of a run.
+    check INT-1 "AIDE baseline recorded (or being recorded)" "/var/lib/aide/aide.db.gz" \
+        bash -c 'test -s /var/lib/aide/aide.db.gz || systemctl is-active --quiet fedora-harden-aide-init'
+    check INT-2 "weekly AIDE check is scheduled" "fedora-harden-aide-check.timer enabled" \
+        systemctl is-enabled --quiet fedora-harden-aide-check.timer
 fi
 
-# --- Desktop (15) -----------------------------------------------------------------
+# --- Desktop (13) -----------------------------------------------------------------
 group DESK "Desktop privacy"
 if want DESK-1; then
     if [[ -z "$TARGET_USER" ]]; then
@@ -221,7 +230,7 @@ if want DESK-1; then
     fi
 fi
 
-# --- Flatpak (13) -----------------------------------------------------------------
+# --- Flatpak (4) -----------------------------------------------------------------
 group FLAT "Flatpak sandbox"
 if have flatpak; then
     check FLAT-1 "Flatpak apps cannot read the host filesystem" "filesystems=!host... in global overrides" \
@@ -231,7 +240,7 @@ elif want FLAT-1; then
 fi
 check FLAT-2 "Firejail is not installed (opt-in only)" "firejail absent" bash -c '! rpm -q firejail'
 
-# --- Permissions (20) -------------------------------------------------------------
+# --- Permissions (22) -------------------------------------------------------------
 group PERM "File permissions"
 check PERM-1 "/etc/shadow is mode 000" "000" bash -c '[[ "$(stat -c %a /etc/shadow)" == 0 ]]'
 check PERM-2 "new files are private (umask 077)" "umask 077 in /etc/profile.d/99-umask.sh" \

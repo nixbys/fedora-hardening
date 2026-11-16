@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/wireguard-test.sh - Section 17 end to end: a real WireGuard peer in one
+# tests/wireguard-test.sh - Section 15 end to end: a real WireGuard peer in one
 # container, the hardened client (systemd + firewalld, the suite's full image) in
 # another, on a private Podman network.
 #
@@ -33,7 +33,7 @@ fail=0
 # tunnel_check <description> <command...> — a check that needs the tunnel to run;
 # reported as SKIP (with the reason) where this environment cannot run nft.
 tunnel_check() {
-    if ((!NFT_OK)); then
+    if ((! NFT_OK)); then
         echo "SKIP: $1 — the host denies wg-quick its nft call ($NFT_WHY)"
         return 0
     fi
@@ -99,17 +99,17 @@ NFT_OK=1 NFT_WHY=""
 ce bash -c "sed 's|AllowedIPs = .*|AllowedIPs = 10.99.0.0/24|' /root/provider.conf >/root/split.conf
     grep -v '^PublicKey' /root/provider.conf >/root/broken.conf"
 rc=0
-ce /opt/fh/fedora-harden.sh --yes --only 17 --wireguard-config /root/split.conf >"$OUT/split.log" 2>&1 || rc=$?
+ce /opt/fh/fedora-harden.sh --yes --only 15 --wireguard-config /root/split.conf >"$OUT/split.log" 2>&1 || rc=$?
 check "split-tunnel config is refused, nothing installed (exit $rc)" \
     bash -c '[[ $1 == 0 ]] && grep -q "split tunnel\|routes only part" "$2" && ! podman exec "$3" test -e /etc/wireguard/wg0.conf' _ "$rc" "$OUT/split.log" "$CLIENT"
 rc=0
-ce /opt/fh/fedora-harden.sh --yes --only 17 --wireguard-config /root/broken.conf >"$OUT/broken.log" 2>&1 || rc=$?
+ce /opt/fh/fedora-harden.sh --yes --only 15 --wireguard-config /root/broken.conf >"$OUT/broken.log" 2>&1 || rc=$?
 check "config without PublicKey is refused (exit $rc)" \
     bash -c '[[ $1 == 0 ]] && grep -q "has no PublicKey" "$2"' _ "$rc" "$OUT/broken.log"
 
-# ── Install the tunnel (sections 5 and 17) ──────────────────────────────────────
+# ── Install the tunnel (sections 6 and 15) ──────────────────────────────────────
 rc=0
-ce /opt/fh/fedora-harden.sh --yes --only 5,17 --wireguard-config /root/provider.conf >"$OUT/run.log" 2>&1 || rc=$?
+ce /opt/fh/fedora-harden.sh --yes --only 6,15 --wireguard-config /root/provider.conf >"$OUT/run.log" 2>&1 || rc=$?
 check "run exits 0 (got $rc)" test "$rc" -eq 0
 check "no [FAIL] lines in the run" bash -c '! grep -q "^\[FAIL\]" "$1"' _ "$OUT/run.log"
 ce journalctl -u wg-quick@wg0 -b --no-pager >"$OUT/wg-quick.journal" 2>&1

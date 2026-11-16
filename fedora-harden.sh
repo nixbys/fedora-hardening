@@ -6,7 +6,7 @@
 #  v3.0 - November 2026 (tested on Fedora 44 and 45: tests/run-suite.sh)
 #
 #  FEATURES:
-#    • 23 hardening sections (plus subsection 14b) with automatic
+#    • 24 hardening sections (plus subsections 3b, 11b and 14b) with automatic
 #      release/profile detection
 #    • Dual-mode support: mutable (dnf) and immutable (rpm-ostree) systems
 #    • Fedora release detection: Workstation, Server, IoT, Cloud, CoreOS,
@@ -49,14 +49,26 @@
 #    sudo ./fedora-harden.sh [options]
 #
 #  OPTIONS:
-#    -u, --user <name>      Target username for SSH/chage/home-dir hardening
+#    -u, --user <name>      Target username for SSH and home-folder hardening
 #    -y, --yes              Assume "yes" to all prompts (non-interactive)
 #    -n, --dry-run          Print what would run; make no changes
 #        --gui              Run in one window: sections, progress, live activity,
 #                           questions and summary (GTK4/libadwaita, Material dark)
-#        --report [file]    Write an HTML report of the last session and exit
+#        --report [file]    Write an HTML report of the last session and exit; host
+#                           name, user names, home paths and addresses are replaced
+#                           with placeholders unless --full is given
 #        --resume           Review the last session's open follow-ups and exit
-#        --wireguard-config <f> Install this WireGuard config with a kill switch (section 17)
+#        --score            Show what protects this machine now (read-only) and exit
+#        --kernel-hardening Add the kernel boot hardening options (section 9; opt-in,
+#                           about 1-5% slower in some workloads)
+#        --wireguard-config <f> Install this WireGuard config with a kill switch (section 15)
+#        --profile <list>   Use cases for section 19: everyday,gaming,creative,dev,laptop,private
+#        --backup-target <dir> Second drive for home copies without Btrfs (section 20)
+#        --restore <file>   Reapply a recovery file (/etc/fedora-harden/machine.conf)
+#                           without questions, e.g. after a reinstall
+#        --include-setup    With --report: include the recovery file's contents
+#        --recovery-backup on|off  Copy the recovery file into the home backups
+#                           (default on; the choice is remembered)
 #        --skip <list>      Comma-separated sections to skip (e.g. 7,8,17)
 #        --only <list>      Comma-separated sections to run exclusively
 #        --list             List all section numbers & names and exit
@@ -68,28 +80,26 @@
 #                           use --list-sessions first to view available session IDs.
 #    -h, --help             Show this help and exit
 #
-#  SECTIONS (execution order optimized for dependency flow):
-#     2  System updates (dnf upgrade + fwupd firmware/microcode install
+#  SECTIONS (run in numeric order; the numbers follow the dependency flow):
+#     1  System updates (dnf upgrade + fwupd firmware/microcode install
 #        + optional hardware security key support: YubiKey/FIDO2/PIV/pam-u2f)
-#     3  Automatic security updates (dnf5-plugin-automatic or rpm-ostreed)
-#     4  SELinux verification + tools
-#     5  firewalld hardening (drop-default policy)
-#     6  Secure Boot verification (GRUB password is manual — printed as a note)
-#     7  SSH hardening (key-based auth, hardened cipher suite)
-#     8  USBGuard (interactive — can lock out input devices if misconfigured)
-#     9  Password & PAM policy (pwquality, faillock, account aging)
-#    10  Kernel sysctl hardening (network, VM, filesystem, IPv6 privacy extensions)
-#    11  auditd rules (identity, privilege escalation, module tracking,
-#        time/network-config/mount/delete syscall coverage)
-#    12  rkhunter + AIDE (rootkit detection + file integrity monitoring);
-#        image-based: image signature status + weekly /etc change report
-#    13  Flatpak / Flathub + global Flatpak filesystem restrictions + mat2
+#     2  Automatic security updates (dnf5-plugin-automatic or rpm-ostreed)
+#     3  Secure Boot verification (GRUB password is manual — printed as a note)
+#     4  Flatpak / Flathub + global Flatpak filesystem restrictions + mat2
 #        (Firejail opt-in only)
-#    14  DNS over TLS (systemd-resolved with Quad9 + Cloudflare)
-#   14b  NetworkManager MAC address randomization (network-layer privacy)
-#    15  Desktop environment settings — auto-dispatches by detected DE:
+#     5  SELinux verification + tools
+#     6  firewalld hardening (drop-default policy)
+#     7  SSH hardening (key-based auth, hardened cipher suite)
+#     8  Password & PAM policy (pwquality length, faillock)
+#     9  Kernel sysctl hardening (network, VM, filesystem, IPv6 privacy extensions)
+#    10  auditd rules (identity, privilege escalation, module tracking,
+#        time/network-config/mount syscalls, deletes under /etc)
+#    11  DNS over TLS (systemd-resolved with Quad9), LLMNR/mDNS off, NTS time
+#   11b  NetworkManager MAC address randomization (network-layer privacy)
+#    12  Fail2Ban (intrusion detection + auto-ban)
+#    13  Desktop environment settings — auto-dispatches by detected DE:
 #            KDE Plasma (kwriteconfig6/5: screen lock, recent-docs, BT)
-#            GNOME/Onyx (gsettings: lock, location, privacy, mic)
+#            GNOME/Onyx (gsettings: lock, location, privacy; mic if asked)
 #            Budgie     (gsettings GNOME backend)
 #            Cinnamon   (org.cinnamon.desktop.screensaver + GNOME privacy)
 #            MATE       (org.mate.screensaver + power-manager)
@@ -98,24 +108,28 @@
 #            Hyprland   (hypridle.conf)
 #            i3         (xss-lock + i3lock drop-in via config.d/)
 #            LXQt/Lazurite (lxqt-screensaver.conf + lxqt-powermanagement.conf)
-#    16  Firefox Flatpak + arkenfox + extensions (uBlock Origin, LocalCDN,
+#    14  Firefox Flatpak + arkenfox + extensions (uBlock Origin, LocalCDN,
 #        Multi-Account Containers) + VPN detection + recommendations
-#    17  WireGuard tunnel from a provider config (--wireguard-config), with a kill
+#    15  WireGuard tunnel from a provider config (--wireguard-config), with a kill
 #        switch and DNS through the tunnel; does nothing without a config
-#    18  Fail2Ban (intrusion detection + auto-ban)
-#    19  Disable unnecessary services (avahi, cups, bluetooth, modemmanager)
-#    20  File permission hardening (shadow files, /tmp, compiler access,
-#        umask 077, core dump limits, hostname privacy check)
-#    21  ClamAV install + freshclam + on-access scanning for /home;
+#    16  ClamAV + freshclam + weekly scan of /home (on-access opt-in);
 #        image-based: weekly scan in a locked-down container (Podman quadlet)
-#    22  OpenSCAP compliance scan (image-based: from a throwaway container)
-#    24  Your routine: timers for cleanup, disk health, Btrfs scrub, free space, a
-#        weekly check that the hardening is still in effect, a weekly summary and a
-#        90-day relevance review — only what the machine's use cases need (--profile)
-#    23  Container security — rootless Podman + toolbox/distrobox (containerized-mindset
+#    17  OpenSCAP compliance scan (image-based: from a throwaway container)
+#    18  Container security — rootless Podman + toolbox/distrobox (containerized-mindset
 #        setup: image policy hardening, no-new-privileges, seccomp, subuid/subgid,
 #        unqualified-registry block, optional buildah/skopeo/podman-compose; on
 #        image-based systems those go in a tools box instead of the image)
+#    19  Your routine: timers for cleanup, disk health, Btrfs scrub, free space, a
+#        weekly check that the hardening is still in effect, a weekly summary and a
+#        90-day relevance review — only what the machine's use cases need (--profile)
+#    20  Home snapshots: Snapper on Bazzite, read-only Btrfs snapshots elsewhere, or
+#        incremental copies without Btrfs; as often as the machine is used
+#    21  Unused services: offers avahi, cups, bluetooth, modemmanager (default No)
+#    22  File permission hardening (shadow files, /tmp, compiler access,
+#        umask 077 for regular users, core dump limits, hostname privacy check)
+#    23  USBGuard (interactive — can lock out input devices if misconfigured)
+#    24  AIDE file integrity baseline (weekly check by a timer);
+#        image-based: image signature status + weekly /etc change report
 #
 #  IMAGE-BASED SYSTEMS (Silverblue, Kinoite, Bazzite, Aurora, ...): tools are kept
 #  out of the image — Flatpaks, containers and a tools box instead of layered
@@ -123,15 +137,15 @@
 #  host access, no SELinux separation); they keep the host clean.
 #
 #  SECTIONS NOT AUTOMATED (by design):
-#     1  LUKS — must be chosen during Anaconda install
-#    6b  GRUB password — requires interactive grub2-mkpasswd-pbkdf2
-#    15  KDE GUI-only screens (Privacy, KWallet master password, Activity tracking)
-#    15  GNOME GUI-only screens (Online Accounts, Sharing, Bluetooth)
-#    15  Sway compositor: add 'exec swayidle -w' to sway config (action item)
-#    15  Hyprland: add 'exec-once = hypridle' to hyprland.conf (action item)
-#    15  i3: add lock keybind (action item)
-#    17  WireGuard: the provider config file itself (pass it with --wireguard-config)
-#    23  Ongoing maintenance checklist (scheduled human task)
+#     —  LUKS — must be chosen during Anaconda install
+#    3b  GRUB password — requires interactive grub2-mkpasswd-pbkdf2
+#    13  KDE GUI-only screens (Privacy, KWallet master password, Activity tracking)
+#    13  GNOME GUI-only screens (Online Accounts, Sharing, Bluetooth)
+#    13  Sway compositor: add 'exec swayidle -w' to sway config (action item)
+#    13  Hyprland: add 'exec-once = hypridle' to hyprland.conf (action item)
+#    13  i3: add lock keybind (action item)
+#    15  WireGuard: the provider config file itself (pass it with --wireguard-config)
+#    18  Ongoing maintenance checklist (scheduled human task)
 #
 #  PLATFORM SUPPORT:
 #    ✓ Fedora Workstation (mutable, dnf)
@@ -204,14 +218,14 @@ KERNEL_LABEL=""
 LOG_DIR="/var/log/fedora-harden"
 LOG_FILE="${LOG_DIR}/harden-${RUN_STAMP}.log"
 BACKUP_DIR="/root/harden-backups-${RUN_STAMP}"
-# On image-based systems these tools live in a box instead of the image (section 23).
+# On image-based systems these tools live in a box instead of the image (section 18).
 TOOLS_BOX="fedora-harden-tools"
 TOOLS_BOX_PKGS="openscap-scanner scap-security-guide setools-console buildah skopeo podman-compose"
-# ClamAV image for the scheduled scan on image-based systems (section 21). The
+# ClamAV image for the scheduled scan on image-based systems (section 16). The
 # signatures ship in the image; minor version pinned, patch releases follow.
 CLAMAV_IMAGE="docker.io/clamav/clamav:1.5"
 
-# arkenfox user.js release installed by section 16 (pinned + checksum-verified).
+# arkenfox user.js release installed by section 14 (pinned + checksum-verified).
 ARKENFOX_VERSION="144.0"
 ARKENFOX_SHA256="e4ab33c6914899175cf7035e0e57a2d7f08ac887d8f957f1199e7e49bbe7e33e"
 
@@ -230,27 +244,36 @@ fi
 [[ -z "$KERNEL_LABEL" ]] && KERNEL_LABEL="$(uname -r 2>/dev/null || echo unknown)"
 
 # ---------- Command-line option flags -----------------------------------------
-TARGET_USER=""   # Target username for SSH/home-dir hardening (--user)
-WG_CONFIG=""     # WireGuard config to install with kill switch (--wireguard-config)
-PROFILE_ARG=""   # Use cases for section 24 (--profile everyday,gaming,creative,dev,laptop)
-BACKUP_TARGET="" # Second drive for home copies on systems without Btrfs (--backup-target)
+TARGET_USER=""         # Target username for SSH/home-dir hardening (--user)
+WG_CONFIG=""           # WireGuard config to install with kill switch (--wireguard-config)
+PROFILE_ARG=""         # Use cases for section 19 (--profile everyday,gaming,creative,dev,laptop,private)
+RESTORE_FILE=""        # Recovery file to replay (--restore FILE)
+INCLUDE_SETUP=0        # --report also shows the recovery file's contents (--include-setup)
+RECOVERY_BACKUP_ARG="" # Copy the recovery file into the home backups: yes|no (--recovery-backup on|off)
+BACKUP_TARGET=""       # Second drive for home copies on systems without Btrfs (--backup-target)
 ROUTINE_HELPER="/usr/local/libexec/fedora-harden-routine"
-ROUTINE_ACTIVE=0 # Section 24 ran: record the managed state for the drift check
+ROUTINE_ACTIVE=0 # Section 19 ran: record the managed state for the drift check
 ASSUME_YES=0     # Non-interactive mode (--yes)
 DRY_RUN=0        # Print what would run without making changes (--dry-run)
 SKIP_LIST=""     # Comma-separated section numbers to skip (--skip)
 ONLY_LIST=""     # Comma-separated sections to run exclusively (--only)
 REPORT_MODE=0    # Write an HTML report of the last session (--report)
 REPORT_FILE=""   # Where to write it (--report FILE)
+REPORT_FULL=0    # Keep host, user names, home paths and addresses in it (--full)
 RESUME_MODE=0    # Review the last session's open follow-ups (--resume)
+SCORE_MODE=0     # Print the protection scorecard and exit (--score)
 FORCE_GUI=0      # Run in one window (--gui)
 
-# ---------- GUI mode state ------------------------------------------------
-GUI_FULL_MODE=0        # Set to 1 while the --gui window is open
-GUI_CANCEL_REQUESTED=0 # Set to 1 when the user stops the run from the window
+# Add the kernel boot hardening options without asking (--kernel-hardening)
+KERNEL_HARDENING=0
 
-# Sections in execution order (dependency flow; see main). --only/--skip accept these.
-SECTIONS=(2 3 6 13 4 5 7 9 10 11 14 18 15 16 17 21 22 23 24 25 12 19 20 8)
+# ---------- GUI mode state ------------------------------------------------
+AIDE_BASELINE_PENDING=0 # Section 24 asks for the AIDE baseline; it is recorded last
+GUI_FULL_MODE=0         # Set to 1 while the --gui window is open
+GUI_CANCEL_REQUESTED=0  # Set to 1 when the user stops the run from the window
+
+# Sections run in numeric order, which follows the dependency flow (see main). --only/--skip accept these.
+SECTIONS=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24)
 
 # ---------- Execution state flags -------------------------------------------
 LOG_READY=0       # Set to 1 after log file initialized
@@ -259,7 +282,7 @@ EXPECTED_ABORT=0  # Set to 1 if clean exit expected (--list, --rollback)
 
 # ---------- Platform/variant detection flags --------------------------------
 IS_OSTREE=0              # Set to 1 if system uses immutable rpm-ostree
-ETC_BASELINE_PENDING=0   # Section 12 (image-based): record the /etc baseline after the last section
+ETC_BASELINE_PENDING=0   # Section 24 (image-based): record the /etc baseline after the last section
 IS_KINOITE=0             # Set to 1 if Fedora Kinoite (immutable + KDE)
 IS_SILVERBLUE=0          # Set to 1 if Fedora Silverblue (immutable + GNOME)
 IS_ONYX=0                # Set to 1 if Fedora Onyx (immutable + GNOME, Atomic)
@@ -315,13 +338,15 @@ REPORT_DATE="$RUN_STAMP"
 declare -ga TEMP_FILES=() # All temp paths to auto-clean on EXIT
 
 # ---------- Rollback & session-tracking globals ------------------------------
-ROLLBACK_JOURNAL=""                  # Path to per-run change journal inside BACKUP_DIR
-SESSION_DIR="${SCRIPT_DIR}/sessions" # Project-relative sessions report directory
-SESSION_REPORT_FILE=""               # Path to current session's report in SESSION_DIR
-SESSION_STATUS="running"             # Updated to 'completed' or 'aborted' on exit
-SESSION_REPORT_WRITTEN=0             # Guards against double-write on abort path
-ROLLBACK_SESSION_ID=""               # Session ID to roll back (set by --rollback)
-LIST_SESSIONS_MODE=0                 # Set by --list-sessions
+FH_STATE="/var/lib/fedora-harden" # Root-only state of this script (not in its folder)
+
+ROLLBACK_JOURNAL=""              # Path to per-run change journal inside BACKUP_DIR
+SESSION_DIR="$FH_STATE/sessions" # Session and rollback reports (root-only)
+SESSION_REPORT_FILE=""           # Path to current session's report in SESSION_DIR
+SESSION_STATUS="running"         # Updated to 'completed' or 'aborted' on exit
+SESSION_REPORT_WRITTEN=0         # Guards against double-write on abort path
+ROLLBACK_SESSION_ID=""           # Session ID to roll back (set by --rollback)
+LIST_SESSIONS_MODE=0             # Set by --list-sessions
 
 # Colors (disabled if not a tty)
 if [[ -t 1 ]]; then
@@ -409,7 +434,7 @@ setup_ui_mode() {
 		warn "--gui needs a graphical session (no DISPLAY or WAYLAND_DISPLAY) — using the terminal."
 		return 0
 	fi
-	if ! gui_deps_ok && ((!IS_OSTREE)) && ((EUID == 0)); then
+	if ! gui_deps_ok && ((! IS_OSTREE)) && ((EUID == 0)); then
 		install_dep_candidates python3-gobject 2>/dev/null || true
 		install_dep_candidates gobject-introspection 2>/dev/null || true
 		install_dep_candidates gtk4 2>/dev/null || true
@@ -440,6 +465,7 @@ fields separated by tabs (backslash, tab and newline escaped as \\, \t and \n):
   SUMMARY <headline> <details>
   ITEMS                               (clears the follow-up list)
   ITEM   <HIGH|MEDIUM|LOW|DONE> <section> <text>
+  SCORE  <ok|no|na|info> <label> <detail> <fix>   (protection scorecard row)
   END    <exit code> <message>
 
 The window stays open after the script exits so the summary can be read; closing
@@ -848,6 +874,8 @@ class HardenWindow(Adw.ApplicationWindow):
         self.items_page = page
         self.item_groups = []
         self.item_count = 0
+        self.score_group = None
+        self.score = {"ok": 0, "no": 0}
         return page
 
     # ── Event handling ───────────────────────────────────────────────────────
@@ -872,6 +900,8 @@ class HardenWindow(Adw.ApplicationWindow):
             self.clear_items()
         elif kind == "ITEM":
             self.add_item(args[0], args[1], args[2])
+        elif kind == "SCORE":
+            self.add_score(args[0], args[1], args[2], args[3])
         elif kind == "END":
             self.end(args[0], args[1])
 
@@ -1051,6 +1081,29 @@ class HardenWindow(Adw.ApplicationWindow):
         self.item_groups = []
         self.item_count = 0
 
+    def add_score(self, state, label, detail, fix):
+        if self.score_group is None:
+            self.score_group = Adw.PreferencesGroup(
+                title="Protection now", description="Checked on the live system")
+            self.items_page.add(self.score_group)
+            if not self.sum_head.get_label():  # --score: no run summary
+                self.sum_head.set_label("Protection now")
+                self.switcher.set_visible(True)
+                self.stack.set_visible_child_name("summary")
+        icon, cls = {"ok": ("object-select-symbolic", "st-ok"),
+                     "no": ("dialog-error-symbolic", "st-error"),
+                     "info": ("dialog-information-symbolic", "st-running")}.get(
+            state, ("media-skip-forward-symbolic", "st-pending"))
+        text = detail if state == "ok" or not fix else f"{detail}\nFix: {fix}"
+        row = Adw.ActionRow(title=GLib.markup_escape_text(label),
+                            subtitle=GLib.markup_escape_text(text), subtitle_lines=0)
+        image = Gtk.Image(icon_name=icon, pixel_size=16)
+        image.add_css_class(cls)
+        row.add_prefix(image)
+        self.score_group.add(row)
+        if state in self.score:
+            self.score[state] += 1
+
     def add_item(self, priority, section, text):
         titles = {"HIGH": "Needs attention", "MEDIUM": "Recommended", "LOW": "Optional",
                   "DONE": "Resolved this run"}
@@ -1139,6 +1192,7 @@ class HardenWindow(Adw.ApplicationWindow):
             print(f"ok={self.counts['ok']} warn={self.counts['warn']} "
                   f"error={self.counts['error']} lines={len(self.lines)}", file=fh)
             print(f"items={self.item_count}", file=fh)
+            print(f"score_ok={self.score['ok']} score_no={self.score['no']}", file=fh)
             print(f"headline={self.sum_head.get_label()}", file=fh)
             print(f"asks={self.asks}", file=fh)
             print(f"asking={asking}", file=fh)
@@ -1359,7 +1413,7 @@ gui_final_summary() {
 # The window stays open for reading; the script does not wait for it.
 gui_finish() {
 	local rc="$1" msg
-	((GUI_FULL_MODE && !GUI_ENDED)) || return 0
+	((GUI_FULL_MODE && ! GUI_ENDED)) || return 0
 	GUI_ENDED=1
 	case "$rc" in
 	0) msg="Finished. A reboot is recommended to apply kernel, sysctl and PAM changes." ;;
@@ -1402,7 +1456,7 @@ gui_read_line() {
 # Returns 1 when there is no answer (window gone or the user stopped the run).
 gui_ask() {
 	local -n _answer="$4"
-	[[ -n "$GUI_RX_FD" ]] && ((!GUI_CANCEL_REQUESTED)) || return 1
+	[[ -n "$GUI_RX_FD" ]] && ((! GUI_CANCEL_REQUESTED)) || return 1
 	# The id must be unique in subshells too (prompt_input runs inside $(...)).
 	local id="$BASHPID-$RANDOM" line
 	gui_send ASK "$id" "$1" "$2" "$(gui_text "$3")"
@@ -1531,7 +1585,7 @@ log_stream() {
 # Used for status updates and intermediate steps.
 # Usage: info "message text"
 info() {
-	((!GUI_FULL_MODE)) && printf '%s[INFO]%s  %s\n' "$C_BLU" "$C_RST" "$*"
+	((! GUI_FULL_MODE)) && printf '%s[INFO]%s  %s\n' "$C_BLU" "$C_RST" "$*"
 	log "[INFO]  $*"
 	gui_send LOG info "$*"
 }
@@ -1540,7 +1594,7 @@ info() {
 # Indicates successful completion of a task or verification.
 # Usage: ok "message text"
 ok() {
-	((!GUI_FULL_MODE)) && printf '%s[ OK ]%s  %s\n' "$C_GRN" "$C_RST" "$*"
+	((! GUI_FULL_MODE)) && printf '%s[ OK ]%s  %s\n' "$C_GRN" "$C_RST" "$*"
 	log "[OK]    $*"
 	gui_send LOG ok "$*"
 }
@@ -1549,7 +1603,7 @@ ok() {
 # Alerts about non-critical issues, skipped steps, or prerequisites.
 # Usage: warn "message text"
 warn() {
-	((!GUI_FULL_MODE)) && printf '%s[WARN]%s  %s\n' "$C_YEL" "$C_RST" "$*"
+	((! GUI_FULL_MODE)) && printf '%s[WARN]%s  %s\n' "$C_YEL" "$C_RST" "$*"
 	log "[WARN]  $*"
 	gui_send LOG warn "$*"
 }
@@ -1559,7 +1613,7 @@ warn() {
 # Usage: err "message text"
 err() {
 	((++ERR_COUNT))
-	((!GUI_FULL_MODE)) && printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2
+	((! GUI_FULL_MODE)) && printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2
 	log "[ERROR] $*"
 	gui_send LOG error "$*"
 }
@@ -1587,7 +1641,7 @@ section() {
 	local pct=$((UI_SECTION_DONE * 100 / UI_SECTION_TOTAL))
 	local pb
 	pb="$(progress_bar "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" 28)"
-	if ((!GUI_FULL_MODE)); then
+	if ((! GUI_FULL_MODE)); then
 		printf '\n%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
 		printf '%s Section %s: %s%s\n' "$C_BLD" "$n" "$*" "$C_RST"
 		printf '%s Progress:%s %s %d/%d (%d%%)\n' "$C_BLU" "$C_RST" "$pb" "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$pct"
@@ -1606,7 +1660,7 @@ run() {
 	abort_if_cancelled
 	LAST_RUN_CMD="$*"
 	if ((DRY_RUN)); then
-		((!GUI_FULL_MODE)) && printf '%s[DRY ]%s  %s\n' "$C_YEL" "$C_RST" "$*"
+		((! GUI_FULL_MODE)) && printf '%s[DRY ]%s  %s\n' "$C_YEL" "$C_RST" "$*"
 		gui_send LOG dry "$*"
 		log "[DRY]   $*"
 		return 0
@@ -1673,7 +1727,7 @@ _DNF_REPOS_CHECKED=0
 _DNF_REPOS_OK=1
 dnf_repos_ready() {
 	((DRY_RUN)) && return 0
-	if ((!_DNF_REPOS_CHECKED)); then
+	if ((! _DNF_REPOS_CHECKED)); then
 		_DNF_REPOS_CHECKED=1
 		info "Checking that the package repositories answer (dnf makecache)..."
 		if ! timeout "${DNF_CHECK_TIMEOUT:-600}" dnf makecache -q >/dev/null 2>"${ERROR_CAPTURE_FILE:-/dev/null}"; then
@@ -1910,7 +1964,7 @@ flatpak_install_or_update() {
 	info "Flatpak ${app_id}: not installed — installing from ${remote}."
 	if ! timeout 1800 flatpak install -y "${remote}" "${app_id}" 2>/dev/null; then
 		warn "Flatpak ${app_id} install failed."
-		add_action_item "13" "MEDIUM" \
+		add_action_item "4" "MEDIUM" \
 			"FLATPAK_INSTALL_FAILED_${app_id//[^a-zA-Z0-9]/_}" \
 			"Flatpak ${app_id} could not be installed automatically — run: flatpak install ${remote} ${app_id}"
 	else
@@ -2037,7 +2091,30 @@ enable_timer() {
 # In --yes mode the answer is the default: yes, unless the caller passes "no" for
 # an option that current guidance does not recommend enabling automatically.
 # Usage: confirm ["prompt text"] [yes|no]
+# Every answer is remembered for the recovery file; with --restore, a question
+# answered before gets the same answer again.
 confirm() {
+	local _q="${1:-Continue?}" _k
+	_k="$(_answer_key "$_q")"
+	if [[ -n "${RESTORE_ANSWERS[$_k]:-}" ]]; then
+		info "Answer from the recovery file ($_q): ${RESTORE_ANSWERS[$_k]}"
+		ANSWERS[$_k]="${RESTORE_ANSWERS[$_k]}"
+		ANSWER_TEXT[$_k]="$_q"
+		[[ "${RESTORE_ANSWERS[$_k]}" == yes ]]
+		return
+	fi
+	if _confirm_ask "$@"; then
+		ANSWERS[$_k]=yes
+		ANSWER_TEXT[$_k]="$_q"
+		return 0
+	fi
+	ANSWERS[$_k]=no
+	ANSWER_TEXT[$_k]="$_q"
+	return 1
+}
+
+# _confirm_ask - The question itself (--yes default, the window, or the terminal).
+_confirm_ask() {
 	local prompt="${1:-Continue?}" default="${2:-yes}"
 	if ((ASSUME_YES)); then
 		if [[ "$default" == no ]]; then
@@ -2074,7 +2151,7 @@ backup_file() {
 	local f="$1" dir what
 	# Never change what cannot be written or rolled back. Returning 1 makes the caller
 	# skip the change (sections: `backup_file X || return 0`); the run goes on.
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		dir="$(dirname -- "$f")"
 		if [[ -e "$f" && ! -w "$f" ]] || [[ ! -e "$f" && -d "$dir" && ! -w "$dir" ]]; then
 			warn "Leaving $f unchanged: it is not writable (read-only filesystem or immutable file)."
@@ -2404,7 +2481,7 @@ detect_desktop_envs() {
 		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
 	}
 	# Bazzite ships both KDE and GNOME editions — honour running session above; default to KDE
-	if ((IS_BAZZITE)) && ((!HAS_KDE && !HAS_GNOME)); then
+	if ((IS_BAZZITE)) && ((! HAS_KDE && ! HAS_GNOME)); then
 		HAS_KDE=1
 		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
 	fi
@@ -2416,34 +2493,34 @@ detect_desktop_envs() {
 
 # section_compatible() - Check if a section is compatible with current system.
 # Evaluates release type, desktop presence, and platform capabilities to auto-skip safely.
-# Examples: Section 15 (KDE) skips if !HAS_KDE; Section 16 skips if !HAS_DESKTOP
+# Examples: Section 13 (KDE) skips if !HAS_KDE; Section 14 skips if !HAS_DESKTOP
 # Returns 0 (compatible) or 1 (incompatible/should skip).
 # Usage: section_compatible <section_number>
 section_compatible() {
 	local s="$1"
 	case "$s" in
-	15)
-		# Section 15 requires at least one desktop environment to be installed.
-		if ((!HAS_DESKTOP)); then
-			info "Skipping section 15: no desktop environment detected on this host."
+	13)
+		# Section 13 requires at least one desktop environment to be installed.
+		if ((! HAS_DESKTOP)); then
+			info "Skipping section 13: no desktop environment detected on this host."
 			return 1
 		fi
 		;;
-	16)
-		# Section 16 is desktop-focused and should run if any desktop environment is installed.
-		if ((!HAS_DESKTOP)); then
-			info "Skipping section 16: no desktop environment detected on this host."
+	14)
+		# Section 14 is desktop-focused and should run if any desktop environment is installed.
+		if ((! HAS_DESKTOP)); then
+			info "Skipping section 14: no desktop environment detected on this host."
 			return 1
 		fi
 		;;
-	8)
-		# Section 8 can interfere with remote access if USB input devices are not whitelisted.
-		if ((IS_SERVER)) && ((!ASSUME_YES)); then
-			warn "Section 8 (USBGuard) can disrupt remote-only server access if input devices are blocked."
+	23)
+		# Section 23 can interfere with remote access if USB input devices are not whitelisted.
+		if ((IS_SERVER)) && ((! ASSUME_YES)); then
+			warn "Section 23 (USBGuard) can disrupt remote-only server access if input devices are blocked."
 		fi
 		# Sway/Hyprland/i3 users: input-device whitelists in compositors must allow USB keyboards/mice.
-		if ((HAS_SWAY || HAS_HYPRLAND || HAS_I3)) && ((!ASSUME_YES)); then
-			warn "Section 8 (USBGuard): tiling WM users should whitelist USB input devices in their compositor config."
+		if ((HAS_SWAY || HAS_HYPRLAND || HAS_I3)) && ((! ASSUME_YES)); then
+			warn "Section 23 (USBGuard): tiling WM users should whitelist USB input devices in their compositor config."
 		fi
 		;;
 	esac
@@ -2604,11 +2681,12 @@ init_rollback_journal() {
 	chmod 600 "$ROLLBACK_JOURNAL" 2>/dev/null || true
 }
 
-# init_session_dir() - Create ./sessions/ and write the session header stub.
+# init_session_dir() - Create the root-only sessions directory and write the session
+# header stub.
 # The stub is overwritten with full content by write_session_report() on exit.
 # Usage: init_session_dir
 init_session_dir() {
-	if ! install -d -m 755 "$SESSION_DIR" 2>/dev/null; then
+	if ! install -d -m 700 "$SESSION_DIR" 2>/dev/null; then
 		warn "Could not create sessions directory: $SESSION_DIR — session reports disabled."
 		SESSION_DIR=""
 		return 0
@@ -2729,7 +2807,7 @@ write_session_report() {
 			printf '  No changes were recorded — nothing to roll back.\n'
 		fi
 	} >"$SESSION_REPORT_FILE" 2>/dev/null || true
-	chmod 644 "$SESSION_REPORT_FILE" 2>/dev/null || true
+	chmod 600 "$SESSION_REPORT_FILE" 2>/dev/null || true
 	log "[SESSION] Session report written: $SESSION_REPORT_FILE"
 }
 
@@ -2918,6 +2996,30 @@ _apply_rollback_journal() {
 			_rjl "  [KEEP] SNAPSHOT_DATA  $detail"
 			;;
 
+		OSTREE_PIN)
+			# The booted deployment pinned before the run (its checksum).
+			local pidx
+			pidx="$(ostree_deployment_index "$detail")"
+			if ((DRY_RUN)); then
+				info "Would unpin the safety-point deployment ${detail:0:12}"
+			elif [[ -z "$pidx" ]]; then
+				_rjl "  [SKIP] OSTREE_PIN  ${detail:0:12} (no longer deployed)"
+			elif ostree admin pin --unpin "$pidx" >/dev/null 2>&1; then
+				ok "Unpinned the safety-point deployment ${detail:0:12}"
+				_rjl "  [OK]   OSTREE_PIN  $detail"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not unpin deployment ${detail:0:12}: sudo ostree admin pin --unpin $pidx"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		ROOT_SNAPSHOT)
+			# A read-only snapshot of / from before the run: a recovery point, kept.
+			info "Kept the pre-run snapshot $detail (delete with: sudo btrfs subvolume delete $detail)."
+			_rjl "  [KEEP] ROOT_SNAPSHOT  $detail"
+			;;
+
 		SYSFS)
 			# path=old value written by the run (e.g. a battery charge limit)
 			local sp="${detail%%=*}" sv="${detail#*=}"
@@ -2942,6 +3044,23 @@ _apply_rollback_journal() {
 			else
 				warn "Could not stop wg-quick@$detail"
 				_rjl "  [WARN] WG_TUNNEL  $detail"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		KERNEL_ARGS)
+			# kernel command-line options this run added
+			if ((DRY_RUN)); then
+				info "Would remove kernel options: $detail"
+			elif { ((IS_OSTREE)) && read -ra _rb_kargs <<<"$detail" &&
+				rpm-ostree kargs "${_rb_kargs[@]/#/--delete-if-present=}" >/dev/null 2>&1; } ||
+				{ ((! IS_OSTREE)) && grubby --update-kernel=ALL --remove-args="$detail" 2>/dev/null; }; then
+				ok "Removed kernel options: $detail (after a reboot)"
+				_rjl "  [OK]   KERNEL_ARGS  $detail"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not remove kernel options: $detail"
+				_rjl "  [WARN] KERNEL_ARGS  $detail"
 				((++_RBJ_ERRORS))
 			fi
 			;;
@@ -2977,6 +3096,88 @@ _apply_rollback_journal() {
 			fi
 			;;
 
+		BOX)
+			# user:tool:name — a box section 19 created (its data goes with it)
+			local bu bt bn
+			IFS=: read -r bu bt bn <<<"$detail"
+			if ((DRY_RUN)); then
+				info "Would remove the $bt box '$bn' of $bu"
+			elif runuser -u "$bu" -- "$bt" rm --force "$bn" >/dev/null 2>&1; then
+				ok "Removed the $bt box '$bn' of $bu"
+				_rjl "  [OK]   BOX_REMOVE  $detail"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not remove the $bt box '$bn' of $bu (already gone?)"
+				_rjl "  [WARN] BOX_REMOVE  $detail"
+			fi
+			;;
+
+		GROUP_ADD)
+			local gu="${detail%%:*}" gg="${detail#*:}"
+			if ((DRY_RUN)); then
+				info "Would remove $gu from group $gg"
+			elif gpasswd -d "$gu" "$gg" >/dev/null 2>&1; then
+				ok "Removed $gu from group $gg"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not remove $gu from group $gg"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		FLATPAK_SUBSET)
+			# remote:previous subset (empty = all apps)
+			local fr="${detail%%:*}" fs="${detail#*:}"
+			if ((DRY_RUN)); then
+				info "Would restore the $fr subset to '${fs:-all apps}'"
+			elif flatpak remote-modify --subset="$fs" "$fr" 2>/dev/null; then
+				ok "Flatpak remote $fr shows ${fs:-all apps} again"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not restore the $fr subset"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		AUTHSELECT_FEATURE)
+			if ((DRY_RUN)); then
+				info "Would run: authselect disable-feature $detail"
+			elif authselect disable-feature "$detail" >/dev/null 2>&1; then
+				ok "authselect feature $detail disabled"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not disable authselect feature $detail"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		LUKS_TOKEN)
+			# device:tpm2|fido2 — the unlock method section 19 enrolled; the
+			# passphrase was never touched
+			local ld="${detail%:*}" lk="${detail##*:}"
+			if ((DRY_RUN)); then
+				info "Would remove the $lk unlock from $ld"
+			elif systemd-cryptenroll --wipe-slot="$lk" "$ld" >/dev/null 2>&1; then
+				ok "Removed the $lk unlock from $ld (the passphrase still works)"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not remove the $lk unlock from $ld: sudo systemd-cryptenroll --wipe-slot=$lk $ld"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
+		OSTREE_INITRAMFS)
+			if ((DRY_RUN)); then
+				info "Would run: rpm-ostree initramfs --disable"
+			elif rpm-ostree initramfs --disable >/dev/null 2>&1; then
+				ok "Local initramfs regeneration turned off (applies at the next boot)"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not run rpm-ostree initramfs --disable"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
 		*)
 			warn "Unknown journal entry type '$ctype' — skipping"
 			_rjl "  [SKIP] UNKNOWN  $ctype: $detail"
@@ -3004,6 +3205,42 @@ _apply_rollback_journal() {
 			fi
 		done
 		rb_pkgs=("${kept[@]}")
+	fi
+	# Never remove what something outside this list still needs: a package the user
+	# installed later can depend on one this run pulled in, and dnf would remove the
+	# user's package with it. rpm's own test names every such requirement; keep its
+	# provider and test again until the rest can go.
+	if ((${#rb_pkgs[@]})) && ((! DRY_RUN)); then
+		local -a present=()
+		for pname in "${rb_pkgs[@]}"; do
+			rpm -q "$pname" >/dev/null 2>&1 && present+=("$pname")
+		done
+		rb_pkgs=("${present[@]}")
+		local _try cap prov test_out changed
+		for ((_try = 0; _try < 10 && ${#rb_pkgs[@]} > 0; _try++)); do
+			test_out="$(rpm -e --test "${rb_pkgs[@]}" 2>&1)" && break
+			changed=0
+			local -A still_needed=()
+			while IFS= read -r cap; do
+				[[ -n "$cap" ]] || continue
+				while IFS= read -r prov; do
+					[[ -n "$prov" ]] && still_needed[$prov]=1
+				done < <(rpm -q --whatprovides --qf '%{NAME}.%{ARCH}\n' "$cap" 2>/dev/null)
+			done < <(sed -n 's/^[[:space:]]*\(.*\) is needed by (installed) .*/\1/p' <<<"$test_out")
+			kept=()
+			for pname in "${rb_pkgs[@]}"; do
+				if [[ -n "${still_needed[$pname]:-}" ]]; then
+					info "Keeping $pname: a package installed outside this run still needs it."
+					_rjl "  [KEEP] PKG_REMOVE  $pname (still needed)"
+					changed=1
+				else
+					kept+=("$pname")
+				fi
+			done
+			unset still_needed
+			rb_pkgs=("${kept[@]}")
+			((changed)) || break
+		done
 	fi
 	if ((${#rb_pkgs[@]})); then
 		if ((DRY_RUN)); then
@@ -3039,9 +3276,15 @@ _apply_rollback_journal() {
 # Audit rules are loaded from the restored file (auditctl -R), not regenerated.
 _rollback_reload() {
 	((DRY_RUN)) && return 0
-	local p sysctl=0 audit=0 fw=0 ssh=0 units=0 journald=0
+	local p sysctl=0 audit=0 fw=0 ssh=0 units=0 journald=0 svc
+	local -a sandboxed=()
 	for p in "$@"; do
 		case "$p" in
+		/etc/systemd/system/*.service.d/50-fedora-harden-sandbox.conf)
+			svc="${p#/etc/systemd/system/}"
+			sandboxed+=("${svc%.service.d/*}")
+			units=1
+			;;
 		/etc/sysctl.d/* | /etc/sysctl.conf) sysctl=1 ;;
 		/etc/audit/*) audit=1 ;;
 		/etc/firewalld/*) fw=1 ;;
@@ -3052,6 +3295,9 @@ _rollback_reload() {
 	done
 	((units)) && { systemctl daemon-reload 2>/dev/null || true; }
 	((journald)) && { systemctl restart systemd-journald 2>/dev/null || true; }
+	for svc in "${sandboxed[@]}"; do
+		systemctl is-active --quiet "$svc" 2>/dev/null && { systemctl restart "$svc" 2>/dev/null || true; }
+	done
 	((sysctl)) && { sysctl --system >/dev/null 2>&1 || true; }
 	((audit)) && have_cmd auditctl && [[ -f /etc/audit/audit.rules ]] && { auditctl -R /etc/audit/audit.rules >/dev/null 2>&1 || true; }
 	((fw)) && systemctl is-active --quiet firewalld 2>/dev/null && { firewall-cmd --reload >/dev/null 2>&1 || true; }
@@ -3086,7 +3332,7 @@ _restore_backup_dir_files() {
 		fi
 	done < <(find "$backup_dir" -type f ! -name '.rollback-journal' 2>/dev/null | sort)
 
-	if ((!found_any)); then
+	if ((! found_any)); then
 		warn "No backup files found in: $backup_dir"
 		_rbfl "  [INFO] No files found in backup dir: $backup_dir"
 	fi
@@ -3204,7 +3450,7 @@ rollback_session() {
 			((IS_OSTREE)) && printf '\nNOTE: rpm-ostree uninstalls require a reboot to take effect.\n'
 			printf '\nA reboot is recommended to ensure all rollback changes are applied.\n'
 		} >>"$rb_report" 2>/dev/null || true
-		chmod 644 "$rb_report" 2>/dev/null || true
+		chmod 600 "$rb_report" 2>/dev/null || true
 		ok "Rollback report saved: $rb_report"
 	fi
 
@@ -3278,9 +3524,10 @@ rollback_all_sessions() {
 	printf -v rb_stamp '%(%Y%m%d-%H%M%S)T' -1 2>/dev/null || rb_stamp="$(date +%Y%m%d-%H%M%S)"
 
 	# Ensure sessions dir exists — it may not if this is a pre-session-feature environment
-	if [[ -z "$SESSION_DIR" ]] || ! install -d -m 755 "$SESSION_DIR" 2>/dev/null; then
-		SESSION_DIR="/tmp"
-		warn "sessions/ directory unavailable; writing report to /tmp/"
+	if [[ -z "$SESSION_DIR" ]] || ! install -d -m 700 "$SESSION_DIR" 2>/dev/null; then
+		# A private directory, never a world-readable file in /tmp.
+		SESSION_DIR="$(mktemp -d /tmp/fedora-harden-rollback.XXXXXX)" || SESSION_DIR=""
+		warn "Sessions directory unavailable; writing the rollback report to ${SESSION_DIR:-nowhere}"
 	fi
 
 	local rb_report="${SESSION_DIR}/rollback-full-at-${rb_stamp}.txt"
@@ -3387,8 +3634,8 @@ rollback_all_sessions() {
 		((IS_OSTREE)) && printf '\nNOTE: rpm-ostree uninstalls require a reboot to take effect.\n'
 		printf '\nA reboot is strongly recommended to finalize all rollback changes.\n'
 	} >>"$rb_report" 2>/dev/null || true
-	chmod 644 "$rb_report" 2>/dev/null || true
-	chmod 644 "$rb_log" 2>/dev/null || true
+	chmod 600 "$rb_report" 2>/dev/null || true
+	chmod 600 "$rb_log" 2>/dev/null || true
 
 	_frblog "Full rollback complete. Processed=$sessions_ok Skipped=$sessions_skipped Restored=$total_restored Errors=$total_errors"
 
@@ -3616,22 +3863,21 @@ usage() {
 # Usage: list_sections (called by --list flag)
 list_sections() {
 	cat <<'EOF'
-  2  System updates (incl. fwupd firmware/microcode + hardware key support)
-  3  Automatic updates
-  4  SELinux tools
-  5  firewalld
-  6  Secure Boot verify
-  7  SSH hardening
-  8  USBGuard
-  9  PAM/password policy
- 10  Kernel sysctl (incl. IPv6 privacy extensions)
- 11  auditd (incl. time/network/mount/delete rules)
- 12  rkhunter + AIDE (image-based: image signature + /etc change report)
- 13  Flatpak / Flathub, global Flatpak restrictions, mat2 (Firejail opt-in)
- 14  DNS over TLS (14b: NetworkManager MAC address randomization)
- 15  Desktop environment settings (auto-dispatches by detected DE):
+   1  System updates (incl. fwupd firmware/microcode + hardware key support)
+   2  Automatic updates
+   3  Secure Boot verify
+   4  Flatpak / Flathub, global Flatpak restrictions, mat2 (Firejail opt-in)
+   5  SELinux tools
+   6  firewalld
+   7  SSH hardening
+   8  PAM/password policy
+   9  Kernel sysctl (incl. IPv6 privacy extensions)
+  10  auditd (incl. time/network/mount rules, deletes under /etc)
+  11  DNS over TLS (11b: NetworkManager MAC address randomization)
+  12  Fail2Ban
+  13  Desktop environment settings (auto-dispatches by detected DE):
        KDE Plasma  — kwriteconfig6/5: screen lock, recent-docs, BT opt-out
-       GNOME/Onyx  — gsettings: lock, location off, privacy, mic off
+       GNOME/Onyx  — gsettings: lock, location off, privacy (mic off if asked)
        Budgie      — gsettings (GNOME backend): same privacy stack
        Cinnamon    — org.cinnamon.desktop.screensaver + GNOME privacy schemas
        MATE        — org.mate.screensaver + org.mate.power-manager
@@ -3640,21 +3886,21 @@ list_sections() {
        Hyprland    — writes hypridle.conf (lock 5 min, suspend 10 min)
        i3          — xss-lock + i3lock drop-in via config.d/
        LXQt/Lazurite — lxqt-screensaver.conf + lxqt-powermanagement.conf
- 16  Firefox Flatpak + arkenfox + extensions (uBlock, LocalCDN, Containers) + VPN check
- 17  WireGuard tunnel with kill switch (--wireguard-config FILE)
- 18  Fail2Ban
- 19  Service trim
- 20  File permissions (incl. umask 077, core dump limits, hostname privacy)
- 21  ClamAV (incl. on-access scanning for /home; image-based: container scan)
- 22  OpenSCAP (image-based: from a container)
- 23  Container security (Podman + toolbox/distrobox / containerized-mindset setup)
- 24  Your routine: upkeep, health and drift checks for your use cases (--profile)
- 25  Home snapshots (Btrfs) or incremental copies, as often as the machine is used
+  14  Firefox Flatpak + arkenfox + extensions (uBlock, LocalCDN, Containers) + VPN check
+  15  WireGuard tunnel with kill switch (--wireguard-config FILE)
+  16  ClamAV (weekly scan of /home, on-access opt-in; image-based: container scan)
+  17  OpenSCAP (image-based: from a container)
+  18  Container security (Podman + toolbox/distrobox / containerized-mindset setup)
+  19  Your routine: upkeep, health and drift checks for your use cases (--profile)
+  20  Home snapshots (Btrfs) or incremental copies, as often as the machine is used
+  21  Service trim
+  22  File permissions (incl. umask 077 for users, core dump limits, hostname privacy)
+  23  USBGuard
+  24  AIDE file integrity (image-based: image signature + /etc change report)
 
- Optimized execution order (guide section numbers):
-    2,3,6,13,4,5,7,9,10,11,14,18,15,16,17,21,22,23,12,19,20,8
+ Execution order: 1 to 24. The numbers follow the dependency flow.
 
- DE detection (section 15 auto-dispatches — all detected DEs are hardened):
+ DE detection (section 13 auto-dispatches — all detected DEs are hardened):
     Running session: XDG_CURRENT_DESKTOP / DESKTOP_SESSION
     Installed tools: kwriteconfig, gnome-shell, cinnamon, mate-session,
                      xfce4-session, startlxqt, sway, Hyprland, i3, budgie-desktop
@@ -3700,8 +3946,8 @@ parse_args() {
 			shift 2
 			;;
 		--profile)
-			if [[ ! "${2:-}" =~ ^(everyday|gaming|creative|dev|laptop)(,(everyday|gaming|creative|dev|laptop))*$ ]]; then
-				err "--profile expects a comma-separated list with no spaces: everyday,gaming,creative,dev,laptop"
+			if [[ ! "${2:-}" =~ ^(everyday|gaming|creative|dev|laptop|private)(,(everyday|gaming|creative|dev|laptop|private))*$ ]]; then
+				err "--profile expects a comma-separated list with no spaces: everyday,gaming,creative,dev,laptop,private"
 				exit 2
 			fi
 			PROFILE_ARG="$2"
@@ -3737,9 +3983,44 @@ parse_args() {
 				shift
 			fi
 			;;
+		--full)
+			REPORT_FULL=1
+			shift
+			;;
 		--resume)
 			RESUME_MODE=1
 			shift
+			;;
+		--score)
+			SCORE_MODE=1
+			shift
+			;;
+		--kernel-hardening)
+			KERNEL_HARDENING=1
+			shift
+			;;
+		--restore)
+			if [[ -z "${2:-}" ]]; then
+				err "Option --restore requires a recovery file"
+				exit 2
+			fi
+			RESTORE_FILE="$2"
+			shift 2
+			;;
+		--include-setup)
+			INCLUDE_SETUP=1
+			shift
+			;;
+		--recovery-backup)
+			case "${2:-}" in
+			on) RECOVERY_BACKUP_ARG=yes ;;
+			off) RECOVERY_BACKUP_ARG=no ;;
+			*)
+				err "--recovery-backup expects on or off"
+				exit 2
+				;;
+			esac
+			shift 2
 			;;
 		--skip)
 			if [[ -z "${2:-}" ]]; then
@@ -3921,12 +4202,12 @@ preflight() {
 	info "Log:         $LOG_WHERE"
 	info "Backup dir:  $BACKUP_DIR"
 	# Without a writable journal nothing this run changes could be rolled back.
-	if ((!REPORT_MODE)) && ! init_rollback_journal; then # --report only reads
+	if ((! REPORT_MODE && ! SCORE_MODE)) && ! init_rollback_journal; then # --report/--score only read
 		err "Cannot write the backup folder $BACKUP_DIR (read-only, full, or missing — on image-based systems /root is /var/roothome). Nothing was changed."
 		PRECHECK_FAILED=1
 		return 0
 	fi
-	init_session_dir
+	((SCORE_MODE)) || init_session_dir
 	((DRY_RUN)) && warn "DRY RUN mode — no changes will be applied."
 	((ASSUME_YES)) && warn "Auto-yes mode — no interactive confirmations."
 
@@ -3949,19 +4230,19 @@ preflight() {
 }
 
 # ============================================================================
-#  SECTION 2 — System updates
+#  SECTION 1 — System updates
 # ============================================================================
-# sec_02_updates() - Perform full system package updates plus firmware/microcode
+# sec_01_updates() - Perform full system package updates plus firmware/microcode
 # Runs dnf upgrade (or rpm-ostree update on immutable systems). Also installs fwupd
 # for firmware updates (privacyguides.org) and ensures CPU microcode is current
 # (Intel: microcode_ctl; AMD: linux-firmware) to patch Spectre/Meltdown and similar.
 # Optionally installs hardware security key support (YubiKey/FIDO2/PIV: pcsc-lite,
 # opensc, libfido2, yubico-piv-tool, yubikey-manager, pam-u2f) and reminds the user
-# to have the key plugged in before section 8 (USBGuard) runs.
+# to have the key plugged in before section 23 (USBGuard) runs.
 # Recommends reboot after completion.
-sec_02_updates() {
-	should_run 2 || return 0
-	section 2 "System updates"
+sec_01_updates() {
+	should_run 1 || return 0
+	section 1 "System updates"
 	pkg_upgrade
 	ok "System packages updated. A reboot is recommended when the script finishes."
 
@@ -3996,7 +4277,7 @@ sec_02_updates() {
 
 	# ── Hardware security key support (YubiKey, FIDO2, PIV smart cards) ──────
 	# Ask if the user owns a hardware security key. If yes, install support packages
-	# and remind them to have the key physically accessible during section 8 (USBGuard),
+	# and remind them to have the key physically accessible during section 23 (USBGuard),
 	# since USBGuard will prompt to allow or block every new USB device — a key that
 	# is unplugged at that point would need to be explicitly allowed afterwards.
 	if confirm "Do you use a hardware security key (YubiKey, FIDO2 token, PIV smart card)?"; then
@@ -4019,27 +4300,66 @@ sec_02_updates() {
 			pkg_install pam-u2f
 			info "pam_u2f installed — configure /etc/pam.d/ manually to add the U2F factor."
 			info "  Reference: https://developers.yubico.com/pam-u2f/"
-			add_action_item 2 MEDIUM "HWKEY_PAM_U2F" \
+			add_action_item 1 MEDIUM "HWKEY_PAM_U2F" \
 				"pam-u2f was installed. Configure PAM (/etc/pam.d/sudo, /etc/pam.d/system-auth) to require your hardware key for authentication. See: https://developers.yubico.com/pam-u2f/"
 		fi
 		printf '\n%s╔══════════════════════════════════════════════════════════════╗%s\n' "$C_YEL" "$C_RST"
-		printf '%s║  ⚠  HARDWARE KEY REMINDER — READ BEFORE SECTION 8            ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║  ⚠  HARDWARE KEY REMINDER — READ BEFORE SECTION 23            ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s║                                                              ║%s\n' "$C_YEL" "$C_RST"
-		printf '%s║  Section 8 (USBGuard) will prompt you to ALLOW or BLOCK      ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║  Section 23 (USBGuard) will prompt you to ALLOW or BLOCK      ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s║  every USB device it sees at configuration time.             ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s║                                                              ║%s\n' "$C_YEL" "$C_RST"
-		printf '%s║  • Plug in your hardware key BEFORE section 8 runs so it     ║%s\n' "$C_YEL" "$C_RST"
+		printf '%s║  • Plug in your hardware key BEFORE section 23 runs so it     ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s║    gets added to the allowlist automatically.                ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s║  • If you miss it, run afterwards:                           ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s║     sudo usbguard generate-policy >> /etc/usbguard/rules.conf║%s\n' "$C_YEL" "$C_RST"
 		printf '%s║    or use the USBGuard GUI / CLI to allow the device.        ║%s\n' "$C_YEL" "$C_RST"
 		printf '%s╚══════════════════════════════════════════════════════════════╝%s\n\n' "$C_YEL" "$C_RST"
-		add_action_item 2 HIGH "HWKEY_USBGUARD_READY" \
-			"Hardware security key support enabled: ensure your key is plugged in BEFORE section 8 (USBGuard) runs so it is added to the allowlist. If missed, run: sudo usbguard generate-policy >> /etc/usbguard/rules.conf"
+		add_action_item 1 HIGH "HWKEY_USBGUARD_READY" \
+			"Hardware security key support enabled: ensure your key is plugged in BEFORE section 23 (USBGuard) runs so it is added to the allowlist. If missed, run: sudo usbguard generate-policy >> /etc/usbguard/rules.conf"
+	fi
+	_phone_home_off
+	_firmware_security_report
+}
+
+# _phone_home_off - 1c: keep reports about this machine from being sent on their
+# own. Fedora's defaults are already private here; this makes sure they stay so
+# (DNF countme is section 2b; GNOME usage statistics are section 13).
+_phone_home_off() {
+	local f
+	# fwupd: no automatic upload of firmware update reports.
+	for f in /etc/fwupd/remotes.d/lvfs.conf /etc/fwupd/remotes.d/lvfs-testing.conf; do
+		grep -qsE '^AutomaticReports=true' "$f" || continue
+		backup_file "$f" || continue
+		run "sed -i 's/^AutomaticReports=true/AutomaticReports=false/' '$f'" && ok "fwupd: automatic reports off ($f)"
+	done
+	# ABRT: crash reports are not sent automatically.
+	if cmd_exists abrt-auto-reporting && [[ "$(abrt-auto-reporting 2>/dev/null)" != disabled ]]; then
+		backup_file /etc/abrt/abrt.conf || return 0
+		run "abrt-auto-reporting disabled" && ok "ABRT: automatic crash reporting off"
 	fi
 }
 
-# _ostree_auto_updates() - Automatic updates on rpm-ostree systems (section 3).
+# _firmware_security_report - 1d: fwupd's Host Security ID (HSI) shows firmware
+# protections only the owner can change (Secure Boot, TPM, DMA protection, BIOS
+# write protection). Read-only; failing checks become follow-up items.
+_firmware_security_report() {
+	cmd_exists fwupdmgr || return 0
+	((DRY_RUN)) && {
+		info "Would read the firmware security report (fwupdmgr security)"
+		return 0
+	}
+	local out level failed
+	out="$(timeout 60 fwupdmgr security --force --no-unreported-check 2>/dev/null)" || return 0
+	level="$(grep -oE 'HSI:[0-9]+' <<<"$out" | head -n 1)"
+	[[ -n "$level" ]] && info "Firmware security (fwupd Host Security ID): $level"
+	failed="$(grep -E '✘' <<<"$out" | sed 's/^[[:space:]]*//' | head -n 5 | paste -sd';' - | sed 's/;/; /g')"
+	[[ -n "$failed" ]] && add_action_item 1 LOW "FIRMWARE_SECURITY" \
+		"Firmware protections that only you can change (BIOS/UEFI setup): ${failed}. Details: fwupdmgr security"
+	return 0
+}
+
+# _ostree_auto_updates() - Automatic updates on rpm-ostree systems (section 2).
 # Universal Blue images (Bazzite, Bluefin, Aurora) update through uupd.timer and
 # keep rpm-ostreed's own policy at "none"; enabling rpm-ostreed-automatic as well
 # would run two updaters against the same deployments, so leave uupd in charge.
@@ -4048,7 +4368,7 @@ _ostree_auto_updates() {
 		if systemctl is-enabled --quiet uupd.timer 2>/dev/null; then
 			ok "Universal Blue image: automatic updates are handled by uupd.timer (system, Flatpaks, distroboxes)."
 		elif ! run "systemctl enable --now uupd.timer"; then
-			add_action_item 3 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now uupd.timer"
+			add_action_item 2 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now uupd.timer"
 		fi
 		info "Update by hand at any time with: ujust update"
 		return 0
@@ -4060,7 +4380,7 @@ _ostree_auto_updates() {
 	}
 
 	backup_file "$ro_conf" || return 0
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		# Update existing policy or add new [Daemon] section (batch single sed pass)
 		if grep -qE '^\s*AutomaticUpdatePolicy\s*=' "$ro_conf"; then
 			sed -i -E 's|^\s*AutomaticUpdatePolicy\s*=.*|AutomaticUpdatePolicy=stage|' "$ro_conf" 2>/dev/null || true
@@ -4077,13 +4397,13 @@ _ostree_auto_updates() {
 	# Enable timer if available
 	if systemctl list-unit-files rpm-ostreed-automatic.timer >/dev/null 2>&1; then
 		run "systemctl enable --now rpm-ostreed-automatic.timer" ||
-			add_action_item 3 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now rpm-ostreed-automatic.timer"
+			add_action_item 2 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now rpm-ostreed-automatic.timer"
 	else
 		warn "rpm-ostreed-automatic.timer not found; configure automatic updates manually."
 	fi
 }
 
-# _dnf_auto_updates() - Automatic security updates on dnf systems (section 3).
+# _dnf_auto_updates() - Automatic security updates on dnf systems (section 2).
 _dnf_auto_updates() {
 	# Handle mutable systems. Fedora 41+ uses dnf5, whose automatic-update plugin is
 	# packaged as dnf5-plugin-automatic (timer: dnf5-automatic.timer). It ships
@@ -4126,29 +4446,29 @@ _dnf_auto_updates() {
 			ok "Patched $conf (upgrade_type=security, apply_updates=yes, reboot=when-needed)"
 		else
 			warn "$conf could not be patched for automatic security updates."
-			add_action_item 3 HIGH "AUTO_UPDATES_CONFIG" \
+			add_action_item 2 HIGH "AUTO_UPDATES_CONFIG" \
 				"Set upgrade_type = security and apply_updates = yes under [commands] in $conf"
 		fi
 	fi
 
 	if ! run "systemctl enable --now $timer"; then
 		warn "Could not enable $timer"
-		add_action_item 3 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now $timer"
+		add_action_item 2 HIGH "AUTO_UPDATES_TIMER" "Enable automatic updates: sudo systemctl enable --now $timer"
 	fi
 }
 
 # ============================================================================
-#  SECTION 3 — automatic security updates (dnf5-plugin-automatic, Fedora 41+)
+#  SECTION 2 — automatic security updates (dnf5-plugin-automatic, Fedora 41+)
 # ============================================================================
-# sec_03_dnf_automatic() - Configure automatic security updates + countme opt-out
+# sec_02_dnf_automatic() - Configure automatic security updates + countme opt-out
 # Sets up dnf5-plugin-automatic for mutable systems or rpm-ostreed policy for immutable
 # systems to apply security patches automatically. On rpm-ostree, stages updates.
-# Sub-section 3b disables the Fedora system-counting mechanism: sets countme=false
+# Sub-section 2b disables the Fedora system-counting mechanism: sets countme=false
 # in /etc/dnf/dnf.conf on mutable systems, or masks rpm-ostree-countme.timer on
 # immutable ones — per privacyguides.org recommendation.
-sec_03_dnf_automatic() {
-	should_run 3 || return 0
-	section 3 "Automatic security updates"
+sec_02_dnf_automatic() {
+	should_run 2 || return 0
+	section 2 "Automatic security updates"
 
 	# rpm-ostree (image-based) systems; Universal Blue keeps its own updater.
 	if ((IS_OSTREE)); then
@@ -4163,7 +4483,7 @@ sec_03_dnf_automatic() {
 	# the equivalent is masking the rpm-ostree-countme timer.
 	local dnf_conf="/etc/dnf/dnf.conf"
 	if ((IS_OSTREE)); then
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			# The mask is a symlink in /etc; journaled so --rollback unmasks it.
 			backup_file /etc/systemd/system/rpm-ostree-countme.timer || return 0
 			if systemctl mask rpm-ostree-countme.timer 2>/dev/null; then
@@ -4175,7 +4495,7 @@ sec_03_dnf_automatic() {
 			info "Would mask rpm-ostree-countme.timer"
 		fi
 	elif [[ -f "$dnf_conf" ]]; then
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			backup_file "$dnf_conf" || return 0
 			if grep -qE '^\s*countme\s*=' "$dnf_conf" 2>/dev/null; then
 				sed -i 's|^\s*countme\s*=.*|countme=false|' "$dnf_conf" 2>/dev/null || true
@@ -4192,14 +4512,127 @@ sec_03_dnf_automatic() {
 }
 
 # ============================================================================
-#  SECTION 4 — SELinux
+#  SECTION 3 — Secure Boot verification
 # ============================================================================
-# sec_04_selinux() - Verify SELinux is enforcing and install tools
+# sec_03_secureboot() - Verify Secure Boot is enabled
+# Confirms UEFI Secure Boot is active. GRUB password is manual task.
+sec_03_secureboot() {
+	should_run 3 || return 0
+	section 3 "Secure Boot verification"
+	if ! cmd_exists mokutil; then
+		ensure_command_dep mokutil "Secure Boot verification" mokutil || true
+	fi
+	if cmd_exists mokutil; then
+		local sb
+		sb="$(mokutil --sb-state 2>/dev/null || true)"
+		info "$sb"
+		if grep -qi "enabled" <<<"$sb"; then
+			ok "Secure Boot is enabled."
+		else
+			warn "Secure Boot is NOT enabled. Enable it in UEFI firmware settings."
+		fi
+	else
+		warn "mokutil is unavailable after dependency checks — cannot verify Secure Boot state."
+	fi
+	if ((GUI_FULL_MODE)); then
+		gui_alert info "GRUB password setup (guide section 3b) is manual.\n\nRun: sudo grub2-mkpasswd-pbkdf2\nThen add password_pbkdf2 lines in /etc/grub.d/40_custom and regenerate grub.cfg."
+	else
+		cat <<'EOF'
+NOTE on GRUB password (guide §3b):
+  Setting a GRUB password requires interactive use of 'grub2-mkpasswd-pbkdf2'.
+  This script does NOT automate it. To do it manually:
+      sudo grub2-mkpasswd-pbkdf2
+      # copy the hash into /etc/grub.d/40_custom as:
+      #   set superusers="root"
+      #   password_pbkdf2 root <HASH>
+      sudo grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg   # UEFI
+      sudo grub2-mkconfig -o /boot/grub2/grub.cfg            # legacy BIOS
+EOF
+	fi
+}
+
+# ============================================================================
+#  SECTION 4 — Flatpak / Flathub
+# ============================================================================
+# sec_04_flatpak() - Configure Flatpak for app sandboxing
+# Installs Flatpak, adds Flathub, and offers Flatseal for permission management.
+# Optionally installs Firejail for sandboxing non-Flatpak applications
+# (inteltechniques.com recommendation); runs firecfg for desktop integration.
+sec_04_flatpak() {
+	should_run 4 || return 0
+	section 4 "Flatpak + Flathub"
+	if ! cmd_exists flatpak; then
+		pkg_install flatpak
+	else
+		info "Flatpak already present."
+	fi
+	run "timeout 120 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" ||
+		warn "Could not add the Flathub remote (network?) — Flatpak installs below may fail."
+	run "timeout 1800 flatpak update -y || true"
+	if confirm "Install Flatseal (graphical Flatpak permission manager)?"; then
+		flatpak_install_or_update flathub com.github.tchx84.Flatseal
+	fi
+
+	# Flatpak's defaults let many apps bypass their sandbox through broad filesystem
+	# access; revoke it globally and let apps use portals (file pickers) instead.
+	# Source: privacyguides.org — Linux Overview (Flatpak) and "Linux Application
+	# Sandboxing" (revoke filesystem=host / filesystem=home). Re-grant per app with
+	# Flatseal or `flatpak override --filesystem=...`; undo all: --rollback.
+	if cmd_exists flatpak; then
+		local fp_global="/var/lib/flatpak/overrides/global"
+		if confirm "Block Flatpak apps from reading the whole system (host, host-os, host-etc)?"; then
+			backup_file "$fp_global" || return 0
+			if run "flatpak override --system --nofilesystem=host --nofilesystem=host-os --nofilesystem=host-etc"; then
+				ok "Flatpak apps can no longer read the host filesystem (portals still work)."
+			else
+				warn "Could not set the global Flatpak override."
+			fi
+		fi
+		# Home-directory access is needed by more apps (editors, IDEs), so it is opt-in.
+		if confirm "Also block Flatpak apps from your home directory? (apps then use file portals; some may need a per-app exception)" no; then
+			backup_file "$fp_global" || return 0
+			run "flatpak override --system --nofilesystem=home" &&
+				ok "Flatpak apps can no longer read your home directory."
+		fi
+	fi
+
+	# Metadata removal for files you share (photos, PDFs, documents).
+	# Source: inteltechniques.com — Extreme Privacy (mat2).
+	# Image-based systems get the Flatpak (it uses mat2) instead of a layered package.
+	if ((IS_OSTREE)); then
+		if cmd_exists flatpak && confirm "Install Metadata Cleaner (Flatpak; removes metadata such as GPS location from files before sharing)?"; then
+			flatpak_install_or_update flathub io.gitlab.metadatacleaner.metadatacleaner
+		fi
+	elif confirm "Install mat2 (remove metadata such as GPS location from files before sharing)?"; then
+		pkg_install mat2
+	fi
+
+	# Firejail is opt-in and off under --yes: privacyguides.org's "Linux Application
+	# Sandboxing" notes it is a large setuid binary with a large attack surface that
+	# can weaken security. Prefer Flatpak apps with tightened permissions.
+	if confirm "Install Firejail? (not recommended by privacyguides.org: setuid sandbox with a large attack surface)" no; then
+		pkg_install firejail
+		unset '_CMD_CACHE[firecfg]' # Invalidate stale cache after install
+		if cmd_exists firecfg; then
+			info "Running firecfg to create desktop integration symlinks..."
+			run "firecfg || true"
+			ok "Firejail installed. Run 'firecfg --list' to see sandboxed apps."
+		fi
+	fi
+
+	add_action_item 4 MEDIUM "FLATPAK_PERMISSIONS" \
+		"Review each Flatpak app in Flatseal: remove network, device=all, PulseAudio, X11 (for Wayland-native apps) and org.freedesktop.secrets access where an app does not need it (privacyguides.org)."
+}
+
+# ============================================================================
+#  SECTION 5 — SELinux
+# ============================================================================
+# sec_05_selinux() - Verify SELinux is enforcing and install tools
 # Confirms SELinux is in enforcing mode; installs debugging and management tools
 # (policycoreutils, selinux-policy-devel). Logs policy violations.
-sec_04_selinux() {
-	should_run 4 || return 0
-	section 4 "SELinux (verify enforcing + install tools)"
+sec_05_selinux() {
+	should_run 5 || return 0
+	section 5 "SELinux (verify enforcing + install tools)"
 	local mode cfg="/etc/selinux/config" cfg_mode=""
 	mode="$(getenforce 2>/dev/null || echo unknown)"
 	[[ -f "$cfg" ]] && cfg_mode="$(awk -F= '/^[[:space:]]*SELINUX=/{print $2; exit}' "$cfg")"
@@ -4228,7 +4661,7 @@ sec_04_selinux() {
 			# Config already enables SELinux, so it is disabled at runtime by the kernel
 			# command line (selinux=0) or the environment (containers).
 			warn "SELinux is disabled at runtime although $cfg says SELINUX=$cfg_mode."
-			add_action_item 4 HIGH "SELINUX_DISABLED_RUNTIME" \
+			add_action_item 5 HIGH "SELINUX_DISABLED_RUNTIME" \
 				"SELinux is disabled at boot. Remove the kernel argument: sudo grubby --update-kernel ALL --remove-args selinux — then reboot (a relabel may run)."
 		elif [[ -f "$cfg" ]]; then
 			# Going straight from disabled to enforcing can leave the system unbootable:
@@ -4244,11 +4677,11 @@ sec_04_selinux() {
 			else
 				warn "Could not create /.autorelabel"
 			fi
-			add_action_item 4 HIGH "SELINUX_ENABLE_ENFORCING" \
+			add_action_item 5 HIGH "SELINUX_ENABLE_ENFORCING" \
 				"Reboot to relabel the filesystem in permissive mode, check 'sudo ausearch -m avc -ts boot', then: sudo setenforce 1 && sudo sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config"
 		else
 			warn "$cfg not found — cannot enable SELinux."
-			add_action_item 4 HIGH "SELINUX_CONFIG_MISSING" "Install selinux-policy-targeted and configure /etc/selinux/config"
+			add_action_item 5 HIGH "SELINUX_CONFIG_MISSING" "Install selinux-policy-targeted and configure /etc/selinux/config"
 		fi
 		;;
 	*)
@@ -4257,7 +4690,7 @@ sec_04_selinux() {
 	esac
 	if ((IS_OSTREE)); then
 		pkg_install setroubleshoot-server
-		info "seinfo/sesearch (setools) are in the $TOOLS_BOX box on image-based systems (section 23)."
+		info "seinfo/sesearch (setools) are in the $TOOLS_BOX box on image-based systems (section 18)."
 	else
 		pkg_install setools-console setroubleshoot-server
 	fi
@@ -4336,28 +4769,28 @@ firewalld_add_service() {
 	fi
 	if ((ec == 101)) || [[ "${out}" == *"INVALID_SERVICE"* ]]; then
 		warn "firewalld: service '${svc}' not recognised — skipping. (${out})"
-		add_action_item "5" "MEDIUM" "FW_INVALID_SVC_${svc^^}" \
+		add_action_item "6" "MEDIUM" "FW_INVALID_SVC_${svc^^}" \
 			"firewalld service '${svc}' is not registered. Create /etc/firewalld/services/${svc}.xml then run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent && firewall-cmd --reload"
 		return 1
 	fi
 	warn "${fw} --add-service=${svc} failed (exit ${ec}): ${out}"
-	add_action_item "5" "HIGH" "FW_ADD_SVC_FAILED_${svc^^}" \
+	add_action_item "6" "HIGH" "FW_ADD_SVC_FAILED_${svc^^}" \
 		"Could not allow '${svc}' in zone '${zone}' — run: sudo firewall-cmd --zone=${zone} --add-service=${svc} --permanent && sudo firewall-cmd --reload"
 	return 1
 }
 
 # ============================================================================
-#  SECTION 5 — firewalld
+#  SECTION 6 — firewalld
 # ============================================================================
-# sec_05_firewalld() - Harden firewalld with drop-default policy
+# sec_06_firewalld() - Harden firewalld with drop-default policy
 # Sets default policy to DROP, allows minimal services, enables logging
-sec_05_firewalld() {
-	should_run 5 || return 0
-	section 5 "firewalld — drop-by-default with explicit allow-list"
+sec_06_firewalld() {
+	should_run 6 || return 0
+	section 6 "firewalld — drop-by-default with explicit allow-list"
 	# firewalld filters inbound traffic. To see and block what apps send OUT,
 	# inteltechniques.com (2026 OS Telemetry Guide) recommends the OpenSnitch
 	# application firewall. It is not in Fedora's repositories, so it is only suggested.
-	add_action_item 5 LOW "OUTBOUND_APP_FIREWALL" \
+	add_action_item 6 LOW "OUTBOUND_APP_FIREWALL" \
 		"Optional: OpenSnitch shows and blocks outbound connections per application (inteltechniques.com). It is not packaged by Fedora; install it from https://github.com/evilsocket/opensnitch/releases only if you accept a third-party package."
 	pkg_install firewalld
 	run "systemctl enable --now firewalld" || warn "systemctl enable --now firewalld failed — checking daemon state."
@@ -4377,7 +4810,7 @@ sec_05_firewalld() {
 	done
 	FW_OFFLINE=0
 	if ((max_attempts > 0 && attempt >= max_attempts)); then
-		add_action_item 5 HIGH "FIREWALLD_NOT_RUNNING" \
+		add_action_item 6 HIGH "FIREWALLD_NOT_RUNNING" \
 			"firewalld is installed but not running. Diagnose with 'journalctl -u firewalld', then run: sudo systemctl enable --now firewalld"
 		if cmd_exists firewall-offline-cmd; then
 			warn "firewalld is not running — writing permanent configuration with firewall-offline-cmd (applies when firewalld starts)."
@@ -4394,13 +4827,13 @@ sec_05_firewalld() {
 	tool_dir_end /etc/firewalld
 }
 
-# _firewalld_configure() - Section 5: default zone, allowed services, logging.
+# _firewalld_configure() - Section 6: default zone, allowed services, logging.
 _firewalld_configure() {
 	# Set default zone and configure services (batch permanent operations)
 	info "Setting default zone to 'drop'..."
 	if ! run "$(fw_cmd) --set-default-zone=drop"; then
 		warn "Could not set the default firewalld zone to 'drop'."
-		add_action_item 5 HIGH "FIREWALL_DEFAULT_ZONE" "Set the default zone manually: sudo firewall-cmd --set-default-zone=drop"
+		add_action_item 6 HIGH "FIREWALL_DEFAULT_ZONE" "Set the default zone manually: sudo firewall-cmd --set-default-zone=drop"
 	fi
 
 	local svc services_to_allow=()
@@ -4423,7 +4856,7 @@ _firewalld_configure() {
 			firewalld_ensure_service "steam-remote-play" "Steam Remote Play" \
 				"27031/tcp" "27036/tcp" "27031/udp" "27032/udp" "27033/udp" "27034/udp" "27035/udp" "27036/udp"
 			services_to_allow+=("steam-remote-play")
-			add_action_item 5 LOW "GAMING_FIREWALL_REVIEW" \
+			add_action_item 6 LOW "GAMING_FIREWALL_REVIEW" \
 				"Bazzite/gaming spin: review firewall zone after game installs (Steam, Heroic, etc. may request additional ports)."
 		else
 			info "Skipping Steam Remote Play ports — add manually if needed."
@@ -4450,50 +4883,10 @@ _firewalld_configure() {
 	fi
 	if ! run "firewall-cmd --reload"; then
 		err "firewall-cmd --reload failed; firewall rules may not be active"
-		add_action_item 5 HIGH "FIREWALL_RELOAD_FAILED" "Manually reload firewall: sudo firewall-cmd --reload"
+		add_action_item 6 HIGH "FIREWALL_RELOAD_FAILED" "Manually reload firewall: sudo firewall-cmd --reload"
 	fi
 	run "firewall-cmd --list-all || true"
 	ok "firewalld configured."
-}
-
-# ============================================================================
-#  SECTION 6 — Secure Boot verification
-# ============================================================================
-# sec_06_secureboot() - Verify Secure Boot is enabled
-# Confirms UEFI Secure Boot is active. GRUB password is manual task.
-sec_06_secureboot() {
-	should_run 6 || return 0
-	section 6 "Secure Boot verification"
-	if ! cmd_exists mokutil; then
-		ensure_command_dep mokutil "Secure Boot verification" mokutil || true
-	fi
-	if cmd_exists mokutil; then
-		local sb
-		sb="$(mokutil --sb-state 2>/dev/null || true)"
-		info "$sb"
-		if grep -qi "enabled" <<<"$sb"; then
-			ok "Secure Boot is enabled."
-		else
-			warn "Secure Boot is NOT enabled. Enable it in UEFI firmware settings."
-		fi
-	else
-		warn "mokutil is unavailable after dependency checks — cannot verify Secure Boot state."
-	fi
-	if ((GUI_FULL_MODE)); then
-		gui_alert info "GRUB password setup (guide section 6b) is manual.\n\nRun: sudo grub2-mkpasswd-pbkdf2\nThen add password_pbkdf2 lines in /etc/grub.d/40_custom and regenerate grub.cfg."
-	else
-		cat <<'EOF'
-NOTE on GRUB password (guide §6b):
-  Setting a GRUB password requires interactive use of 'grub2-mkpasswd-pbkdf2'.
-  This script does NOT automate it. To do it manually:
-      sudo grub2-mkpasswd-pbkdf2
-      # copy the hash into /etc/grub.d/40_custom as:
-      #   set superusers="root"
-      #   password_pbkdf2 root <HASH>
-      sudo grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg   # UEFI
-      sudo grub2-mkconfig -o /boot/grub2/grub.cfg            # legacy BIOS
-EOF
-	fi
 }
 
 # ============================================================================
@@ -4504,13 +4897,10 @@ EOF
 sec_07_ssh() {
 	should_run 7 || return 0
 	section 7 "SSH hardening"
+	# No SSH server, nothing to harden: installing one would add a service to expose.
 	if ! pkg_cached openssh-server; then
-		warn "openssh-server is missing; attempting dependency install for section 7."
-		pkg_install openssh-server || true
-		pkg_cached openssh-server || {
-			warn "openssh-server is still unavailable; skipping SSH hardening."
-			return 0
-		}
+		info "No SSH server installed — nothing to harden (section 7 skipped)."
+		return 0
 	fi
 
 	if ! confirm "You are about to harden sshd (disables passwords, root login, limits users). Continue?"; then
@@ -4624,7 +5014,7 @@ ${allow_users_line}"
 	fi
 	ok "sshd -t: configuration valid."
 
-	if ((!changed)); then
+	if ((! changed)); then
 		info "sshd configuration unchanged — no restart needed."
 	elif systemctl is-active --quiet sshd 2>/dev/null; then
 		if ! run "systemctl restart sshd"; then
@@ -4641,102 +5031,40 @@ ${allow_users_line}"
 }
 
 # ============================================================================
-#  SECTION 8 — USBGuard
+#  SECTION 8 — Password & PAM policy
 # ============================================================================
-# sec_08_usbguard() - Install and configure USBGuard
-# Configures device control policy; note: can lock out input devices if misconfigured.
-sec_08_usbguard() {
-	should_run 8 || return 0
-	section 8 "USBGuard — ⚠ BE CAREFUL ⚠"
-	if ((GUI_FULL_MODE)); then
-		gui_alert warning "USBGuard can block unapproved USB devices, including keyboard/mouse.\n\nBefore continuing, connect all required USB devices and ensure you have an alternate recovery path."
-	else
-		cat <<'EOF'
-USBGuard will block every USB device that isn't in its policy file,
-including your keyboard and mouse if they are USB. The policy is generated
-from currently connected devices, so BEFORE continuing:
-
-  1. Plug in every USB device you use (keyboard, mouse, webcam, YubiKey...)
-  2. Have a way to reach the machine without USB input if possible (serial,
-     SSH from another host, PS/2 keyboard, etc.) in case the policy misfires.
-
-You can later manage devices with:
-  sudo usbguard list-devices
-  sudo usbguard allow-device <ID> [--permanent]
-EOF
-	fi
-	if ! confirm "Install and enable USBGuard with the current devices whitelisted?"; then
-		info "Skipped USBGuard."
-		return 0
-	fi
-
-	pkg_install usbguard usbguard-tools
-	if ((DRY_RUN)); then
-		info "Would generate policy: usbguard generate-policy > /etc/usbguard/rules.conf"
-	else
-		umask 077
-		local tmp_usbguard="/tmp/usbguard-rules-$$-$RANDOM-$SECONDS.conf"
-		register_tmp "$tmp_usbguard"
-		if ! usbguard generate-policy >"$tmp_usbguard" 2>/dev/null; then
-			warn "usbguard generate-policy failed — daemon may not be running yet or no USB devices enumerable."
-			rm -f "$tmp_usbguard" 2>/dev/null || true
-			add_action_item 8 HIGH "USBGUARD_POLICY_MISSING" \
-				"USBGuard policy not generated — reboot, plug in all USB devices, then run: sudo usbguard generate-policy > /etc/usbguard/rules.conf && sudo systemctl enable --now usbguard"
-			return 0
-		fi
-		backup_file /etc/usbguard/rules.conf
-		if ! install -m 0600 -o root -g root "$tmp_usbguard" /etc/usbguard/rules.conf 2>/dev/null; then
-			warn "Failed to install USBGuard rules (filesystem may be read-only)"
-			rm -f "$tmp_usbguard" 2>/dev/null || true
-			add_action_item 8 HIGH "USBGUARD_INSTALL_FAILED" \
-				"USBGuard rules could not be written — run: sudo install -m 0600 /tmp/usbguard-rules.conf /etc/usbguard/rules.conf"
-			return 0
-		fi
-		rm -f "$tmp_usbguard" 2>/dev/null || true
-		ok "Wrote /etc/usbguard/rules.conf (0600 root:root)"
-	fi
-	run "systemctl enable --now usbguard || true"
-
-	if pkg_cached plasma-workspace; then
-		if confirm "Install graphical USBGuard notifier (usbguard-notifier)?"; then
-			pkg_install usbguard-notifier || true
-		fi
-	fi
-}
-
-# ============================================================================
-#  SECTION 9 — Password & PAM policy
-# ============================================================================
-# sec_09_pam() - Configure PAM policy
+# sec_08_pam() - Configure PAM policy
 # Sets password quality, account lockout, aging rules via pwquality and faillock.
-sec_09_pam() {
-	should_run 9 || return 0
-	section 9 "Password quality + account lockout + aging"
+sec_08_pam() {
+	should_run 8 || return 0
+	section 8 "Password quality + account lockout"
 
-	# 9a pwquality (each key: replace active value, uncomment default, or append)
+	# 8a pwquality, per NIST SP 800-63B: length matters, composition rules and forced
+	# periodic changes do not (they lead to predictable passwords). Credits and
+	# minclass are set to 0 so an older run's composition rules are lifted too.
 	local pq="/etc/security/pwquality.conf" kv
-	local -a pq_settings=(minlen=14 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1 minclass=3
+	local -a pq_settings=(minlen=15 ucredit=0 lcredit=0 dcredit=0 ocredit=0 minclass=0
 		dictcheck=1 usercheck=1 gecoscheck=1 retry=3 "badwords=admin root password")
 	backup_file "$pq" || return 0
 	for kv in "${pq_settings[@]}"; do
 		set_conf_key "$pq" "${kv%%=*}" "${kv#*=}" || true
 	done
-	if ((!DRY_RUN)); then
-		if grep -qE '^minlen = 14$' "$pq" && grep -qE '^minclass = 3$' "$pq"; then
-			ok "Applied pwquality policy in $pq"
+	if ((! DRY_RUN)); then
+		if grep -qE '^minlen = 15$' "$pq" && grep -qE '^minclass = 0$' "$pq"; then
+			ok "Applied pwquality policy in $pq (at least 15 characters, no composition rules)"
 		else
 			warn "pwquality policy could not be fully applied to $pq"
-			add_action_item 9 HIGH "PWQUALITY_NOT_APPLIED" "Set minlen = 14 and minclass = 3 in $pq"
+			add_action_item 8 HIGH "PWQUALITY_NOT_APPLIED" "Set minlen = 15 and minclass = 0 in $pq"
 		fi
 	fi
 
-	# 9b faillock
+	# 8b faillock
 	local fl="/etc/security/faillock.conf"
 	if [[ -f "$fl" ]]; then
 		backup_file "$fl" || return 0
 		set_conf_key "$fl" deny 5 || true
 		set_conf_key "$fl" unlock_time 900 || true
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			# even_deny_root is a bare flag; uncomment it or append it
 			if ! grep -qE '^[[:space:]]*even_deny_root[[:space:]]*$' "$fl"; then
 				if grep -qE '^[[:space:]]*#[[:space:]]*even_deny_root[[:space:]]*$' "$fl"; then
@@ -4751,50 +5079,29 @@ sec_09_pam() {
 		warn "$fl not found — faillock policy not applied."
 	fi
 
-	# 9c login.defs (whitespace-separated keys)
-	local ld="/etc/login.defs"
-	if [[ -f "$ld" ]]; then
-		backup_file "$ld" || return 0
-		set_conf_key "$ld" PASS_MAX_DAYS 90 "   " || true
-		set_conf_key "$ld" PASS_MIN_DAYS 1 "   " || true
-		set_conf_key "$ld" PASS_WARN_AGE 14 "   " || true
-		((DRY_RUN)) || ok "Set PASS_MAX_DAYS=90, PASS_MIN_DAYS=1, PASS_WARN_AGE=14 in $ld (applies to new accounts)"
-	fi
-	if [[ -n "$TARGET_USER" ]]; then
-		# Journal the previous ageing values (not /etc/shadow itself: restoring the
-		# file would also undo password changes made after the run).
-		local old_age
-		old_age="$(getent shadow "$TARGET_USER" 2>/dev/null | cut -d: -f4-6)"
-		if run "chage -M 90 -m 1 -W 14 '$TARGET_USER'"; then
-			[[ -n "$old_age" ]] && record_change CHAGE "$TARGET_USER:$old_age"
-		else
-			warn "chage failed for $TARGET_USER"
-		fi
-		run "chage -l '$TARGET_USER'" || true
-	else
-		warn "No target user — skipping 'chage' password-aging apply."
-	fi
+	# No forced password expiry (NIST SP 800-63B): login.defs and account ageing are
+	# left as Fedora ships them.
 }
 
 # ============================================================================
-#  SECTION 10 — Kernel sysctl
+#  SECTION 9 — Kernel sysctl
 # ============================================================================
-# sec_10_sysctl() - Apply kernel sysctl hardening
+# sec_09_sysctl() - Apply kernel sysctl hardening
 # Hardens network, VM, filesystem, memory protections via kernel parameters.
 # Covers: network spoofing/ICMP/redirect/forwarding mitigations, ASLR (randomize_va_space +
 # mmap_rnd_bits), BPF JIT hardening, kexec disable, ptrace restriction, sysrq disable,
 # TCP timestamp privacy, IPv6 privacy extensions, and core dump suppression.
 # Based on Madaidan's Linux Hardening Guide (linked by privacyguides.org).
-sec_10_sysctl() {
-	should_run 10 || return 0
-	section 10 "Kernel & network sysctl hardening"
+sec_09_sysctl() {
+	should_run 9 || return 0
+	section 9 "Kernel & network sysctl hardening"
 	local f="/etc/sysctl.d/99-hardening.conf"
 	if ((DRY_RUN)); then
 		info "Would write $f with guide's full sysctl set"
 	else
 		install -d -m 755 /etc/sysctl.d 2>/dev/null || true
 		backup_file "$f" || return 0
-		if ! cat 2>/dev/null >"$f" <<'EOF'; then
+		if ! cat 2>/dev/null >"$f" <<'EOF'
 # /etc/sysctl.d/99-hardening.conf
 # Installed by fedora-harden.sh
 
@@ -4862,8 +5169,7 @@ kernel.randomize_va_space = 2
 vm.mmap_rnd_bits = 32
 vm.mmap_rnd_compat_bits = 16
 
-kernel.pid_max = 65536
-
+# Core dumps of setuid programs are not written (they can contain secrets).
 fs.suid_dumpable = 0
 fs.protected_fifos = 2
 fs.protected_regular = 2
@@ -4878,18 +5184,21 @@ net.ipv6.conf.default.use_tempaddr = 2
 # ── Network Privacy ───────────────────────────────────────────────────
 # Disable TCP timestamps to reduce remote clock-skew fingerprinting
 net.ipv4.tcp_timestamps = 0
-
-# ── Core Dump Suppression ─────────────────────────────────────────────
-# Route core dumps to /bin/false so they are silently discarded
-kernel.core_pattern = |/bin/false
 EOF
+		then
 			err "Failed to write sysctl configuration"
-			add_action_item 10 HIGH "SYSCTL_WRITE_FAILED" "Could not write $f — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 10"
+			add_action_item 9 HIGH "SYSCTL_WRITE_FAILED" "Could not write $f — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 9"
 			return 0
 		fi
 		chmod 644 "$f" 2>/dev/null || true
+		# Development: debuggers attach to running programs (ptrace_scope stays at
+		# Fedora's default for the dev use case).
+		if grep -qE '^USE_CASES=.*\bdev\b' /etc/fedora-harden/profile 2>/dev/null; then
+			sed -i 's/^kernel.yama.ptrace_scope = 1$/# kernel.yama.ptrace_scope = 1  (not set: the dev use case attaches debuggers)/' "$f"
+		fi
 		ok "Wrote $f"
 	fi
+	_module_blocklist
 	# sysctl --system exits non-zero if ANY key cannot be applied (key absent on this
 	# kernel, read-only in a container, ...). The drop-in still applies at boot, so
 	# report the rejected keys instead of aborting the remaining sections.
@@ -4898,34 +5207,55 @@ EOF
 		[[ -s "$ERROR_CAPTURE_FILE" ]] &&
 			rejected="$(grep -oE 'key "[^"]+"' "$ERROR_CAPTURE_FILE" | tr -d '"' | sed 's/^key //' | sort -u | paste -sd, - | sed 's/,/, /g')"
 		warn "sysctl --system could not apply some keys${rejected:+: $rejected}"
-		add_action_item 10 MEDIUM "SYSCTL_APPLY_PARTIAL" \
+		add_action_item 9 MEDIUM "SYSCTL_APPLY_PARTIAL" \
 			"Some sysctl keys were rejected by the running kernel${rejected:+ ($rejected)}. Check with: sudo sysctl --system — unsupported keys can be removed from $f"
 	fi
 	run "sysctl kernel.kptr_restrict || true"
+	_kernel_boot_hardening
+}
+
+# _module_blocklist - 9b: rarely used kernel modules are a common source of kernel
+# security holes, and Fedora loads them on demand. Block network protocols and
+# filesystems a desktop does not use; a module that is loaded right now is left
+# alone (something on this machine uses it).
+_module_blocklist() {
+	local f=/etc/modprobe.d/fedora-harden-blocklist.conf m out="" loaded
+	loaded="$(cut -d' ' -f1 /proc/modules 2>/dev/null)"
+	for m in dccp sctp rds tipc cramfs freevxfs jffs2 hfs; do
+		grep -qx "$m" <<<"$loaded" && continue
+		out+="install $m /bin/false"$'\n'"blacklist $m"$'\n'
+	done
+	[[ -n "$out" ]] || return 0
+	write_new_file "$f" 0644 <<MODS || return 0
+# Written by fedora-harden.sh (section 9b): kernel modules a desktop does not use.
+# To use one again, remove its two lines (or run --rollback).
+${out%$'\n'}
+MODS
+	ok "Blocked unused kernel modules: $f"
 }
 
 # ============================================================================
-#  SECTION 11 — auditd
+#  SECTION 10 — auditd
 # ============================================================================
-# sec_11_auditd() - Configure auditd audit rules
+# sec_10_auditd() - Configure auditd audit rules
 # Tracks identity changes, privilege escalation, kernel module loading, time
 # changes, network configuration edits, filesystem mounts, and file deletions
 # per inteltechniques.com recommendations. Covers NIST/CIS baseline events.
-sec_11_auditd() {
-	should_run 11 || return 0
-	section 11 "auditd rules"
+sec_10_auditd() {
+	should_run 10 || return 0
+	section 10 "auditd rules"
 	pkg_install audit audit-libs
 	# Without the audit tools there is nothing to load the rules into; say so plainly
 	# instead of failing later with a misleading "check the rules" message.
-	if ((!DRY_RUN)) && ! cmd_exists augenrules; then
+	if ((! DRY_RUN)) && ! cmd_exists augenrules; then
 		warn "The audit package is not installed (and could not be installed) — skipping audit rules."
-		add_action_item 11 HIGH "AUDIT_NOT_INSTALLED" \
-			"Install the audit tools, then re-run section 11: sudo dnf install audit && sudo ./fedora-harden.sh --only 11"
+		add_action_item 10 HIGH "AUDIT_NOT_INSTALLED" \
+			"Install the audit tools, then re-run section 10: sudo dnf install audit && sudo ./fedora-harden.sh --only 10"
 		return 0
 	fi
 	if ! run "systemctl enable --now auditd"; then
 		warn "auditd could not be started (kernel booted with audit=0, or running in a container?)."
-		add_action_item 11 HIGH "AUDITD_NOT_RUNNING" \
+		add_action_item 10 HIGH "AUDITD_NOT_RUNNING" \
 			"auditd is not running — check 'journalctl -u auditd' and that the kernel was not booted with audit=0, then: sudo systemctl enable --now auditd"
 	fi
 
@@ -4934,7 +5264,7 @@ sec_11_auditd() {
 		info "Would write $rules"
 	else
 		backup_file "$rules" || return 0
-		if ! cat 2>/dev/null >"$rules" <<'EOF'; then
+		if ! cat 2>/dev/null >"$rules" <<'EOF'
 -D
 -b 8192
 -f 1
@@ -4986,14 +5316,17 @@ sec_11_auditd() {
 # File system mounts (inteltechniques.com)
 -a always,exit -F arch=b64 -S mount -k mounts
 
-# File deletion by users (inteltechniques.com)
--a always,exit -F arch=b64 -S unlink,unlinkat,rename,renameat -F auid>=1000 -F auid!=4294967295 -k delete
+# Files deleted or renamed by users under /etc (inteltechniques.com). Limited to
+# /etc: logging every delete everywhere floods the log during builds, browser
+# cache churn and game updates for little value.
+-a always,exit -F arch=b64 -S unlink,unlinkat,rename,renameat -F dir=/etc -F auid>=1000 -F auid!=4294967295 -k delete
 
 # Uncomment to lock the ruleset at boot (requires reboot to change):
 # -e 2
 EOF
+		then
 			warn "Failed to write $rules (filesystem may be read-only)"
-			add_action_item 11 HIGH "AUDIT_RULES_WRITE_FAILED" "Could not write $rules — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 11"
+			add_action_item 10 HIGH "AUDIT_RULES_WRITE_FAILED" "Could not write $rules — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 10"
 			return 0
 		fi
 		chmod 640 "$rules" 2>/dev/null || true
@@ -5015,13 +5348,13 @@ EOF
 		warn "auditd restart failed — rules load on next boot (see 'journalctl -u auditd')."
 }
 
-# _ostree_integrity() - Section 12 on image-based systems. /usr comes from the image
-# and is read-only, so AIDE and rkhunter would mostly re-check what the image
+# _ostree_integrity() - Section 24 on image-based systems. /usr comes from the image
+# and is read-only, so AIDE would mostly re-check what the image
 # already guarantees. What matters is that the booted image is signature-verified
 # and what changed in /etc, the only mutable system configuration. Uses only tools
 # already in the image (rpm-ostree, ostree); layers nothing.
 _ostree_integrity() {
-	section 12 "File integrity (image signature + /etc changes)"
+	section 24 "File integrity (image signature + /etc changes)"
 	local booted
 	booted="$(rpm-ostree status --booted 2>/dev/null | awk '$1 == "●" {print $2; exit}' || true)"
 	case "$booted" in
@@ -5034,7 +5367,7 @@ _ostree_integrity() {
 		;;
 	ostree-unverified-*)
 		warn "Booted image is not signature-verified: $booted"
-		add_action_item 12 HIGH "IMAGE_UNSIGNED" \
+		add_action_item 24 HIGH "IMAGE_UNSIGNED" \
 			"The booted image ($booted) is not signature-verified. Rebase to its ostree-image-signed: reference as documented by the image (rpm-ostree rebase ostree-image-signed:docker://...)."
 		;;
 	"")
@@ -5049,7 +5382,7 @@ _ostree_integrity() {
 	info "Tracking /etc changes: a weekly check logs files changed since this run (tag fedora-harden-etc)."
 	write_new_file "$checker" 0755 <<'EOF' || return 0
 #!/bin/sh
-# Written by fedora-harden.sh (section 12): report /etc files changed since the
+# Written by fedora-harden.sh (section 24): report /etc files changed since the
 # baseline recorded at the end of the hardening run. Exits 1 when there are
 # changes, so the unit shows as failed (systemctl --failed) until reviewed.
 # Accept the current state as the new baseline:
@@ -5087,7 +5420,7 @@ EOF
 	enable_timer fedora-harden-etc-check.timer ||
 		warn "Could not enable fedora-harden-etc-check.timer (journalctl -u fedora-harden-etc-check)."
 	ETC_BASELINE_PENDING=1
-	add_action_item 12 LOW "ETC_CHANGE_TRACKING" \
+	add_action_item 24 LOW "ETC_CHANGE_TRACKING" \
 		"Weekly /etc change report: journalctl -t fedora-harden-etc. After intended changes, accept them: sudo sh -c 'ostree admin config-diff | sort > /var/lib/fedora-harden/etc-baseline.txt'"
 }
 
@@ -5115,226 +5448,22 @@ record_etc_baseline() {
 }
 
 # ============================================================================
-#  SECTION 12 — rkhunter + AIDE
+#  SECTION 11 — DNS over TLS
 # ============================================================================
-# sec_12_ids() - Install intrusion and file integrity detection
-# Installs rkhunter for rootkit detection and AIDE for file integrity monitoring.
-sec_12_ids() {
-	should_run 12 || return 0
-	if ((IS_OSTREE)); then
-		_ostree_integrity
-		return 0
-	fi
-	section 12 "rkhunter + AIDE"
-
-	pkg_install rkhunter aide
-
-	local rk_tmp="/tmp/rkhunter-out-$$.tmp" rk_warn_count=0 rk_scanned=0 cron_rk="/etc/cron.daily/rkhunter-scan"
-	register_tmp "$rk_tmp"
-
-	if cmd_exists rkhunter; then
-		# rkhunter: update signatures then run scan with output capture
-		run "rkhunter --update || true"
-		run "rkhunter --propupd" || warn "rkhunter --propupd failed — run it manually after fixing the reported issue."
-		info "Running initial rkhunter scan (this takes a minute)..."
-		if ((!DRY_RUN)); then
-			log "[RUN]   rkhunter --check --sk --rwo"
-			if ((GUI_FULL_MODE)); then
-				rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" | log_stream || true
-			else
-				rkhunter --check --sk --rwo 2>&1 | tee "$rk_tmp" || true
-			fi
-			rk_warn_count="$(awk '/^\[ Warning \]/{count++} END{print count+0}' "$rk_tmp" 2>/dev/null || echo 0)"
-			rk_scanned=1
-		else
-			run "rkhunter --check --sk --rwo || true"
-		fi
-
-		# Daily cron
-		if ((!DRY_RUN)); then
-			backup_file "$cron_rk" || return 0
-			if ! cat 2>/dev/null >"$cron_rk" <<'CRONEOF'; then
-#!/bin/bash
-/usr/bin/rkhunter --cronjob --update --quiet
-CRONEOF
-				warn "Failed to write $cron_rk"
-			else
-				chmod 755 "$cron_rk" 2>/dev/null || true
-				ok "Wrote $cron_rk"
-			fi
-		fi
-	elif ((DRY_RUN)); then
-		info "rkhunter is not installed yet — a real run installs it, then updates signatures and scans."
-	elif ((IS_OSTREE)); then
-		warn "rkhunter not yet active (staged for next boot on rpm-ostree) — skipping scan; cron will run after reboot."
-		add_action_item 12 MEDIUM "RK_REBOOT_REQUIRED" \
-			"rkhunter staged but not active — reboot then run: sudo rkhunter --propupd && sudo rkhunter --check --sk --rwo"
-	else
-		warn "rkhunter is unavailable after the install attempt — skipping scan."
-		add_action_item 12 MEDIUM "RK_INSTALL_FAILED" "Install rkhunter manually: sudo dnf install -y rkhunter"
-	fi
-
-	# AIDE: initialize database
-	local cron_aide="/etc/cron.weekly/aide-check"
-	if cmd_exists aide; then
-		info "Initializing AIDE database (this can take several minutes)..."
-		if run "aide --init"; then
-			if ((!DRY_RUN)) && [[ -f /var/lib/aide/aide.db.new.gz ]]; then
-				run "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz" ||
-					warn "Could not move the new AIDE database into place."
-			fi
-		else
-			warn "aide --init failed."
-			add_action_item 12 MEDIUM "AIDE_INIT_FAILED" \
-				"AIDE database initialisation failed — run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
-		fi
-	elif ((DRY_RUN)); then
-		info "aide is not installed yet — a real run installs it and initializes the database."
-	elif ((IS_OSTREE)); then
-		warn "aide not yet active (staged for next boot on rpm-ostree) — skipping database init."
-		add_action_item 12 MEDIUM "AIDE_REBOOT_REQUIRED" \
-			"aide staged but not active — reboot then run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
-	else
-		warn "aide is unavailable after the install attempt — skipping database init."
-		add_action_item 12 MEDIUM "AIDE_INSTALL_FAILED" "Install AIDE manually: sudo dnf install -y aide"
-	fi
-
-	if cmd_exists aide && ((!DRY_RUN)); then
-		backup_file "$cron_aide" || return 0
-		if ! cat 2>/dev/null >"$cron_aide" <<'CRONEOF'; then
-#!/bin/bash
-/usr/sbin/aide --check 2>&1 | logger -t aide
-CRONEOF
-			warn "Failed to write $cron_aide"
-		else
-			chmod 755 "$cron_aide" 2>/dev/null || true
-			ok "Wrote $cron_aide (results sent to journal via logger)"
-		fi
-		warn "Re-initialize AIDE after legitimate package updates: 'sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
-	fi
-
-	# Write section report to user Downloads/<project>/results/
-	if ((!DRY_RUN)); then
-		{
-			printf '=== Section 12: rkhunter + AIDE Report ===\n'
-			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-			printf -- '--- rkhunter scan output (%d warning(s)) ---\n' "$rk_warn_count"
-			[[ -f "$rk_tmp" ]] && cat "$rk_tmp" || printf '(capture unavailable)\n'
-			printf '\n--- AIDE database status ---\n'
-			if [[ -f /var/lib/aide/aide.db.gz ]]; then
-				printf 'AIDE database: /var/lib/aide/aide.db.gz  [INITIALIZED]\n'
-			else
-				printf 'AIDE database: NOT FOUND — initialization may have failed\n'
-			fi
-			printf '\n--- Cron jobs installed ---\n'
-			printf 'Daily rkhunter:  %s\n' "$cron_rk"
-			printf 'Weekly AIDE:     %s\n' "$cron_aide"
-		} | write_user_report "section-12-rkhunter-aide-${REPORT_DATE}.txt" || true
-	fi
-
-	# Populate actionable items based on findings
-	if ((rk_warn_count > 0)); then
-		warn "rkhunter found $rk_warn_count warning(s) — review the section 12 report."
-		add_action_item 12 HIGH "RK_WARNINGS" \
-			"rkhunter found $rk_warn_count warning(s): investigate flagged files, then run: sudo rkhunter --propupd"
-	else
-		((rk_scanned)) && ok "rkhunter scan: no warnings detected."
-	fi
-	if ((!DRY_RUN)) && [[ ! -f /var/lib/aide/aide.db.gz ]] && cmd_exists aide; then
-		add_action_item 12 HIGH "AIDE_DB_MISSING" \
-			"AIDE database not initialized — run: sudo aide --init && sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
-	fi
-	add_action_item 12 LOW "AIDE_RECHECK" \
-		"Re-initialize AIDE after any future package updates (command in section-12 report)."
-}
-
-# ============================================================================
-#  SECTION 13 — Flatpak / Flathub
-# ============================================================================
-# sec_13_flatpak() - Configure Flatpak for app sandboxing
-# Installs Flatpak, adds Flathub, and offers Flatseal for permission management.
-# Optionally installs Firejail for sandboxing non-Flatpak applications
-# (inteltechniques.com recommendation); runs firecfg for desktop integration.
-sec_13_flatpak() {
-	should_run 13 || return 0
-	section 13 "Flatpak + Flathub"
-	if ! cmd_exists flatpak; then
-		pkg_install flatpak
-	else
-		info "Flatpak already present."
-	fi
-	run "timeout 120 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo" ||
-		warn "Could not add the Flathub remote (network?) — Flatpak installs below may fail."
-	run "timeout 1800 flatpak update -y || true"
-	if confirm "Install Flatseal (graphical Flatpak permission manager)?"; then
-		flatpak_install_or_update flathub com.github.tchx84.Flatseal
-	fi
-
-	# Flatpak's defaults let many apps bypass their sandbox through broad filesystem
-	# access; revoke it globally and let apps use portals (file pickers) instead.
-	# Source: privacyguides.org — Linux Overview (Flatpak) and "Linux Application
-	# Sandboxing" (revoke filesystem=host / filesystem=home). Re-grant per app with
-	# Flatseal or `flatpak override --filesystem=...`; undo all: --rollback.
-	if cmd_exists flatpak; then
-		local fp_global="/var/lib/flatpak/overrides/global"
-		if confirm "Block Flatpak apps from reading the whole system (host, host-os, host-etc)?"; then
-			backup_file "$fp_global" || return 0
-			if run "flatpak override --system --nofilesystem=host --nofilesystem=host-os --nofilesystem=host-etc"; then
-				ok "Flatpak apps can no longer read the host filesystem (portals still work)."
-			else
-				warn "Could not set the global Flatpak override."
-			fi
-		fi
-		# Home-directory access is needed by more apps (editors, IDEs), so it is opt-in.
-		if confirm "Also block Flatpak apps from your home directory? (apps then use file portals; some may need a per-app exception)" no; then
-			backup_file "$fp_global" || return 0
-			run "flatpak override --system --nofilesystem=home" &&
-				ok "Flatpak apps can no longer read your home directory."
-		fi
-	fi
-
-	# Metadata removal for files you share (photos, PDFs, documents).
-	# Source: inteltechniques.com — Extreme Privacy (mat2).
-	# Image-based systems get the Flatpak (it uses mat2) instead of a layered package.
-	if ((IS_OSTREE)); then
-		if cmd_exists flatpak && confirm "Install Metadata Cleaner (Flatpak; removes metadata such as GPS location from files before sharing)?"; then
-			flatpak_install_or_update flathub io.gitlab.metadatacleaner.metadatacleaner
-		fi
-	elif confirm "Install mat2 (remove metadata such as GPS location from files before sharing)?"; then
-		pkg_install mat2
-	fi
-
-	# Firejail is opt-in and off under --yes: privacyguides.org's "Linux Application
-	# Sandboxing" notes it is a large setuid binary with a large attack surface that
-	# can weaken security. Prefer Flatpak apps with tightened permissions.
-	if confirm "Install Firejail? (not recommended by privacyguides.org: setuid sandbox with a large attack surface)" no; then
-		pkg_install firejail
-		unset '_CMD_CACHE[firecfg]' # Invalidate stale cache after install
-		if cmd_exists firecfg; then
-			info "Running firecfg to create desktop integration symlinks..."
-			run "firecfg || true"
-			ok "Firejail installed. Run 'firecfg --list' to see sandboxed apps."
-		fi
-	fi
-
-	add_action_item 13 MEDIUM "FLATPAK_PERMISSIONS" \
-		"Review each Flatpak app in Flatseal: remove network, device=all, PulseAudio, X11 (for Wayland-native apps) and org.freedesktop.secrets access where an app does not need it (privacyguides.org)."
-}
-
-# ============================================================================
-#  SECTION 14 — DNS over TLS
-# ============================================================================
-# sec_14_dot() - Configure DNS over TLS (DoT) + NetworkManager MAC randomization
-# Sets systemd-resolved to use Quad9 and Cloudflare DNS with TLS encryption and
-# DNSSEC validation. Also writes a NetworkManager drop-in (14b) to randomize MAC
-# addresses for Wi-Fi scans and connections, and for Ethernet — per
-# privacyguides.org network-layer privacy guidance.
+# sec_11_dot() - Configure DNS over TLS (DoT) + NetworkManager MAC randomization
+# Sets systemd-resolved to use Quad9 (Swiss non-profit, no IP logging) over TLS with
+# DNSSEC where the network allows it, and stops announcing the host name on the local
+# network (LLMNR off; mDNS off unless the routine's use cases include gaming or
+# creative work, where casting and LAN discovery need it). Also writes a
+# NetworkManager drop-in (11b): a random MAC for Wi-Fi scans and connections, a
+# stable per-network random MAC for Ethernet (home DHCP reservations keep working),
+# and time sync over NTS (11c).
 # Alternative no-log DoT provider (not configured automatically but recommended by
 # privacyguides.org): Mullvad DNS — 194.242.2.2 / dns.mullvad.net — operates under
 # Sweden's strong privacy laws, enforces no-logging, and supports DoT + DoH.
-sec_14_dot() {
-	should_run 14 || return 0
-	section 14 "DNS over TLS via systemd-resolved"
+sec_11_dot() {
+	should_run 11 || return 0
+	section 11 "DNS over TLS via systemd-resolved"
 	# Fedora Workstation/Atomic ship systemd-resolved; Server/minimal installs may not.
 	if ! systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1; then
 		pkg_install systemd-resolved
@@ -5343,32 +5472,39 @@ sec_14_dot() {
 	local dropin="${dropin_dir}/99-hardening.conf"
 	# Back up the drop-in if it already exists (not the base file, which we don't touch)
 	backup_file "$dropin" || return 0
-	if ((!DRY_RUN)); then
+	# Casting and LAN discovery (gaming, creative) need mDNS; otherwise stay quiet.
+	local mdns="MulticastDNS=no"
+	grep -qE '^USE_CASES=.*(gaming|creative)' /etc/fedora-harden/profile 2>/dev/null &&
+		mdns="# MulticastDNS: default (kept for casting and LAN discovery)"
+	if ((! DRY_RUN)); then
 		install -d -m 755 "$dropin_dir" 2>/dev/null || true
-		if ! cat 2>/dev/null >"$dropin" <<'EOF'; then
+		if ! cat 2>/dev/null >"$dropin" <<EOF
 [Resolve]
-DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 1.1.1.1#cloudflare-dns.com
+DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 2620:fe::fe#dns.quad9.net 2620:fe::9#dns.quad9.net
 FallbackDNS=149.112.112.112#dns.quad9.net
 DNSOverTLS=yes
-DNSSEC=yes
+DNSSEC=allow-downgrade
+LLMNR=no
+$mdns
 EOF
+		then
 			err "Failed to write DNS-over-TLS configuration"
-			add_action_item 14 HIGH "DOT_WRITE_FAILED" "Could not write $dropin — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 14"
+			add_action_item 11 HIGH "DOT_WRITE_FAILED" "Could not write $dropin — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 11"
 			return 0
 		fi
 		ok "Wrote $dropin"
-		info "DNS-over-TLS: Quad9 (primary, malware-blocking) + Cloudflare (fallback)"
+		info "DNS-over-TLS: Quad9 only (Swiss non-profit, no IP logging, malware blocking); LLMNR off"
 		info "Alternative no-log options per privacyguides.org:"
 		info "  • Mullvad DNS  — 194.242.2.2 / dns.mullvad.net  (Sweden, no-log, DoT+DoH)"
 		info "  • AdGuard DNS  — 94.140.14.14 / dns.adguard-dns.com (anonymized, DoT+DoH+DoQ)"
 	fi
-	if ! systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 && ((!DRY_RUN)); then
+	if ! systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 && ((! DRY_RUN)); then
 		warn "systemd-resolved is not installed — DNS-over-TLS is NOT active."
-		add_action_item 14 HIGH "RESOLVED_MISSING" \
+		add_action_item 11 HIGH "RESOLVED_MISSING" \
 			"Install and enable systemd-resolved for DNS-over-TLS: sudo dnf install -y systemd-resolved && sudo systemctl enable --now systemd-resolved"
 	elif ! run "systemctl enable systemd-resolved && systemctl restart systemd-resolved"; then
 		warn "systemd-resolved could not be (re)started — DNS-over-TLS settings apply when it next starts."
-		add_action_item 14 MEDIUM "RESOLVED_RESTART_FAILED" "Restart systemd-resolved: sudo systemctl enable --now systemd-resolved"
+		add_action_item 11 MEDIUM "RESOLVED_RESTART_FAILED" "Restart systemd-resolved: sudo systemctl enable --now systemd-resolved"
 	fi
 	# DoT only protects lookups that go through resolved, i.e. when /etc/resolv.conf
 	# points at its stub (the Fedora default). Report instead of re-plumbing DNS.
@@ -5376,14 +5512,14 @@ EOF
 	resolv_target="$(readlink -f /etc/resolv.conf 2>/dev/null || true)"
 	if [[ "$resolv_target" == /run/systemd/resolve/stub-resolv.conf || "$resolv_target" == /run/systemd/resolve/resolv.conf ]]; then
 		ok "/etc/resolv.conf uses systemd-resolved — DNS-over-TLS applies to all lookups."
-	elif ((!DRY_RUN)); then
+	elif ((! DRY_RUN)); then
 		warn "/etc/resolv.conf does not point to systemd-resolved (${resolv_target:-missing}) — applications bypass DNS-over-TLS."
-		add_action_item 14 HIGH "RESOLV_CONF_NOT_RESOLVED" \
+		add_action_item 11 HIGH "RESOLV_CONF_NOT_RESOLVED" \
 			"Route DNS through systemd-resolved: sudo ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf && sudo systemctl restart NetworkManager"
 	fi
 	run "resolvectl status | head -25 || true"
 
-	# 14b — NetworkManager MAC address randomization (privacyguides.org network privacy)
+	# 11b — NetworkManager MAC address randomization (privacyguides.org network privacy)
 	info "Configuring NetworkManager MAC address randomization..."
 	local nm_mac="/etc/NetworkManager/conf.d/99-mac-randomize.conf"
 	if ((DRY_RUN)); then
@@ -5391,21 +5527,74 @@ EOF
 	else
 		install -d -m 755 /etc/NetworkManager/conf.d 2>/dev/null || true
 		backup_file "$nm_mac" || return 0
-		if ! cat 2>/dev/null >"$nm_mac" <<'EOF'; then
+		if ! cat 2>/dev/null >"$nm_mac" <<'EOF'
 [device]
 wifi.scan-rand-mac-address=yes
 
 [connection]
-ethernet.cloned-mac-address=random
+ethernet.cloned-mac-address=stable
 wifi.cloned-mac-address=random
 EOF
+		then
 			warn "Failed to write $nm_mac"
 		else
 			chmod 644 "$nm_mac" 2>/dev/null || true
-			ok "Wrote $nm_mac (MAC address randomization enabled)"
+			ok "Wrote $nm_mac (random MAC for Wi-Fi, stable per-network MAC for Ethernet)"
 			run "systemctl restart NetworkManager || true"
 		fi
 	fi
+	_nts_time
+	_connectivity_check
+}
+
+# _nts_time - 11c: time sync over Network Time Security (authenticated, so time
+# cannot be tampered with in transit), with chrony, Fedora's time service.
+_nts_time() {
+	local conf=/etc/chrony.conf dir=/etc/chrony.sources.d
+	local src="$dir/fedora-harden-nts.sources"
+	if ! cmd_exists chronyd || [[ ! -f "$conf" ]]; then
+		info "chrony is not installed — leaving time sync as it is."
+		return 0
+	fi
+	# chrony prefers authenticated (NTS) sources and keeps the pool only as a
+	# cross-check (authselectmode mix, its default), so time still syncs where NTS
+	# (TCP 4460) is blocked.
+	if ! grep -qx "sourcedir $dir" "$conf"; then
+		backup_file "$conf" || return 0
+		if ((DRY_RUN)); then
+			info "Would add 'sourcedir $dir' to $conf"
+		else
+			printf '\n# fedora-harden.sh (section 11c): NTS time sources\nsourcedir %s\n' "$dir" >>"$conf"
+		fi
+	fi
+	((DRY_RUN)) || install -d -m 755 "$dir" 2>/dev/null
+	write_new_file "$src" 0644 <<'NTS' || return 0
+# Written by fedora-harden.sh (section 11c): authenticated time over NTS.
+server time.cloudflare.com iburst nts
+server nts.netnod.se iburst nts
+server ptbtime1.ptb.de iburst nts
+NTS
+	run "systemctl try-restart chronyd" || true
+	ok "Time sync prefers NTS (authenticated) servers: $src"
+}
+
+# _connectivity_check - NetworkManager checks connectivity by contacting a Fedora
+# server on every network change. That detects captive portals, so turning it off
+# is a choice (default: keep).
+_connectivity_check() {
+	local drop=/etc/NetworkManager/conf.d/99-fedora-harden-connectivity.conf
+	[[ -d /etc/NetworkManager ]] || return 0
+	if ! confirm "Turn off NetworkManager's connectivity check (it contacts a Fedora server on every network change; captive-portal detection stops)?" no; then
+		info "Connectivity check kept (captive portals are detected)."
+		return 0
+	fi
+	write_new_file "$drop" 0644 <<'NMC' || return 0
+# Written by fedora-harden.sh (section 11): no connectivity probes.
+[connectivity]
+enabled=false
+NMC
+	run "systemctl reload NetworkManager || true"
+	ok "Connectivity check off: $drop"
 }
 
 # user_session_run() - Run a shell snippet as <user> with a working D-Bus session.
@@ -5440,15 +5629,118 @@ verify_user_setting() {
 		return 0
 	fi
 	warn "${label}: settings did not persist for ${TARGET_USER} (read back '${actual:-nothing}', expected '${expected}')."
-	add_action_item 15 MEDIUM "DESKTOP_SETTINGS_${label%%:*}" \
+	add_action_item 13 MEDIUM "DESKTOP_SETTINGS_${label%%:*}" \
 		"${label} could not be applied automatically — set screen lock/privacy options in the desktop settings for ${TARGET_USER}."
 	return 1
 }
 
 # ============================================================================
-#  SECTION 15 — Desktop environment privacy & screen-lock settings
+#  SECTION 12 — Fail2Ban
 # ============================================================================
-# sec_15_desktop() - Apply security and privacy settings for every detected DE.
+# sec_12_fail2ban() - Install and configure Fail2Ban IDS
+# Installs Fail2Ban for intrusion detection and auto-banning of brute-force attempts.
+sec_12_fail2ban() {
+	should_run 12 || return 0
+	section 12 "Fail2Ban"
+	# Fail2Ban slows password guessing against a reachable SSH server; with sshd off
+	# it would only be one more daemon.
+	if ! systemctl is-enabled --quiet sshd 2>/dev/null && ! systemctl is-active --quiet sshd 2>/dev/null; then
+		info "sshd is not enabled — Fail2Ban not needed (section 12 skipped)."
+		return 0
+	fi
+	pkg_install fail2ban
+	local fb_dir="/etc/fail2ban"
+	local jl="${fb_dir}/jail.local"
+
+	if ((DRY_RUN)); then
+		if [[ -f "$jl" ]]; then
+			info "$jl already exists — would leave unchanged."
+		else
+			info "Would write $jl (not present yet)"
+		fi
+	else
+		# Ensure configuration directory exists before writing jail.local.
+		if ! run "install -d -m 0755 '$fb_dir'"; then
+			warn "Could not create $fb_dir; skipping Fail2Ban configuration for now."
+			add_action_item 12 HIGH "FAIL2BAN_DIR_CREATE_FAILED" \
+				"Failed to create $fb_dir. Fix filesystem permissions and re-run section 12."
+			return 0
+		fi
+
+		if [[ ! -f "$jl" ]]; then
+			backup_file "$jl" || return 0
+			if ! cat 2>/dev/null >"$jl" <<'EOF'
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 5
+backend  = systemd
+
+[sshd]
+enabled = true
+port    = ssh
+logpath = %(sshd_log)s
+backend = systemd
+EOF
+			then
+				warn "Could not write $jl; skipping Fail2Ban activation for now."
+				add_action_item 12 HIGH "FAIL2BAN_JAIL_WRITE_FAILED" \
+					"Failed to write $jl. Fix filesystem/permissions and re-run section 12."
+				return 0
+			fi
+			ok "Wrote $jl"
+		else
+			info "$jl already exists — leaving unchanged."
+		fi
+
+		# rpm-ostree hosts may have fail2ban staged but not active until reboot.
+		if ((IS_OSTREE)) && ! systemctl list-unit-files 2>/dev/null | grep -q '^fail2ban\.service'; then
+			warn "fail2ban is staged but not active yet on rpm-ostree. Reboot required before enabling service."
+			add_action_item 12 HIGH "FAIL2BAN_PENDING_REBOOT" \
+				"Reboot to activate staged fail2ban packages, then re-run section 12."
+			return 0
+		fi
+
+		if ! run "systemctl enable --now fail2ban"; then
+			warn "Unable to enable/start fail2ban right now."
+			add_action_item 12 MEDIUM "FAIL2BAN_ENABLE_FAILED" \
+				"Run: sudo systemctl enable --now fail2ban (after reboot on rpm-ostree hosts)."
+			return 0
+		fi
+	fi
+
+	# Post-enable status check and report
+	if ((! DRY_RUN)); then
+		local f2b_active=0 f2b_status=""
+		systemctl is-active --quiet fail2ban 2>/dev/null && f2b_active=1 || true
+		if ((f2b_active)); then
+			f2b_status="$(fail2ban-client status 2>&1 || true)"
+			ok "fail2ban is active."
+		else
+			warn "fail2ban is not active after enable — see report."
+			add_action_item 12 HIGH "FAIL2BAN_NOT_RUNNING" \
+				"fail2ban service is not running — run: sudo systemctl restart fail2ban"
+		fi
+		{
+			printf '=== Section 12: Fail2Ban Report ===\n'
+			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
+			printf -- '--- Service status ---\n'
+			systemctl status fail2ban --no-pager 2>&1 || true
+			printf '\n--- Jail summary ---\n%s\n' "$f2b_status"
+			printf '\n--- jail.local contents ---\n'
+			[[ -f "$jl" ]] && cat "$jl" || printf '(not found)\n'
+		} | write_user_report "section-18-fail2ban-${REPORT_DATE}.txt" || true
+		if ((f2b_active)); then
+			add_action_item 12 LOW "FAIL2BAN_REVIEW" \
+				"Review fail2ban jail status and ban history: sudo fail2ban-client status sshd"
+		fi
+	fi
+}
+
+# ============================================================================
+#  SECTION 13 — Desktop environment privacy & screen-lock settings
+# ============================================================================
+# sec_13_desktop() - Apply security and privacy settings for every detected DE.
 #
 # Single entry-point that auto-dispatches to per-DE sub-handlers based on the
 # HAS_* flags set by detect_desktop_envs(). Multiple DEs can be active at once
@@ -5456,7 +5748,7 @@ verify_user_setting() {
 #
 # DE coverage (each block runs only if the corresponding HAS_* flag is set):
 #   KDE Plasma    — kwriteconfig6/5: screen lock, recent-docs off, BT opt-out
-#   GNOME/Onyx    — gsettings: screen lock, location off, privacy, mic off
+#   GNOME/Onyx    — gsettings: screen lock, location off, privacy (mic off if asked)
 #   Budgie        — gsettings (GNOME backend): same privacy stack as GNOME
 #   Cinnamon      — gsettings: org.cinnamon.desktop.screensaver + GNOME privacy
 #   MATE          — gsettings: org.mate.screensaver + power-manager
@@ -5471,12 +5763,12 @@ verify_user_setting() {
 #   Silverblue/Onyx/Bazzite-GNOME → GNOME
 #   Sericea → Sway    |  Lazurite → LXQt    |  Vauxite → XFCE
 #   XFCE/LXQt/Cinnamon/MATE/Budgie spins → respective DE
-sec_15_desktop() {
-	should_run 15 || return 0
-	section 15 "Desktop environment settings (all detected DEs)"
+sec_13_desktop() {
+	should_run 13 || return 0
+	section 13 "Desktop environment settings (all detected DEs)"
 
-	if ((!HAS_DESKTOP)); then
-		info "No desktop environment detected — skipping section 15."
+	if ((! HAS_DESKTOP)); then
+		info "No desktop environment detected — skipping section 13."
 		return 0
 	fi
 
@@ -5497,7 +5789,7 @@ sec_15_desktop() {
 	done < <(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$TARGET_USER" '$3 == u {print $1}')
 	if ((x11_sessions > 0)); then
 		warn "$TARGET_USER is logged in to an X11 session; Wayland isolates applications from each other."
-		add_action_item 15 MEDIUM "X11_SESSION" \
+		add_action_item 13 MEDIUM "X11_SESSION" \
 			"Log in to the Wayland session instead of X11 (choose it on the login screen) — X11 lets any app capture other windows and keystrokes (privacyguides.org)."
 	fi
 
@@ -5512,8 +5804,8 @@ sec_15_desktop() {
 		done
 		if [[ -z "$KW" ]]; then
 			warn "kwriteconfig6/5 not found — KDE may not be fully installed; skipping KDE tweaks."
-			add_action_item 15 MEDIUM "KDE_KWRITECONFIG_MISSING" \
-				"kwriteconfig6/5 not found. After installing plasma-desktop, rerun: sudo ./fedora-harden.sh --only 15"
+			add_action_item 13 MEDIUM "KDE_KWRITECONFIG_MISSING" \
+				"kwriteconfig6/5 not found. After installing plasma-desktop, rerun: sudo ./fedora-harden.sh --only 13"
 		else
 			info "Using $KW for KDE settings"
 			run "sudo -u '$TARGET_USER' '$KW' --file kscreenlockerrc --group Daemon --key Timeout 5"
@@ -5536,7 +5828,7 @@ sec_15_desktop() {
 	# ── GNOME (Silverblue, Onyx, Workstation GNOME) ──────────────────────────
 	if ((HAS_GNOME)); then
 		info "--- GNOME settings ---"
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (GNOME privacy)"
 			user_session_run "$TARGET_USER" '
 				gsettings set org.gnome.desktop.session idle-delay 300
@@ -5549,12 +5841,11 @@ sec_15_desktop() {
 				gsettings set org.gnome.desktop.privacy send-software-usage-stats false
 				gsettings set org.gnome.desktop.privacy report-technical-problems false
 				gsettings set org.gnome.desktop.privacy remember-recent-files false
-				gsettings set org.gnome.desktop.privacy disable-microphone true
 			' 2>/dev/null || true
 		else
-			info "Would apply GNOME gsettings: screen lock, location off, privacy, mic off"
+			info "Would apply GNOME gsettings: screen lock, location off, privacy"
 		fi
-		((DRY_RUN)) || verify_user_setting "GNOME: screen lock, location off, privacy, mic off" true \
+		((DRY_RUN)) || verify_user_setting "GNOME: screen lock, location off, privacy" true \
 			"gsettings get org.gnome.desktop.screensaver lock-enabled" || true
 		info "GNOME GUI-only: Online Accounts, Sharing, Bluetooth → GNOME Settings."
 		applied_des+=("GNOME")
@@ -5563,7 +5854,7 @@ sec_15_desktop() {
 	# ── Budgie (GNOME gsettings backend) ─────────────────────────────────────
 	if ((HAS_BUDGIE)); then
 		info "--- Budgie settings ---"
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (Budgie/GNOME privacy)"
 			user_session_run "$TARGET_USER" '
 				gsettings set org.gnome.desktop.session idle-delay 300
@@ -5575,20 +5866,31 @@ sec_15_desktop() {
 				gsettings set org.gnome.desktop.privacy remove-old-trash-files true
 				gsettings set org.gnome.desktop.privacy old-files-age 7
 				gsettings set org.gnome.desktop.privacy send-software-usage-stats false
-				gsettings set org.gnome.desktop.privacy disable-microphone true
 			' 2>/dev/null || true
 		else
-			info "Would apply Budgie gsettings: screen lock, location off, privacy, mic off"
+			info "Would apply Budgie gsettings: screen lock, location off, privacy"
 		fi
 		((DRY_RUN)) || verify_user_setting "Budgie: screen lock, privacy" true \
 			"gsettings get org.gnome.desktop.screensaver lock-enabled" || true
 		applied_des+=("Budgie")
 	fi
 
+	# The microphone switch is the person's choice: off system-wide, calls and
+	# meetings stop working until it is turned back on in Settings → Privacy.
+	if ((HAS_GNOME || HAS_BUDGIE)) &&
+		confirm "Turn the microphone off system-wide (calls stop working until you turn it back on in Settings → Privacy)?" no; then
+		if ((DRY_RUN)); then
+			info "Would turn the microphone off (org.gnome.desktop.privacy disable-microphone)"
+		else
+			user_session_run "$TARGET_USER" 'gsettings set org.gnome.desktop.privacy disable-microphone true' 2>/dev/null || true
+			ok "Microphone off system-wide (Settings → Privacy turns it back on)."
+		fi
+	fi
+
 	# ── Cinnamon ──────────────────────────────────────────────────────────────
 	if ((HAS_CINNAMON)); then
 		info "--- Cinnamon settings ---"
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (Cinnamon privacy)"
 			user_session_run "$TARGET_USER" '
 				gsettings set org.cinnamon.desktop.screensaver lock-enabled true
@@ -5611,7 +5913,7 @@ sec_15_desktop() {
 	# ── MATE ──────────────────────────────────────────────────────────────────
 	if ((HAS_MATE)); then
 		info "--- MATE settings ---"
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (MATE privacy)"
 			user_session_run "$TARGET_USER" '
 				gsettings set org.mate.screensaver lock-enabled true 2>/dev/null || true
@@ -5634,10 +5936,10 @@ sec_15_desktop() {
 		info "--- XFCE settings ---"
 		if ! cmd_exists xfconf-query; then
 			warn "xfconf-query not found — cannot configure XFCE settings."
-			add_action_item 15 MEDIUM "XFCE_SCREENSAVER_MANUAL" \
+			add_action_item 13 MEDIUM "XFCE_SCREENSAVER_MANUAL" \
 				"Manually enable screensaver lock in XFCE Settings → Screensaver (lock after 5 min idle)"
 		else
-			if ((!DRY_RUN)); then
+			if ((! DRY_RUN)); then
 				log "[RUN]   sudo -u '$TARGET_USER' xfconf-query batch (XFCE screensaver/power)"
 				# -n creates the property if it does not exist yet; -t gives its type.
 				user_session_run "$TARGET_USER" '
@@ -5674,7 +5976,7 @@ sec_15_desktop() {
 		local swaylock_cfg="${user_home}/.config/swaylock/config"
 		local swayidle_cfg="${user_home}/.config/swayidle/config"
 
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/swaylock' '${user_home}/.config/swayidle'"
 			if [[ ! -f "$swaylock_cfg" ]]; then
 				backup_file "${swaylock_cfg}" || return 0
@@ -5706,7 +6008,7 @@ SWAYEOF
 		else
 			info "Would write swaylock.conf (black, immediate lock) + swayidle (lock 5 min, suspend 10 min)"
 		fi
-		add_action_item 15 MEDIUM "SWAY_AUTOSTART_SWAYIDLE" \
+		add_action_item 13 MEDIUM "SWAY_AUTOSTART_SWAYIDLE" \
 			"Add 'exec swayidle -w' to ~/.config/sway/config to autostart idle/lock daemon on login."
 		applied_des+=("Sway")
 	fi
@@ -5724,7 +6026,7 @@ SWAYEOF
 		}
 
 		local hypridle_cfg="${user_home}/.config/hypr/hypridle.conf"
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/hypr'"
 			if [[ ! -f "$hypridle_cfg" ]]; then
 				backup_file "${hypridle_cfg}" || return 0
@@ -5753,7 +6055,7 @@ HYPREOF
 		else
 			info "Would write hypridle.conf (lock 5 min, suspend 10 min)"
 		fi
-		add_action_item 15 MEDIUM "HYPRLAND_AUTOSTART_HYPRIDLE" \
+		add_action_item 13 MEDIUM "HYPRLAND_AUTOSTART_HYPRIDLE" \
 			"Add 'exec-once = hypridle' to ~/.config/hypr/hyprland.conf to autostart the idle daemon."
 		applied_des+=("Hyprland")
 	fi
@@ -5774,7 +6076,7 @@ HYPREOF
 		local i3_cfg_d="${user_home}/.config/i3/config.d"
 		local i3_lock_frag="${i3_cfg_d}/99-autolock.conf"
 
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			run "mkdir -p '${i3_cfg_d}'"
 			if [[ ! -f "$i3_lock_frag" ]]; then
 				backup_file "${i3_lock_frag}" || return 0
@@ -5794,7 +6096,7 @@ I3EOF
 		else
 			info "Would write i3 autolock drop-in (xss-lock + i3lock) in ${i3_cfg_d}/"
 		fi
-		add_action_item 15 MEDIUM "I3_LOCK_KEYBIND" \
+		add_action_item 13 MEDIUM "I3_LOCK_KEYBIND" \
 			"Add a manual lock keybind: bindsym \$mod+l exec i3lock --color=000000"
 		applied_des+=("i3")
 	fi
@@ -5805,7 +6107,7 @@ I3EOF
 		local ss_cfg="${user_home}/.config/lxqt/lxqt-screensaver.conf"
 		local pm_cfg="${user_home}/.config/lxqt/lxqt-powermanagement.conf"
 
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/lxqt'"
 			if [[ ! -f "$ss_cfg" ]]; then
 				backup_file "$ss_cfg" || return 0
@@ -5836,19 +6138,22 @@ I3EOF
 
 	# ── Summary ───────────────────────────────────────────────────────────────
 	if ((${#applied_des[@]} > 0)); then
-		ok "Section 15 complete. Hardened: ${applied_des[*]}"
+		ok "Section 13 complete. Hardened: ${applied_des[*]}"
 	else
-		warn "Section 15: desktop detected but no DE-specific settings could be applied."
+		warn "Section 13: desktop detected but no DE-specific settings could be applied."
 	fi
 }
+
 # ============================================================================
-# sec_16_firefox() - Harden Firefox Flatpak with arkenfox + extensions + telemetry opt-out + VPN check
+#  SECTION 14 — Firefox
+# ============================================================================
+# sec_14_firefox() - Harden Firefox Flatpak with arkenfox + extensions + telemetry opt-out + VPN check
 # Installs Firefox Flatpak with arkenfox profiles and security extensions (uBlock Origin,
 # LocalCDN, Multi-Account Containers). Enterprise policy also disables Firefox telemetry,
 # studies, and Pocket. Also detects active VPN and recommends one if absent.
-sec_16_firefox() {
-	should_run 16 || return 0
-	section 16 "Firefox hardening (Flatpak preferred + arkenfox + privacy extensions)"
+sec_14_firefox() {
+	should_run 14 || return 0
+	section 14 "Firefox hardening (Flatpak preferred + arkenfox + privacy extensions)"
 
 	# Flatpak is preferred for Firefox due to stronger app sandboxing.
 	if ! cmd_exists flatpak; then
@@ -5856,7 +6161,7 @@ sec_16_firefox() {
 		pkg_install flatpak
 		if ((IS_OSTREE)); then
 			warn "On rpm-ostree, reboot is required before the newly layered flatpak command is usable."
-			warn "Rerun section 16 after reboot."
+			warn "Rerun section 14 after reboot."
 			return 0
 		fi
 	fi
@@ -5896,7 +6201,7 @@ sec_16_firefox() {
 
 	if [[ ! -f "$profiles_ini" ]]; then
 		warn "Firefox profile metadata not found at $profiles_ini"
-		warn "Launch Firefox once as '$ff_user' and rerun section 16 to apply arkenfox and extension policy."
+		warn "Launch Firefox once as '$ff_user' and rerun section 14 to apply arkenfox and extension policy."
 		return 0
 	fi
 
@@ -5937,7 +6242,7 @@ sec_16_firefox() {
 user_pref("privacy.globalprivacycontrol.enabled", true);
 user_pref("privacy.donottrackheader.enabled", true);
 // DNS over HTTPS so Encrypted Client Hello can hide the site name (SNI);
-// mode 2 falls back to system DNS (DNS-over-TLS, section 14) for captive portals.
+// mode 2 falls back to system DNS (DNS-over-TLS, section 11) for captive portals.
 user_pref("network.trr.mode", 2);
 user_pref("network.trr.uri", "https://dns.quad9.net/dns-query");
 user_pref("network.trr.custom_uri", "https://dns.quad9.net/dns-query");
@@ -5952,8 +6257,8 @@ ARKOVERRIDES
 					fi
 				else
 					warn "arkenfox ${ARKENFOX_VERSION} download failed or did not match its checksum; Firefox keeps its current settings."
-					add_action_item 16 MEDIUM "ARKENFOX_NOT_INSTALLED" \
-						"arkenfox user.js was not installed (download or checksum failed). Re-run: sudo ./fedora-harden.sh --only 16"
+					add_action_item 14 MEDIUM "ARKENFOX_NOT_INSTALLED" \
+						"arkenfox user.js was not installed (download or checksum failed). Re-run: sudo ./fedora-harden.sh --only 14"
 				fi
 				rm -f "$tmp_arken" 2>/dev/null || true
 			fi
@@ -5973,7 +6278,7 @@ ARKOVERRIDES
 		install -d -m 0700 -o "$ff_user" -g "$ff_user" "$policy_dir" 2>/dev/null || true
 		local tmp_policy="/tmp/firefox-policies-$$-$RANDOM-$SECONDS.json"
 		register_tmp "$tmp_policy"
-		if ! cat 2>/dev/null >"$tmp_policy" <<'EOF'; then
+		if ! cat 2>/dev/null >"$tmp_policy" <<'EOF'
 {
   "policies": {
     "DisableTelemetry": true,
@@ -5996,6 +6301,7 @@ ARKOVERRIDES
   }
 }
 EOF
+		then
 			warn "Failed to write Firefox policy JSON"
 			rm -f "$tmp_policy" 2>/dev/null || true
 			return 1
@@ -6013,7 +6319,7 @@ EOF
 	info "Firefox hardening complete for user '$ff_user' (Flatpak + arkenfox + uBlock Origin/LocalCDN/Multi-Account Containers policy + telemetry disabled)."
 	info "Restart Firefox to apply enterprise policy installs and arkenfox preferences."
 
-	# --- 16b: VPN detection and recommendation ---------------------------------
+	# --- 14b: VPN detection and recommendation ---------------------------------
 	info "Checking for an active VPN connection (system or browser)..."
 	local vpn_found=0 vpn_source=""
 
@@ -6057,7 +6363,7 @@ EOF
 		ok "VPN detected ($vpn_source) — no action needed."
 	else
 		warn "No active VPN detected on this system or in Firefox."
-		if ((!GUI_FULL_MODE)); then
+		if ((! GUI_FULL_MODE)); then
 			cat <<'VPNEOF'
 
   ╔══════════════════════════════════════════════════════════════════════╗
@@ -6066,7 +6372,7 @@ EOF
 
   All three options below are audited, open-source, no-logs VPNs. They
   support WireGuard and accept anonymous payment methods (cash / Monero).
-  Section 17 installs a provider's WireGuard config with a kill switch.
+  Section 15 installs a provider's WireGuard config with a kill switch.
 
   1. Mullvad VPN — https://mullvad.net
      • No account e-mail needed; each account is a random 16-digit number
@@ -6092,183 +6398,851 @@ EOF
      • Install:  https://ivpn.net/apps-linux/
 
   WireGuard with a kill switch (after choosing a provider): download its
-  WireGuard config (full tunnel), then let section 17 install it:
-    sudo ./fedora-harden.sh --only 17 --wireguard-config <provider>.conf
+  WireGuard config (full tunnel), then let section 15 install it:
+    sudo ./fedora-harden.sh --only 15 --wireguard-config <provider>.conf
 
 VPNEOF
 		else
 			gui_alert warning "No VPN detected.\n\nRecommended VPNs (privacyguides.org + inteltechniques.com):\n• Mullvad VPN — mullvad.net (flatpak install flathub net.mullvad.MullvadVpn)\n• ProtonVPN — protonvpn.com (flatpak install flathub com.protonvpn.desktop)\n• IVPN — ivpn.net"
 		fi
-		add_action_item 16 MEDIUM "NO_VPN_DETECTED" \
-			"No VPN detected — install Mullvad (recommended), ProtonVPN, or IVPN. See section 16b output and section 17 for WireGuard setup."
+		add_action_item 14 MEDIUM "NO_VPN_DETECTED" \
+			"No VPN detected — install Mullvad (recommended), ProtonVPN, or IVPN. See section 14b output and section 15 for WireGuard setup."
 	fi
 }
 
 # ============================================================================
-#  SECTION 25 — Home snapshots and copies
+#  SECTION 15 — WireGuard with kill switch
 # ============================================================================
-# sec_25_snapshots() - Protect the home folder against deleted or overwritten files,
-# with what the system already ships: Snapper where it is installed (Bazzite),
-# read-only Btrfs snapshots on other Btrfs systems, and hard-link incremental copies
-# (rsync) elsewhere — to a second drive when one is configured. How often follows how
-# actively the machine is used; nothing is taken when nothing changed. A home index
-# flags large replaceable folders; each is left out only with approval.
-sec_25_snapshots() {
-	should_run 25 || return 0
-	section 25 "Home snapshots and copies"
-	install_routine_helper || return 0
+# sec_15_wireguard() - Install a WireGuard tunnel (--wireguard-config FILE) that
+# cannot leak: a kill switch drops outbound traffic that does not go through the
+# tunnel (also while the tunnel is down), and DNS is routed through the tunnel.
+# Without a config file the section does nothing.
+WG_IF="wg0"
+sec_15_wireguard() {
+	should_run 15 || return 0
+	section 15 "WireGuard tunnel with kill switch and DNS leak protection"
+	if [[ -z "$WG_CONFIG" ]]; then
+		info "No WireGuard config given — nothing to do. To set up a tunnel that cannot leak, re-run with: --only 15 --wireguard-config /path/to/provider.conf"
+		return 0
+	fi
 
-	local home backend target="" fstype
-	home="$(readlink -f /home)"
-	fstype="$(findmnt -no FSTYPE -T "$home" 2>/dev/null)"
-	local home_pending=0
-	if [[ "$fstype" == btrfs ]]; then
-		backend=btrfs
-		cmd_exists snapper && backend=snapper
-		# Installed with bootc, home is a plain folder on Btrfs: make it its own
-		# subvolume at the next boot, before anyone logs in; snapshots start then.
-		btrfs subvolume show "$home" >/dev/null 2>&1 || home_pending=1
+	local endpoint_ip endpoint_port has_dns ks_on=0
+	_wg_check_config "$WG_CONFIG" || return 0
+	endpoint_ip="$_WG_ENDPOINT_IP" endpoint_port="$_WG_ENDPOINT_PORT" has_dns="$_WG_HAS_DNS"
+
+	pkg_install wireguard-tools
+	if ((has_dns)); then
+		# wg-quick hands DNS to systemd-resolved (resolvconf compatibility).
+		pkg_install systemd-resolved
+		run "systemctl enable --now systemd-resolved" || true
+		if ((! DRY_RUN)) && ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+			warn "systemd-resolved is not running: wg-quick cannot apply the tunnel's DNS server and will not start the tunnel."
+			add_action_item 15 HIGH "WG_NO_RESOLVED" \
+				"systemd-resolved must run for the tunnel's DNS (journalctl -u systemd-resolved -b), then: sudo systemctl restart wg-quick@${WG_IF}"
+		fi
+	fi
+	if ((! DRY_RUN)) && ! cmd_exists wg-quick; then
+		warn "wg-quick is not available — WireGuard setup skipped."
+		return 0
+	fi
+
+	local conf="/etc/wireguard/${WG_IF}.conf"
+	backup_file "$conf" || return 0
+	if ((DRY_RUN)); then
+		info "Would install $WG_CONFIG as $conf (mode 600) with DNS routed through the tunnel"
 	else
-		backend=rsync
-		pkg_install rsync
-		if ((!DRY_RUN)) && ! cmd_exists rsync; then
-			warn "rsync is not available — home copies not set up."
+		install -d -m 700 /etc/wireguard
+		# The provider's file, with the endpoint pinned to the address checked above
+		# (the kill switch allows exactly that address) and DNS routed through the
+		# tunnel: "~." makes the tunnel's DNS server answer every lookup.
+		if ! awk -v ep="Endpoint = ${endpoint_ip}:${endpoint_port}" '
+			/^[ \t]*Endpoint[ \t]*=/ { print ep; next }
+			/^[ \t]*(PostUp|PreDown)[ \t]*=.*fedora-harden/ { next }
+			{ print }' "$WG_CONFIG" 2>/dev/null >"$conf.new"; then
+			warn "Could not prepare $conf"
+			rm -f "$conf.new"
 			return 0
 		fi
-		target="$(_backup_target "$home")"
+		if ((has_dns)); then
+			# Insert DNS routing right after [Interface].
+			sed -i '0,/^[ \t]*\[Interface\]/s//[Interface]\nPostUp = resolvectl domain %i "~." \&\& resolvectl default-route %i yes  # fedora-harden: DNS through the tunnel/' "$conf.new"
+		fi
+		chmod 600 "$conf.new" && mv -f "$conf.new" "$conf"
+		ok "Installed the tunnel config as $conf (mode 600, endpoint ${endpoint_ip}:${endpoint_port})."
 	fi
-	info "Home folder $home ($fstype): $backend$([[ -n "$target" ]] && echo " → $target")"
 
-	write_new_file /etc/fedora-harden/snapshots 0644 <<EOF || return 0
-# Written by fedora-harden.sh (section 25).
-BACKEND=$backend
-HOME_DIR=$home
-TARGET=$target
-EXCLUDES=""
-EOF
-	# The snapshot store is created by the helper on the first snapshot (Snapper's
-	# config on Bazzite: it thins to 24 recent, 7 daily, 4 weekly).
-	if ((!DRY_RUN)); then
-		if [[ "$backend" == rsync ]]; then
-			install -d -m 700 "$target" && record_change SNAPSHOT_DATA "$target"
+	# Kill switch (firewalld policies, permanent): outbound traffic from this host may
+	# only go into the tunnel (zone fedora-harden-vpn) or to the tunnel endpoint;
+	# everything else is rejected — also while the tunnel is down, so nothing leaks.
+	if ! cmd_exists firewall-cmd && ! cmd_exists firewall-offline-cmd; then
+		warn "firewalld is not installed — the kill switch needs it (section 6). Tunnel installed without a kill switch."
+		add_action_item 15 HIGH "WG_NO_KILLSWITCH" "Install firewalld (section 6), then re-run: sudo ./fedora-harden.sh --only 15 --wireguard-config $WG_CONFIG"
+	else
+		tool_dir_begin /etc/firewalld || return 0
+		_wg_kill_switch "$endpoint_ip" "$endpoint_port" && ks_on=1
+		tool_dir_end /etc/firewalld
+	fi
+
+	if run "systemctl enable --now wg-quick@${WG_IF}"; then
+		record_change WG_TUNNEL "$WG_IF"
+		ok "Tunnel ${WG_IF} is up and starts at boot."
+	else
+		warn "The tunnel did not come up — check: journalctl -u wg-quick@${WG_IF}"
+		local why
+		why="$(journalctl -u "wg-quick@${WG_IF}" -b --no-pager -o cat -n 3 2>/dev/null | tr '\n' ' ')"
+		add_action_item 15 HIGH "WG_TUNNEL_DOWN" \
+			"WireGuard tunnel ${WG_IF} did not start${why:+ ($why)}.$( ((ks_on)) && echo " The kill switch is active, so outbound traffic is blocked until it does.")"
+	fi
+	if ((ks_on)); then
+		add_action_item 15 LOW "WG_KILLSWITCH_INFO" \
+			"Kill switch active: without the tunnel this machine reaches only ${endpoint_ip}:${endpoint_port}. To allow your local network, add a rich rule to policy fedora-harden-killswitch; to remove everything: sudo ./fedora-harden.sh --rollback"
+	fi
+}
+
+# _wg_check_config <file> - Validate a WireGuard config for a leak-proof tunnel.
+# Sets _WG_ENDPOINT_IP, _WG_ENDPOINT_PORT, _WG_HAS_DNS. Returns 1 (with a reason)
+# when the config cannot be used.
+_wg_check_config() {
+	local f="$1" key endpoint host port allowed
+	_WG_ENDPOINT_IP="" _WG_ENDPOINT_PORT="" _WG_HAS_DNS=0
+	for key in PrivateKey Address PublicKey Endpoint AllowedIPs; do
+		if ! grep -qiE "^[[:space:]]*${key}[[:space:]]*=" "$f"; then
+			warn "WireGuard config $f has no $key — not installed."
+			add_action_item 15 MEDIUM "WG_CONFIG_INVALID" "The WireGuard config $f is incomplete (no $key). Download a complete config from your provider."
+			return 1
+		fi
+	done
+	allowed="$(grep -iE '^[[:space:]]*AllowedIPs[[:space:]]*=' "$f" | cut -d= -f2- | tr -d ' ')"
+	if [[ ",$allowed," != *",0.0.0.0/0,"* ]]; then
+		warn "WireGuard config routes only part of the traffic (AllowedIPs = $allowed) — a kill switch needs a full tunnel. Not installed."
+		add_action_item 15 MEDIUM "WG_SPLIT_TUNNEL" \
+			"$f is a split tunnel (AllowedIPs = $allowed). Use a full-tunnel config (AllowedIPs = 0.0.0.0/0, ::/0) for leak protection."
+		return 1
+	fi
+	if [[ ",$allowed," != *",::/0,"* ]]; then
+		# Not a leak: the kill switch rejects IPv6 outside the tunnel. But IPv6 stops working.
+		warn "The WireGuard config carries IPv4 only (no ::/0): with the kill switch, IPv6 traffic is blocked."
+		add_action_item 15 LOW "WG_NO_IPV6" \
+			"$f routes only IPv4 through the tunnel (AllowedIPs has no ::/0), so the kill switch blocks IPv6. Use your provider's config with IPv6 (AllowedIPs = 0.0.0.0/0, ::/0) if you need it."
+	fi
+	if (($(grep -ciE '^[[:space:]]*\[Peer\]' "$f") != 1)); then
+		warn "WireGuard config must have exactly one [Peer] — not installed."
+		return 1
+	fi
+	endpoint="$(grep -iE '^[[:space:]]*Endpoint[[:space:]]*=' "$f" | head -1 | cut -d= -f2- | tr -d ' ')"
+	port="${endpoint##*:}"
+	host="${endpoint%:*}"
+	host="${host#[}"
+	host="${host%]}"
+	if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+		warn "WireGuard endpoint '$endpoint' has no port — not installed."
+		return 1
+	fi
+	if [[ ! "$host" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+		# A hostname would need DNS before the tunnel is up, which the kill switch
+		# blocks: pin the address it resolves to now.
+		local ip
+		ip="$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR == 1 {print $1}')"
+		if [[ -z "$ip" ]]; then
+			warn "Cannot resolve the WireGuard endpoint $host — not installed."
+			return 1
+		fi
+		info "Endpoint $host resolves to $ip; the tunnel and kill switch use that address."
+		add_action_item 15 LOW "WG_ENDPOINT_PINNED" \
+			"The WireGuard endpoint $host was pinned to $ip. If your provider changes that address, re-run section 15."
+		host="$ip"
+	fi
+	grep -qiE '^[[:space:]]*DNS[[:space:]]*=' "$f" && _WG_HAS_DNS=1
+	if ((! _WG_HAS_DNS)); then
+		add_action_item 15 MEDIUM "WG_NO_DNS" \
+			"The WireGuard config sets no DNS server, so DNS lookups do not go through the tunnel. Add your provider's DNS (DNS = ...) under [Interface] and re-run section 15."
+	fi
+	_WG_ENDPOINT_IP="$host" _WG_ENDPOINT_PORT="$port"
+}
+
+# _wg_kill_switch <endpoint-ip> <port> - firewalld policies: the host may send to the
+# tunnel zone and to the endpoint; every other outbound packet is rejected.
+_wg_kill_switch() {
+	local ip="$1" port="$2" fw
+	fw="$(fw_cmd)"
+	local -a cmds=(
+		"--permanent --new-zone=fedora-harden-vpn"
+		"--permanent --zone=fedora-harden-vpn --add-interface=${WG_IF}"
+		"--permanent --new-policy=fedora-harden-vpn-out"
+		# firewall-cmd accepts one of these options per call (ingress/egress zone,
+		# target/priority cannot be combined).
+		"--permanent --policy=fedora-harden-vpn-out --add-ingress-zone=HOST"
+		"--permanent --policy=fedora-harden-vpn-out --add-egress-zone=fedora-harden-vpn"
+		"--permanent --policy=fedora-harden-vpn-out --set-target=ACCEPT"
+		"--permanent --policy=fedora-harden-vpn-out --set-priority=-200"
+		"--permanent --new-policy=fedora-harden-killswitch"
+		"--permanent --policy=fedora-harden-killswitch --add-ingress-zone=HOST"
+		"--permanent --policy=fedora-harden-killswitch --add-egress-zone=ANY"
+		"--permanent --policy=fedora-harden-killswitch --set-target=REJECT"
+		"--permanent --policy=fedora-harden-killswitch --set-priority=-100"
+		"--permanent --policy=fedora-harden-killswitch --add-service=dhcp"
+		"--permanent --policy=fedora-harden-killswitch --add-service=dhcpv6"
+		"--permanent --policy=fedora-harden-killswitch --add-rich-rule='rule family=ipv4 destination address=${ip} port port=${port} protocol=udp accept'"
+	)
+	local c failed=0 info=""
+	for c in "${cmds[@]}"; do
+		# On a re-run the objects already exist; the check below judges the result.
+		run "$fw $c >/dev/null 2>&1 || true"
+	done
+	((FW_OFFLINE)) || run "firewall-cmd --reload" || failed=1
+	if ((! DRY_RUN)); then
+		info="$($fw --permanent --info-policy=fedora-harden-killswitch 2>/dev/null || true)"
+		[[ "$info" == *"target: REJECT"* && "$info" == *"egress-zones: ANY"* && "$info" == *"address=\"${ip}\""* ]] || failed=1
+	fi
+	if ((failed)); then
+		warn "firewalld did not accept the kill switch — outbound traffic is NOT restricted."
+		add_action_item 15 HIGH "WG_KILLSWITCH_FAILED" "The kill switch could not be loaded: check 'sudo firewall-cmd --list-all-policies' and journalctl -u firewalld."
+		return 1
+	fi
+	ok "Kill switch on: outbound traffic goes through ${WG_IF} or to ${ip}:${port} only."
+}
+
+# _clamav_weekly_scan - Without on-access scanning: a weekly scan of /home by a timer,
+# at idle priority, with clamscan (no resident daemon). Results: journalctl -u
+# fedora-harden-clamscan.
+_clamav_weekly_scan() {
+	write_new_file /etc/systemd/system/fedora-harden-clamscan.service 0644 <<'UNIT' || return 0
+[Unit]
+Description=Weekly ClamAV scan of /home (fedora-harden)
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/bin/clamscan -r --infected --exclude-dir=/home/.snapshots /home
+UNIT
+	write_new_file /etc/systemd/system/fedora-harden-clamscan.timer 0644 <<'UNIT' || return 0
+[Unit]
+Description=Weekly ClamAV scan of /home (fedora-harden)
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+	if enable_timer fedora-harden-clamscan.timer; then
+		ok "Weekly ClamAV scan of /home scheduled (fedora-harden-clamscan.timer); on-access scanning off."
+	fi
+}
+
+# ============================================================================
+#  SECTION 16 — ClamAV
+# ============================================================================
+# sec_16_clamav() - ClamAV with automatic signature updates and a weekly scan of
+# /home (a timer, idle priority, no resident daemon). On-access scanning of /home
+# (inteltechniques.com) is opt-in: it keeps clamd resident (about 1 GB of RAM) and
+# delays file access, so it is asked for, never turned on by --yes.
+sec_16_clamav() {
+	should_run 16 || return 0
+	if ((IS_OSTREE)); then
+		_clamav_container
+		return 0
+	fi
+	section 16 "ClamAV antivirus"
+	pkg_install clamav clamd clamav-update clamav-scanner-systemd
+	info "Updating ClamAV signatures (freshclam)..."
+	# freshclam can fail if the daemon already holds the lock; suppress for idempotency
+	run "timeout 900 freshclam || true"
+	run "systemctl enable --now clamav-freshclam || true"
+	# Configure clamd BEFORE starting it: Fedora ships /etc/clamd.d/scan.conf with
+	# LocalSocket commented out, and clamd refuses to start without a socket
+	# ("Please define server type").
+	local clamd_conf="/etc/clamd.d/scan.conf" onaccess=0
+	confirm "Scan files in /home as they are written (ClamAV on-access: about 1 GB of RAM, slower file access)?" no && onaccess=1
+	if ((onaccess)) && [[ -f "$clamd_conf" ]]; then
+		backup_file "$clamd_conf" || return 0
+		local kv
+		local -a clamd_settings=(
+			"LocalSocket /run/clamd.scan/clamd.sock"
+			# On-access scanning of home directories (inteltechniques.com); clamonacc
+			# reads these. The clamd user is excluded to avoid scan loops.
+			"OnAccessIncludePath /home"
+			"OnAccessExcludeRootUID yes"
+			"OnAccessExcludeUname clamscan"
+			"OnAccessPrevention no"
+			# Scan size limits — handle large archives/ISOs without
+			# LibClamAV 'decompress file size exceeds limits' noise
+			"MaxFileSize 500M"
+			"MaxScanSize 2000M"
+			"MaxRecursion 16"
+			"StreamMaxLength 500M"
+		)
+		for kv in "${clamd_settings[@]}"; do
+			set_conf_key "$clamd_conf" "${kv%% *}" "${kv#* }" " " || true
+		done
+		((DRY_RUN)) || ok "Configured clamd socket, on-access scanning (/home) and scan limits in $clamd_conf"
+	elif ((onaccess)); then
+		info "ClamAV clamd config not found at $clamd_conf — on-access config skipped."
+		add_action_item 16 LOW "CLAMAV_ONACCESS_CONFIG" \
+			"Manually configure on-access scanning: add 'OnAccessIncludePath /home' to your clamd config (/etc/clamd.d/scan.conf)"
+	fi
+
+	if ((onaccess)); then
+		if ! run "systemctl enable --now clamd@scan"; then
+			warn "clamd@scan failed to start — check: journalctl -u clamd@scan"
+		fi
+		# clamonacc performs the on-access scanning (fanotify; needs a running clamd@scan).
+		if systemctl list-unit-files clamav-clamonacc.service >/dev/null 2>&1; then
+			if ! run "systemctl enable --now clamav-clamonacc"; then
+				warn "clamav-clamonacc failed to start — on-access scanning inactive (journalctl -u clamav-clamonacc)."
+				add_action_item 16 MEDIUM "CLAMAV_ONACCESS_NOT_RUNNING" \
+					"On-access scanning is configured but clamonacc is not running: sudo systemctl enable --now clamav-clamonacc"
+			fi
+		fi
+	else
+		_clamav_weekly_scan
+	fi
+
+	# Post-enable status check and report
+	if ((! DRY_RUN)); then
+		local freshclam_active=0 clamd_active=0
+		if systemctl is-active --quiet clamav-freshclam 2>/dev/null; then
+			freshclam_active=1
+		fi
+		if systemctl is-active --quiet clamd@scan 2>/dev/null || systemctl is-active --quiet clamd@scan.service 2>/dev/null; then
+			clamd_active=1
+		fi
+		# Collect status output safely
+		{
+			printf '=== Section 16: ClamAV Report ===\n'
+			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
+			printf -- '--- clamav-freshclam status ---\n'
+			systemctl status clamav-freshclam --no-pager 2>&1 || true
+			printf '\n--- clamd@scan status ---\n'
+			systemctl status clamd@scan --no-pager 2>&1 || systemctl status clamd@scan.service --no-pager 2>&1 || true
+			printf '\n--- ClamAV version / DB ---\n'
+			clamscan --version 2>&1 || true
+			freshclam --version 2>&1 || true
+		} | write_user_report "section-21-clamav-${REPORT_DATE}.txt" || true
+		((freshclam_active)) || add_action_item 16 MEDIUM "CLAMAV_FRESHCLAM_NOT_RUNNING" \
+			"clamav-freshclam is not running — run: sudo systemctl start clamav-freshclam"
+		((clamd_active || ! onaccess)) || add_action_item 16 MEDIUM "CLAMAV_CLAMD_NOT_RUNNING" \
+			"clamd@scan is not running — run: sudo systemctl start clamd@scan"
+		if cmd_exists clamscan; then
+			add_action_item 16 MEDIUM "CLAMAV_INITIAL_SCAN" \
+				"Run initial ClamAV home-directory scan (handled automatically in remediation step)."
 		else
-			record_change SNAPSHOT_DATA "$home/.snapshots"
-			if ((home_pending)); then
-				install -d -m 700 /var/lib/fedora-harden
-				grep -qx '\.' /var/lib/fedora-harden/exclude-queue 2>/dev/null ||
-					echo . >>/var/lib/fedora-harden/exclude-queue
-				add_action_item 25 MEDIUM "HOME_SUBVOLUME_PENDING" \
-					"Restart once to finish setting up home snapshots: at the next boot, before anyone logs in, $home becomes its own Btrfs subvolume (contents and permissions kept)."
+			add_action_item 16 HIGH "CLAMAV_NOT_INSTALLED" \
+				"ClamAV could not be installed — install it, then re-run section 16: sudo dnf install clamav clamd clamav-update && sudo ./fedora-harden.sh --only 16"
+		fi
+		add_action_item 16 LOW "CLAMAV_REVIEW" \
+			"Review ClamAV status: $USER_RESULTS_DIR/section-21-clamav-${REPORT_DATE}.txt"
+	fi
+}
+
+# _clamav_container() - Section 16 on image-based systems: a weekly scan of /home in
+# a throwaway container (Podman quadlet) instead of layering ClamAV into the image.
+# The signatures ship in the image, refreshed before each scan (Pull=newer). The
+# container sees /home read-only, has no network and a read-only root, and keeps a
+# single capability: reading any file (DAC_READ_SEARCH). SELinux labelling is off
+# for it because relabelling /home for a container would change every file's label.
+_clamav_container() {
+	section 16 "ClamAV scan (container, image-based system)"
+	if ! cmd_exists podman; then
+		warn "podman is not available — scheduled ClamAV container scan not set up."
+		add_action_item 16 MEDIUM "CLAMAV_NO_PODMAN" "Install podman (it ships in Fedora Atomic images), then re-run section 16."
+		return 0
+	fi
+	local home_dir quadlet="/etc/containers/systemd/fedora-harden-clamscan.container"
+	home_dir="$(readlink -f /home 2>/dev/null || echo /home)"
+	write_new_file "$quadlet" 0644 <<EOF || return 0
+# Written by fedora-harden.sh (section 16): weekly ClamAV scan of $home_dir in a
+# throwaway container. Results: journalctl -u fedora-harden-clamscan
+[Unit]
+Description=ClamAV scan of home directories in a container (fedora-harden)
+
+[Container]
+Image=$CLAMAV_IMAGE
+Pull=newer
+Entrypoint=clamscan
+Exec=--recursive --infected /scan
+Volume=$home_dir:/scan:ro
+ReadOnly=true
+Network=none
+DropCapability=all
+AddCapability=DAC_READ_SEARCH
+NoNewPrivileges=true
+SecurityLabelDisable=true
+
+[Service]
+Type=oneshot
+TimeoutStartSec=6h
+EOF
+	write_new_file /etc/systemd/system/fedora-harden-clamscan.timer 0644 <<'EOF' || return 0
+[Unit]
+Description=Weekly ClamAV container scan (fedora-harden)
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=2h
+
+[Install]
+WantedBy=timers.target
+EOF
+	# Check the quadlet before enabling: a typo would otherwise only show in the journal.
+	if ((! DRY_RUN)) && [[ -x /usr/libexec/podman/quadlet ]] &&
+		! QUADLET_UNIT_DIRS=/etc/containers/systemd /usr/libexec/podman/quadlet -dryrun >/dev/null 2>&1; then
+		warn "Podman rejected $quadlet — run: /usr/libexec/podman/quadlet -dryrun"
+		add_action_item 16 MEDIUM "CLAMAV_QUADLET_INVALID" "Podman rejected $quadlet — check: QUADLET_UNIT_DIRS=/etc/containers/systemd /usr/libexec/podman/quadlet -dryrun"
+		return 0
+	fi
+	if enable_timer fedora-harden-clamscan.timer; then
+		ok "Weekly ClamAV container scan scheduled (fedora-harden-clamscan.timer)."
+	else
+		warn "Could not enable fedora-harden-clamscan.timer."
+	fi
+	add_action_item 16 MEDIUM "CLAMAV_FIRST_SCAN" \
+		"Run the first ClamAV scan (pulls $CLAMAV_IMAGE): sudo systemctl start fedora-harden-clamscan — results: journalctl -u fedora-harden-clamscan (the unit fails when a file is FOUND)."
+	if rpm -q clamav >/dev/null 2>&1; then
+		add_action_item 16 LOW "CLAMAV_LAYERED" \
+			"ClamAV is layered into this image. Once the container scan works, the layer can go: rpm-ostree uninstall clamav clamd clamav-update (plus clamtk if installed), then reboot."
+	fi
+}
+
+# ============================================================================
+#  SECTION 17 — OpenSCAP
+# ============================================================================
+# sec_17_openscap() - Install and run OpenSCAP compliance scanner
+# Installs OpenSCAP framework and runs initial compliance scan against security baseline.
+sec_17_openscap() {
+	should_run 17 || return 0
+	section 17 "OpenSCAP compliance scanner"
+	if ((IS_OSTREE)); then
+		_oscap_in_container
+	else
+		_oscap_on_host || return 0
+	fi
+	_oscap_report
+}
+
+# _oscap_in_container() - Image-based systems: scan the host read-only from a
+# throwaway Fedora container (oscap-chroot) instead of layering OpenSCAP.
+_oscap_in_container() {
+	local release="${FEDORA_MAJOR:-0}"
+	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo 44)"
+	local image="registry.fedoraproject.org/fedora:${release}"
+	if ! cmd_exists podman; then
+		warn "podman is not available — OpenSCAP scan skipped."
+		return 0
+	fi
+	info "Image-based system: OpenSCAP runs in a throwaway $image container and reads the host read-only (nothing is layered)."
+	if confirm "Run a baseline scan now (results in /root/scap-report.html)?"; then
+		# Host networking: the container only downloads the scanner, and this avoids
+		# depending on the container network stack (nested setups, unusual firewalls).
+		# Its package cache lives in memory: the container is thrown away anyway.
+		# oscap exits 2 when rules fail, so success is judged by the results file.
+		((DRY_RUN)) || rm -f /root/scap-results.xml /root/scap-report.html
+		run "podman run --rm --network host --tmpfs /var/cache/libdnf5:rw,size=2g --tmpfs /tmp:rw,size=512m --security-opt label=disable -v /:/host:ro -v /root:/out '$image' sh -c 'dnf -y -q install openscap-scanner scap-security-guide >/dev/null && oscap-chroot /host xccdf eval --profile xccdf_org.ssgproject.content_profile_standard --results /out/scap-results.xml --report /out/scap-report.html /usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml' || true"
+		if ((DRY_RUN)); then
+			return 0
+		elif [[ -s /root/scap-results.xml ]]; then
+			ok "Report: /root/scap-report.html"
+		else
+			local why=""
+			[[ -s "${ERROR_CAPTURE_FILE:-}" ]] && why="$(tail -n 3 "$ERROR_CAPTURE_FILE" | tr '\n' ' ')"
+			warn "The OpenSCAP container produced no results${why:+: $why}"
+			add_action_item 17 MEDIUM "SCAP_CONTAINER_FAILED" \
+				"The OpenSCAP scan container did not produce results${why:+ ($why)}. Check network access to registry.fedoraproject.org and re-run section 17."
+		fi
+	fi
+}
+
+# _oscap_on_host() - Package-based systems: install OpenSCAP and scan. Returns 1 to skip.
+_oscap_on_host() {
+	pkg_install openscap-scanner scap-security-guide
+	# On rpm-ostree, packages are staged — oscap may not be available until reboot.
+	# Use cmd_exists check only; do not hard-fail if missing.
+	ensure_command_dep oscap "OpenSCAP compliance scan" openscap-scanner || true
+	if ! cmd_exists oscap; then
+		warn "oscap command is unavailable after dependency checks — skipping section 17."
+		return 1
+	fi
+	local content="/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml"
+	if [[ ! -f "$content" ]]; then
+		warn "SSG content missing at expected path; retrying dependency install and alternate path lookup."
+		pkg_install scap-security-guide
+		if [[ ! -f "$content" ]]; then
+			local alt_content=""
+			local candidate
+			for candidate in /usr/share/xml/scap/ssg/content/ssg-fedora*-ds.xml; do
+				[[ -f "$candidate" ]] || continue
+				alt_content="$candidate"
+				break
+			done
+			if [[ -n "$alt_content" ]]; then
+				content="$alt_content"
+				info "Using alternate SSG content path: $content"
+			else
+				warn "No Fedora SSG datastream found; skipping OpenSCAP scan."
+				return 1
+			fi
+		fi
+	fi
+	info "Available profiles:"
+	run "oscap info '$content' | grep -E '^(Profile|Title)' | head -20 || true"
+	if confirm "Run a baseline scan now (results in /root/scap-report.html)?"; then
+		run "oscap xccdf eval \
+            --profile xccdf_org.ssgproject.content_profile_standard \
+            --results /root/scap-results.xml \
+            --report  /root/scap-report.html \
+            '$content' || true"
+		ok "Report: /root/scap-report.html"
+	fi
+}
+
+# scap_results() - Parse an XCCDF results file. Prints "<pass> <fail> <notchecked>",
+# or with "failing" the IDs of failed rules. Each result is a <rule-result idref=...>
+# element with a nested <result>fail</result>, not a result="..." attribute.
+# Usage: scap_results <results.xml> [counts|failing]
+scap_results() {
+	awk -v want="${2:-counts}" '
+		/<rule-result[ >]/ {
+			id = ""
+			if (match($0, /idref="[^"]*"/)) id = substr($0, RSTART + 7, RLENGTH - 8)
+		}
+		/<result>[a-z]+<\/result>/ {
+			r = $0
+			sub(/.*<result>/, "", r)
+			sub(/<\/result>.*/, "", r)
+			n[r]++
+			if (want == "failing" && r == "fail" && id != "") print id
+		}
+		END { if (want == "counts") print n["pass"] + 0, n["fail"] + 0, n["notchecked"] + 0 }
+	' "$1"
+}
+
+# _oscap_report() - Copy results to the user's results folder and summarise them.
+_oscap_report() {
+	if ((! DRY_RUN)); then
+		copy_to_user_results /root/scap-report.html "section-22-openscap-${REPORT_DATE}.html"
+		copy_to_user_results /root/scap-results.xml "section-22-openscap-results-${REPORT_DATE}.xml"
+		local pass_count="?" fail_count="?" notchecked_count="?"
+		if [[ -f /root/scap-results.xml ]]; then
+			read -r pass_count fail_count notchecked_count < <(
+				scap_results /root/scap-results.xml 2>/dev/null || printf '? ? ?\n'
+			)
+			info "OpenSCAP results — pass: $pass_count  fail: $fail_count  not-checked: $notchecked_count"
+			{
+				printf '=== Section 17: OpenSCAP Compliance Summary ===\n'
+				printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
+				printf 'Results XML:  /root/scap-results.xml\n'
+				printf 'HTML report:  /root/scap-report.html\n\n'
+				printf 'Pass:         %s\n' "$pass_count"
+				printf 'Fail:         %s\n' "$fail_count"
+				printf 'Not checked:  %s\n\n' "$notchecked_count"
+				printf -- '--- Top 25 failing rules ---\n'
+				scap_results /root/scap-results.xml failing 2>/dev/null |
+					head -25 ||
+					printf '(no failures found or XML parse error)\n'
+			} | write_user_report "section-22-openscap-summary-${REPORT_DATE}.txt" || true
+			local fail_n
+			fail_n="${fail_count//[^0-9]/}"
+			if [[ -n "$fail_n" ]] && ((fail_n > 0)) 2>/dev/null; then
+				add_action_item 17 HIGH "SCAP_FAILED_RULES" \
+					"OpenSCAP: $fail_count rule(s) failed — review $USER_RESULTS_DIR/section-22-openscap-${REPORT_DATE}.html"
+			else
+				ok "OpenSCAP scan: $pass_count passing, $fail_count failing."
+			fi
+		else
+			add_action_item 17 MEDIUM "SCAP_NO_SCAN" \
+				"OpenSCAP scan was skipped or results not found — rerun section 17 to generate compliance report."
+		fi
+	fi
+}
+
+# ============================================================================
+#  SECTION 18 — Container Security (Podman + Toolbox)
+# ============================================================================
+# sec_18_containers() - Rootless Podman + Toolbox containerized-mindset hardening.
+# Establishes a "containerized mindset" security posture where:
+#   • System-level administration runs natively (this script, system tools)
+#   • Development, daily work, and untrusted software run inside containers
+# Hardens image policy, runtime defaults, and registry resolution to reduce
+# the attack surface of containerised workloads.
+sec_18_containers() {
+	should_run 18 || return 0
+	section 18 "Container security (Podman + Toolbox — containerized mindset)"
+
+	local box_tool
+	box_tool="$(image_box_tool)"
+	if ((IS_OSTREE)); then
+		# Atomic images ship podman and their box tool; layer toolbox only where it
+		# is the platform's tool and missing (Universal Blue uses distrobox).
+		pkg_install podman
+		[[ "$box_tool" == toolbox ]] && pkg_install toolbox
+	else
+		pkg_install podman toolbox
+	fi
+	ensure_command_dep podman "rootless container engine" podman || true
+	if ! cmd_exists podman; then
+		warn "podman not available after install attempt — skipping section 18."
+		return 0
+	fi
+
+	if ((IS_OSTREE)); then
+		_tools_box_setup "$box_tool"
+	else
+		if confirm "Install buildah (OCI image builder) and skopeo (image inspection/transfer)?"; then
+			pkg_install buildah skopeo
+		fi
+		if confirm "Install podman-compose (docker-compose compatibility layer)?"; then
+			pkg_install podman-compose
+		fi
+	fi
+
+	# ── Rootless Podman: subuid/subgid ───────────────────────────────────────
+	local run_user="${TARGET_USER:-${SUDO_USER:-}}"
+	if [[ -n "$run_user" && "$run_user" != "root" ]]; then
+		if ! grep -q "^${run_user}:" /etc/subuid 2>/dev/null; then
+			info "Adding subuid range for rootless Podman (user: $run_user)..."
+			if ((! DRY_RUN)); then
+				backup_file /etc/subuid || return 0
+				usermod --add-subuids 100000-165535 "$run_user" 2>/dev/null ||
+					warn "usermod --add-subuids failed for $run_user — rootless Podman needs a range in /etc/subuid."
+			else
+				info "[DRY] Would add subuid 100000-165535 for $run_user"
+			fi
+		else
+			ok "subuid entry already present for $run_user."
+		fi
+		if ! grep -q "^${run_user}:" /etc/subgid 2>/dev/null; then
+			info "Adding subgid range for rootless Podman (user: $run_user)..."
+			if ((! DRY_RUN)); then
+				backup_file /etc/subgid || return 0
+				usermod --add-subgids 100000-165535 "$run_user" 2>/dev/null ||
+					warn "usermod --add-subgids failed for $run_user — rootless Podman needs a range in /etc/subgid."
+			else
+				info "[DRY] Would add subgid 100000-165535 for $run_user"
+			fi
+		else
+			ok "subgid entry already present for $run_user."
+		fi
+
+		# ── User-level containers.conf with secure runtime defaults ──────────
+		local user_home cont_conf_dir cont_conf
+		user_home="$(user_home "$run_user")"
+		cont_conf_dir="${user_home}/.config/containers"
+		cont_conf="${cont_conf_dir}/containers.conf"
+		if [[ -n "$user_home" ]]; then
+			if ((! DRY_RUN)); then
+				install -d -m 700 "$cont_conf_dir" 2>/dev/null || true
+				if [[ ! -f "$cont_conf" ]]; then
+					backup_file "$cont_conf" || return 0
+					cat 2>/dev/null >"$cont_conf" <<'EOF'
+# Rootless Podman hardening defaults — written by fedora-harden.sh
+[containers]
+# Block privilege escalation inside containers
+no_new_privileges = true
+
+# Enforce kernel syscall allowlist (system default seccomp profile)
+seccomp_profile = "/usr/share/containers/seccomp.json"
+
+# Minimal capability set — grant only what is explicitly required per workload
+default_capabilities = [
+    "CHOWN",
+    "DAC_OVERRIDE",
+    "FOWNER",
+    "FSETID",
+    "KILL",
+    "NET_BIND_SERVICE",
+    "SETFCAP",
+    "SETGID",
+    "SETPCAP",
+    "SETUID",
+    "SYS_CHROOT",
+]
+
+[engine]
+# crun is the default OCI runtime on Fedora; preferred over runc for performance + security
+# runtime = "crun"
+EOF
+					run "chown '${run_user}:${run_user}' '${cont_conf}'"
+					ok "Wrote rootless containers.conf for $run_user (no-new-privileges + seccomp defaults)."
+				else
+					ok "containers.conf already exists for $run_user — not overwriting."
+				fi
+			else
+				info "[DRY] Would write ${cont_conf} with no-new-privileges + seccomp + minimal caps."
 			fi
 		fi
 	fi
 
-	_routine_timer snapshot "Home snapshot when due (frequency follows how actively this machine is used)" hourly || return 0
-	_routine_timer index "Weekly home index: note what grew, flag new large folders" weekly || return 0
-	if [[ "$backend" != rsync ]]; then
-		write_new_file /etc/systemd/system/fedora-harden-exclude.service 0644 <<EOF || return 0
-[Unit]
-Description=Leave approved folders out of home snapshots (fedora-harden), before anyone logs in
-Before=systemd-user-sessions.service
-ConditionFileNotEmpty=/var/lib/fedora-harden/exclude-queue
+	# ── System image policy: reject pulls from unregistered registries ────────
+	# Default Fedora policy is 'insecureAcceptAnything' for all registries.
+	# Hardened policy sets default to 'reject' and explicitly allows trusted sources.
+	local policy_file="/etc/containers/policy.json"
+	# Merge, never replace: image-based systems sign their own updates in this file
+	# (e.g. Universal Blue: sigstoreSigned for ghcr.io/ublue-os); replacing it would
+	# drop that check. Only the catch-all for unknown registries becomes "reject",
+	# and the trusted registries are added if they are missing.
+	if [[ ! -f "$policy_file" ]]; then
+		warn "Container image policy file not found at $policy_file — skipping policy hardening."
+	elif ! have_cmd python3; then
+		add_action_item 18 LOW "CONTAINER_POLICY_REVIEW" \
+			"Review /etc/containers/policy.json: unknown registries should be rejected (python3 is needed to edit it safely)."
+	else
+		local policy_state
+		policy_state="$(
+			python3 - "$policy_file" <<'PY' 2>/dev/null || echo error
+import json, sys
+p = json.load(open(sys.argv[1]))
+docker = p.get("transports", {}).get("docker", {})
+catch = docker.get("", p.get("default", []))
+print("open" if any(r.get("type") == "insecureAcceptAnything" for r in catch) else "restricted")
+PY
+		)"
+		case "$policy_state" in
+		restricted)
+			ok "Container image policy already rejects unknown registries."
+			;;
+		open)
+			if confirm "Harden the container image policy to reject unknown registries? (keeps existing signature rules; allows Fedora, CentOS, Red Hat, quay.io, docker.io)"; then
+				backup_file "$policy_file" || return 0
+				if ((DRY_RUN)); then
+					info "Would merge a reject-by-default rule into $policy_file"
+				elif python3 - "$policy_file" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+p = json.load(open(path))
+docker = p.setdefault("transports", {}).setdefault("docker", {})
+for registry in ("registry.fedoraproject.org", "registry.centos.org",
+                 "registry.access.redhat.com", "quay.io", "docker.io"):
+    docker.setdefault(registry, [{"type": "insecureAcceptAnything"}])
+docker[""] = [{"type": "reject"}]
+p["default"] = [{"type": "reject"}]
+with open(path, "w") as f:
+    json.dump(p, f, indent=4)
+    f.write("\n")
+PY
+				then
+					ok "Image policy hardened — pulls from unlisted registries are rejected; existing signature rules kept."
+				else
+					warn "Could not update $policy_file."
+				fi
+			else
+				add_action_item 18 LOW "CONTAINER_POLICY_PERMISSIVE" \
+					"Container image policy accepts images from any registry. Consider rejecting unknown registries in /etc/containers/policy.json."
+			fi
+			;;
+		*)
+			warn "Could not read $policy_file as JSON — leaving it unchanged."
+			;;
+		esac
+	fi
 
-[Service]
-Type=oneshot
-ExecStart=$ROUTINE_HELPER exclude-convert
-
-[Install]
-WantedBy=multi-user.target
+	# ── Block unqualified image names resolving silently to docker.io ─────────
+	# Without this, 'podman pull nginx' silently resolves to docker.io/library/nginx.
+	# Requiring fully-qualified names (registry/org/image:tag) prevents supply-chain
+	# confusion and makes registry provenance explicit.
+	local reg_conf_d="/etc/containers/registries.conf.d"
+	local reg_conf="${reg_conf_d}/99-hardening.conf"
+	if [[ ! -f "$reg_conf" ]]; then
+		if ((! DRY_RUN)); then
+			install -d -m 755 "$reg_conf_d" 2>/dev/null || true
+			backup_file "$reg_conf" || return 0
+			cat 2>/dev/null >"$reg_conf" <<'EOF'
+# Require fully-qualified image names — written by fedora-harden.sh
+# An empty list prevents silent docker.io resolution for unqualified names.
+# Always use full names: docker.io/library/nginx, quay.io/fedora/fedora, etc.
+unqualified-search-registries = []
 EOF
-		backup_file /etc/systemd/system/multi-user.target.wants/fedora-harden-exclude.service || return 0
-		run "systemctl daemon-reload && systemctl enable fedora-harden-exclude.service" || true
-	fi
-
-	if ((!DRY_RUN)); then
-		info "Indexing the home folder (folders of 5 GB or more)..."
-		FH_NO_WAIT=1 "$ROUTINE_HELPER" index >/dev/null 2>&1 || true
-		_snapshot_exclusions "$backend"
-	fi
-	_offsite_options "$home"
-	ok "Home protection on: $backend. The first snapshot comes within the hour; how often depends on how much the machine is used."
-}
-
-# _backup_target <home> - Where copies go without Btrfs: --backup-target, or a drive
-# configured for backups (/backup, /mnt/backup) — only if it is a different device;
-# otherwise /var/lib/fedora-harden/home-copies on the same disk.
-_backup_target() {
-	local home="$1" t
-	for t in "$BACKUP_TARGET" /backup /mnt/backup; do
-		[[ -n "$t" && -d "$t" ]] || continue
-		if [[ "$(stat -c %d "$t")" != "$(stat -c %d "$home")" ]]; then
-			echo "$t/fedora-harden-home"
-			return 0
-		fi
-		[[ "$t" == "$BACKUP_TARGET" ]] && warn "$t is on the same drive as $home; using the default location."
-	done
-	add_action_item 25 MEDIUM "COPIES_SAME_DISK" \
-		"Home copies are kept on the same disk ($home): they help with deleted files, not a failed disk. With a second drive: sudo ./fedora-harden.sh --only 25 --backup-target /path/on/that/drive"
-	echo /var/lib/fedora-harden/home-copies
-}
-
-# _snapshot_exclusions <backend> - Offer to leave each large replaceable folder of
-# the index out of snapshots (asked one by one; off under --yes).
-_snapshot_exclusions() {
-	local backend="$1" index=/var/lib/fedora-harden/home-index.tsv path size class excl=""
-	[[ -s "$index" ]] || return 0
-	while IFS=$'\t' read -r path size class; do
-		[[ "$class" == replaceable ]] || continue
-		confirm "Leave $path ($size GB, replaceable) out of home snapshots?" no || continue
-		if [[ "$backend" == rsync ]]; then
-			excl+="$path "
+			ok "Blocked unqualified image name resolution — explicit registry required for all pulls."
 		else
-			printf '%s\n' "$path" >>/var/lib/fedora-harden/exclude-queue
-			info "$path will become its own subvolume at the next boot, before anyone logs in."
+			info "[DRY] Would write ${reg_conf} disabling unqualified registry search."
 		fi
-	done < <(sort -t$'\t' -k2 -rn "$index")
-	[[ -n "$excl" ]] && sed -i "s|^EXCLUDES=.*|EXCLUDES=\"${excl% }\"|" /etc/fedora-harden/snapshots
-	return 0
+	else
+		ok "Registry conf.d override already present at $reg_conf."
+	fi
+
+	# ── Box tool availability check ───────────────────────────────────────────
+	if ! cmd_exists "$box_tool"; then
+		warn "$box_tool command not found after install. On rpm-ostree systems a reboot may be required."
+	else
+		ok "$box_tool is available for development and command-line tools."
+	fi
+
+	# ── What a box is (and is not) ────────────────────────────────────────────
+	# toolbox and distrobox containers are privileged (rootless), run without SELinux
+	# separation, share your home directory and mount the host's / at /run/host. They
+	# keep the host clean; they do not contain what runs inside them.
+	warn "Toolbox and distrobox are not a security boundary: their containers share your home, see the host at /run/host and run without SELinux separation. Use them to keep the host clean, not to run untrusted software."
+
+	# ── Post-run guidance action items ────────────────────────────────────────
+	add_action_item 18 MEDIUM "CONTAINER_WORKFLOW" \
+		"Use $box_tool for development and command-line tools so the host stays clean — it does not isolate them (shared home, host access). For untrusted software use a Flatpak with tight permissions, or: podman run --rm --read-only --cap-drop all --security-opt no-new-privileges --network none -v ./dir:/work:ro,Z IMAGE"
+	add_action_item 18 LOW "CONTAINER_NETWORK_AUDIT" \
+		"Review Podman network isolation: run 'podman network ls' and use 'podman network create --internal' for workloads that must not reach the internet. Verify inter-container traffic is explicitly controlled."
+
+	ok "Section 18 complete — rootless Podman hardened, image policy set, $box_tool ready."
 }
 
-# _offsite_options <home> - Snapshots live on the same disk. Rank the ways to keep a
-# copy elsewhere by what this machine has, and let the person choose.
-_offsite_options() {
-	local usb net have_pika=0 have_dejadup=0
-	usb="$(lsblk -nrpo MOUNTPOINT,HOTPLUG 2>/dev/null | awk '$2 == 1 && $1 != "" {print $1; exit}' || true)"
-	net="$(findmnt -rn -t cifs,nfs,nfs4,smb3 -o TARGET 2>/dev/null | head -1 || true)"
-	flatpak info org.gnome.World.PikaBackup >/dev/null 2>&1 && have_pika=1
-	flatpak info org.gnome.DejaDup >/dev/null 2>&1 && have_dejadup=1
-	local n=1
-	if [[ -n "$usb" ]]; then
-		add_action_item 25 MEDIUM "OFFSITE_${n}" \
-			"Off-machine copy, best fit (external drive at $usb): Pika Backup$( ((have_pika)) && echo ' (installed)' || echo ' — flatpak install flathub org.gnome.World.PikaBackup'). Encrypted, deduplicated, runs on a schedule."
-		((++n))
+# _tools_box_setup() - Image-based systems: keep build and audit tools out of the
+# image. Writes a distrobox manifest (distrobox) or prints the toolbox commands.
+_tools_box_setup() {
+	local box_tool="$1" run_user="${TARGET_USER:-${SUDO_USER:-}}"
+	local release="${FEDORA_MAJOR:-0}"
+	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo 44)"
+	info "Image-based system: build and audit tools ($TOOLS_BOX_PKGS) go in the '$TOOLS_BOX' $box_tool box, not the image."
+	if [[ "$box_tool" != distrobox ]]; then
+		add_action_item 18 LOW "TOOLS_BOX" \
+			"Create the tools box: toolbox create --release $release $TOOLS_BOX && toolbox run -c $TOOLS_BOX sudo dnf install -y $TOOLS_BOX_PKGS"
+		return 0
 	fi
-	if [[ -n "$net" ]]; then
-		add_action_item 25 MEDIUM "OFFSITE_${n}" \
-			"Off-machine copy to the network share at $net: Pika Backup to that folder, or restic in a box for a server you reach over SSH."
-		((++n))
+	if [[ -z "$run_user" || "$run_user" == root ]]; then
+		info "No desktop user (run with sudo or --user NAME) — distrobox manifest not written."
+		return 0
 	fi
-	add_action_item 25 LOW "OFFSITE_${n}" \
-		"Off-machine copy to cloud storage: Déjà Dup$( ((have_dejadup)) && echo ' (installed)' || echo ' — flatpak install flathub org.gnome.DejaDup') (Google Drive, Microsoft OneDrive, a Nextcloud/WebDAV server, or a folder), encrypted."
-	((++n))
-	[[ -z "$usb" ]] && add_action_item 25 LOW "OFFSITE_${n}" \
-		"Off-machine copy to an external drive (plug one in and re-run section 25 for a tailored suggestion): Pika Backup, flatpak install flathub org.gnome.World.PikaBackup"
-	return 0
+	local home ini
+	home="$(user_home "$run_user")"
+	[[ -n "$home" && -d "$home" ]] || return 0
+	ini="$home/.config/distrobox/$TOOLS_BOX.ini"
+	if [[ -f "$ini" ]]; then
+		ok "Distrobox manifest already present: $ini"
+	else
+		write_new_file "$ini" 0644 <<EOF || return 0
+# Build and audit tools kept out of the host image — written by fedora-harden.sh.
+# Create or recreate the box:
+#   distrobox assemble create --file $ini
+#   ujust distrobox-assemble CONTAINER=$TOOLS_BOX FILE=$ini   (Universal Blue)
+# Scan the host from inside it:  sudo oscap-chroot /run/host xccdf eval ...
+# Like every distrobox, it shares your home and sees the host: it keeps the host
+# clean, it does not isolate what runs inside it.
+[$TOOLS_BOX]
+image=registry.fedoraproject.org/fedora-toolbox:$release
+additional_packages="$TOOLS_BOX_PKGS"
+pull=true
+EOF
+		if ((! DRY_RUN)); then
+			chown -R "$run_user:" "$home/.config/distrobox" 2>/dev/null || true
+			ok "Wrote distrobox manifest $ini"
+		fi
+	fi
+	add_action_item 18 LOW "TOOLS_BOX" \
+		"Create the tools box (as $run_user): distrobox assemble create --file $ini — on Universal Blue also: ujust distrobox-assemble CONTAINER=$TOOLS_BOX FILE=$ini"
 }
 
 # ============================================================================
-#  SECTION 24 — Your routine (use-case automation)
+#  SECTION 19 — Your routine (use-case automation)
 # ============================================================================
-# sec_24_routine() - Set up the upkeep this machine's use cases need, as systemd
+# sec_19_routine() - Set up the upkeep this machine's use cases need, as systemd
 # timers calling one small helper (fedora-harden-routine). Everyday: monthly cleanup,
 # daily free-space check, weekly drift check and weekly summary (with a 90-day
 # relevance review), Btrfs scrub, disk health, a journal size cap. Creative and dev
 # add box upgrades and build-cache cleanup; laptop adds an optional charge limit.
 # Heavy jobs wait for mains power and for a game to end. Desktop notifications only
 # when something needs the person. Everything is undone by --rollback.
-sec_24_routine() {
-	should_run 24 || return 0
-	section 24 "Your routine: upkeep for how this machine is used"
+sec_19_routine() {
+	should_run 19 || return 0
+	section 19 "Your routine: upkeep for how this machine is used"
 
 	install_routine_helper || return 0
 
@@ -6278,13 +7252,13 @@ sec_24_routine() {
 	uses="$PROFILE_ARG"
 	if [[ -z "$uses" ]]; then
 		info "This machine looks like: $detected"
-		uses="$(prompt_input "Use cases to automate for (comma-separated: everyday, gaming, creative, dev, laptop)" "${detected// /,}")"
+		uses="$(prompt_input "Use cases to automate for (comma-separated: everyday, gaming, creative, dev, laptop, private)" "${detected// /,}")"
 	fi
 	local -a chosen=(everyday)
 	for u in ${uses//,/ }; do
 		case "$u" in
 		everyday) ;;
-		gaming | creative | dev | laptop) chosen+=("$u") ;;
+		gaming | creative | dev | laptop | private) chosen+=("$u") ;;
 		*) warn "Unknown use case '$u' — ignored." ;;
 		esac
 	done
@@ -6298,8 +7272,8 @@ sec_24_routine() {
 		reviewed="$(sed -n 's/^REVIEWED=//p' /etc/fedora-harden/profile 2>/dev/null)"
 		[[ -n "$reviewed" ]] || reviewed="$(date +%F)"
 	fi
-	write_new_file /etc/fedora-harden/profile 0644 <<EOF || return 0
-# Written by fedora-harden.sh (section 24). Re-run section 24 to change it.
+	write_new_file /etc/fedora-harden/profile 0600 <<EOF || return 0
+# Written by fedora-harden.sh (section 19). Re-run section 19 to change it.
 USE_CASES="$uses"
 REVIEWED=$reviewed
 EOF
@@ -6322,7 +7296,7 @@ EOF
 		_routine_timer scrub "Monthly Btrfs scrub (finds silent corruption)" monthly || return 0
 	fi
 	write_new_file /etc/systemd/journald.conf.d/50-fedora-harden.conf 0644 <<'EOF' || return 0
-# Written by fedora-harden.sh (section 24): logs never fill the disk.
+# Written by fedora-harden.sh (section 19): logs never fill the disk.
 [Journal]
 SystemMaxUse=1G
 EOF
@@ -6336,7 +7310,7 @@ EOF
 	# Use-case additions
 	local uupd=0
 	[[ -r /usr/share/ublue-os/image-info.json ]] && systemctl list-unit-files uupd.timer >/dev/null 2>&1 && uupd=1
-	if [[ " $uses " == *" creative "* || " $uses " == *" dev "* ]] && ((!uupd)); then
+	if [[ " $uses " == *" creative "* || " $uses " == *" dev "* ]] && ((! uupd)); then
 		_routine_timer boxes "Weekly upgrade of toolbox and distrobox containers" weekly || return 0
 	fi
 	if [[ " $uses " == *" dev "* ]]; then
@@ -6347,26 +7321,24 @@ EOF
 			_routine_timer flatpak-perms "Weekly Flatpak permission watch" weekly || return 0
 		fi
 		if cmd_exists ujust && ujust --list 2>/dev/null | grep -q install-resolve; then
-			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
+			add_action_item 19 LOW "RESOLVE_WITHOUT_LAYERING" \
 				"DaVinci Resolve without layering anything: ujust install-resolve (runs it in its own container, davincibox)."
-		elif ((IS_OSTREE)); then
-			add_action_item 24 LOW "RESOLVE_WITHOUT_LAYERING" \
-				"DaVinci Resolve without layering: run it in a distrobox made for it (the davincibox project), not as layered packages."
 		fi
 	fi
 	if [[ " $uses " == *" laptop "* ]]; then
 		_battery_limit
 	fi
 	((IS_OSTREE)) && _layer_audit
+	_personal_setup "$uses"
 	ROUTINE_ACTIVE=1
 	ok "Routine in place for: $uses. Weekly summary every Monday; desktop notifications only when something needs you."
 }
 
-# install_routine_helper() - Write the helper the routine timers call (sections 24, 25).
+# install_routine_helper() - Write the helper the routine timers call (sections 19, 20).
 install_routine_helper() {
 	write_new_file "$ROUTINE_HELPER" 0755 <<'ROUTINE_EOF'
 #!/usr/bin/bash
-# fedora-harden-routine - installed by fedora-harden.sh (section 24). The timers
+# fedora-harden-routine - installed by fedora-harden.sh (section 19). The timers
 # fedora-harden-*.timer call it; every run is logged to the journal under the tag
 # fedora-harden-routine. Undo everything with: sudo fedora-harden.sh --rollback
 #
@@ -6639,7 +7611,7 @@ review_text() {
     local saved detected msg freed
     saved="$(sed -n 's/^USE_CASES=//p' "$PROFILE" 2>/dev/null | tr -d '"')"
     detected="$(cmd_detect)"
-    msg="Review your routine (sudo fedora-harden.sh --only 24)."
+    msg="Review your routine (sudo fedora-harden.sh --only 19)."
     if [[ "$(tr ' ' '\n' <<<"$saved" | awk 'NF' | sort -u)" != "$(tr ' ' '\n' <<<"$detected" | awk 'NF' | sort -u)" ]]; then
         msg+=" Saved use cases: $saved; this machine now looks like: $detected."
     fi
@@ -6656,7 +7628,7 @@ cmd_notify_failed() {
     notify critical "Needs attention: ${unit%.service}" "$(journalctl -u "$unit" -n 2 -o cat --no-pager 2>/dev/null | tr '\n' ' ') — details: journalctl -u $unit"
 }
 
-# ── Home snapshots and copies (section 25) ──────────────────────────────────────
+# ── Home snapshots and copies (section 20) ──────────────────────────────────────
 # Config (/etc/fedora-harden/snapshots): BACKEND=snapper|btrfs|rsync, HOME_DIR=,
 # TARGET= (rsync copies), EXCLUDES= (space-separated, relative to HOME_DIR).
 SNAPCONF=/etc/fedora-harden/snapshots
@@ -6898,7 +7870,7 @@ cmd_index() {
         old="$(awk -F'\t' -v p="$path" '$1 == p {print $2}' "$index")"
         if [[ -z "$old" ]]; then
             printf '%s new: %s (%s GB, %s)\n' "$(date +%F)" "$path" "$size" "$class" >>"$notes"
-            [[ "$class" == replaceable ]] && say ATTENTION "new large replaceable folder $path ($size GB) — exclude it from snapshots: sudo fedora-harden.sh --only 25"
+            [[ "$class" == replaceable ]] && say ATTENTION "new large replaceable folder $path ($size GB) — exclude it from snapshots: sudo fedora-harden.sh --only 20"
         elif ((size > old + old / 4 + 1)); then
             printf '%s grew: %s %s → %s GB\n' "$(date +%F)" "$path" "$old" "$size" >>"$notes"
         fi
@@ -7006,10 +7978,10 @@ _battery_limit() {
 		local old
 		old="$(cat "$f" 2>/dev/null)"
 		write_new_file /etc/tmpfiles.d/fedora-harden-battery.conf 0644 <<EOF || return 0
-# Written by fedora-harden.sh (section 24): keep the battery at most 80% charged.
+# Written by fedora-harden.sh (section 19): keep the battery at most 80% charged.
 w $f - - - - 80
 EOF
-		if ((!DRY_RUN)) && printf '80' 2>/dev/null >"$f"; then
+		if ((! DRY_RUN)) && printf '80' 2>/dev/null >"$f"; then
 			record_change SYSFS "$f=$old"
 			ok "Battery charge limited to 80% (was $old%)."
 		fi
@@ -7028,20 +8000,20 @@ b = [x for x in d if x.get("booted")] or d[:1]
 print(" ".join(b[0].get("requested-packages", []) + b[0].get("requested-local-packages", [])))' 2>/dev/null)"
 	for pkg in $layered; do
 		case "$pkg" in
-		clamav* | clamtk) hint="section 21 scans in a container instead" ;;
+		clamav* | clamtk) hint="section 16 scans in a container instead" ;;
 		mat2) hint="Metadata Cleaner is a Flatpak" ;;
 		buildah | skopeo | podman-compose | setools* | openscap* | scap-security-guide | gcc | make | golang | nodejs* | python3-*) hint="belongs in a toolbox/distrobox box" ;;
 		*) continue ;;
 		esac
 		((++n))
-		add_action_item 24 LOW "LAYER_${pkg//[^a-zA-Z0-9]/_}" \
+		add_action_item 19 LOW "LAYER_${pkg//[^a-zA-Z0-9]/_}" \
 			"$pkg is layered into the image; $hint. Remove the layer: sudo rpm-ostree uninstall $pkg"
 	done
 	((n)) && info "$n layered package(s) have a better home — see the follow-ups."
 	return 0
 }
 
-# record_routine_state() - At the end of a run with section 24: checksums of the /etc
+# record_routine_state() - At the end of a run with section 19: checksums of the /etc
 # files this run manages and the services it started, for the weekly drift check.
 record_routine_state() {
 	((ROUTINE_ACTIVE)) || return 0
@@ -7075,316 +8047,182 @@ record_routine_state() {
 }
 
 # ============================================================================
-#  SECTION 17 — WireGuard with kill switch
+#  SECTION 20 — Home snapshots and copies
 # ============================================================================
-# sec_17_wireguard() - Install a WireGuard tunnel (--wireguard-config FILE) that
-# cannot leak: a kill switch drops outbound traffic that does not go through the
-# tunnel (also while the tunnel is down), and DNS is routed through the tunnel.
-# Without a config file the section does nothing.
-WG_IF="wg0"
-sec_17_wireguard() {
-	should_run 17 || return 0
-	section 17 "WireGuard tunnel with kill switch and DNS leak protection"
-	if [[ -z "$WG_CONFIG" ]]; then
-		info "No WireGuard config given — nothing to do. To set up a tunnel that cannot leak, re-run with: --only 17 --wireguard-config /path/to/provider.conf"
-		return 0
-	fi
+# sec_20_snapshots() - Protect the home folder against deleted or overwritten files,
+# with what the system already ships: Snapper where it is installed (Bazzite),
+# read-only Btrfs snapshots on other Btrfs systems, and hard-link incremental copies
+# (rsync) elsewhere — to a second drive when one is configured. How often follows how
+# actively the machine is used; nothing is taken when nothing changed. A home index
+# flags large replaceable folders; each is left out only with approval.
+sec_20_snapshots() {
+	should_run 20 || return 0
+	section 20 "Home snapshots and copies"
+	install_routine_helper || return 0
 
-	local endpoint_ip endpoint_port has_dns ks_on=0
-	_wg_check_config "$WG_CONFIG" || return 0
-	endpoint_ip="$_WG_ENDPOINT_IP" endpoint_port="$_WG_ENDPOINT_PORT" has_dns="$_WG_HAS_DNS"
-
-	pkg_install wireguard-tools
-	if ((has_dns)); then
-		# wg-quick hands DNS to systemd-resolved (resolvconf compatibility).
-		pkg_install systemd-resolved
-		run "systemctl enable --now systemd-resolved" || true
-		if ((!DRY_RUN)) && ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-			warn "systemd-resolved is not running: wg-quick cannot apply the tunnel's DNS server and will not start the tunnel."
-			add_action_item 17 HIGH "WG_NO_RESOLVED" \
-				"systemd-resolved must run for the tunnel's DNS (journalctl -u systemd-resolved -b), then: sudo systemctl restart wg-quick@${WG_IF}"
-		fi
-	fi
-	if ((!DRY_RUN)) && ! cmd_exists wg-quick; then
-		warn "wg-quick is not available — WireGuard setup skipped."
-		return 0
-	fi
-
-	local conf="/etc/wireguard/${WG_IF}.conf"
-	backup_file "$conf" || return 0
-	if ((DRY_RUN)); then
-		info "Would install $WG_CONFIG as $conf (mode 600) with DNS routed through the tunnel"
+	local home backend target="" fstype
+	home="$(readlink -f /home)"
+	fstype="$(findmnt -no FSTYPE -T "$home" 2>/dev/null)"
+	local home_pending=0
+	if [[ "$fstype" == btrfs ]]; then
+		backend=btrfs
+		cmd_exists snapper && backend=snapper
+		# Installed with bootc, home is a plain folder on Btrfs: make it its own
+		# subvolume at the next boot, before anyone logs in; snapshots start then.
+		btrfs subvolume show "$home" >/dev/null 2>&1 || home_pending=1
 	else
-		install -d -m 700 /etc/wireguard
-		# The provider's file, with the endpoint pinned to the address checked above
-		# (the kill switch allows exactly that address) and DNS routed through the
-		# tunnel: "~." makes the tunnel's DNS server answer every lookup.
-		if ! awk -v ep="Endpoint = ${endpoint_ip}:${endpoint_port}" '
-			/^[ \t]*Endpoint[ \t]*=/ { print ep; next }
-			/^[ \t]*(PostUp|PreDown)[ \t]*=.*fedora-harden/ { next }
-			{ print }' "$WG_CONFIG" 2>/dev/null >"$conf.new"; then
-			warn "Could not prepare $conf"
-			rm -f "$conf.new"
+		backend=rsync
+		pkg_install rsync
+		if ((! DRY_RUN)) && ! cmd_exists rsync; then
+			warn "rsync is not available — home copies not set up."
 			return 0
 		fi
-		if ((has_dns)); then
-			# Insert DNS routing right after [Interface].
-			sed -i '0,/^[ \t]*\[Interface\]/s//[Interface]\nPostUp = resolvectl domain %i "~." \&\& resolvectl default-route %i yes  # fedora-harden: DNS through the tunnel/' "$conf.new"
-		fi
-		chmod 600 "$conf.new" && mv -f "$conf.new" "$conf"
-		ok "Installed the tunnel config as $conf (mode 600, endpoint ${endpoint_ip}:${endpoint_port})."
+		target="$(_backup_target "$home")"
 	fi
+	info "Home folder $home ($fstype): $backend$([[ -n "$target" ]] && echo " → $target")"
 
-	# Kill switch (firewalld policies, permanent): outbound traffic from this host may
-	# only go into the tunnel (zone fedora-harden-vpn) or to the tunnel endpoint;
-	# everything else is rejected — also while the tunnel is down, so nothing leaks.
-	if ! cmd_exists firewall-cmd && ! cmd_exists firewall-offline-cmd; then
-		warn "firewalld is not installed — the kill switch needs it (section 5). Tunnel installed without a kill switch."
-		add_action_item 17 HIGH "WG_NO_KILLSWITCH" "Install firewalld (section 5), then re-run: sudo ./fedora-harden.sh --only 17 --wireguard-config $WG_CONFIG"
-	else
-		tool_dir_begin /etc/firewalld || return 0
-		_wg_kill_switch "$endpoint_ip" "$endpoint_port" && ks_on=1
-		tool_dir_end /etc/firewalld
-	fi
-
-	if run "systemctl enable --now wg-quick@${WG_IF}"; then
-		record_change WG_TUNNEL "$WG_IF"
-		ok "Tunnel ${WG_IF} is up and starts at boot."
-	else
-		warn "The tunnel did not come up — check: journalctl -u wg-quick@${WG_IF}"
-		local why
-		why="$(journalctl -u "wg-quick@${WG_IF}" -b --no-pager -o cat -n 3 2>/dev/null | tr '\n' ' ')"
-		add_action_item 17 HIGH "WG_TUNNEL_DOWN" \
-			"WireGuard tunnel ${WG_IF} did not start${why:+ ($why)}.$( ((ks_on)) && echo " The kill switch is active, so outbound traffic is blocked until it does.")"
-	fi
-	if ((ks_on)); then
-		add_action_item 17 LOW "WG_KILLSWITCH_INFO" \
-			"Kill switch active: without the tunnel this machine reaches only ${endpoint_ip}:${endpoint_port}. To allow your local network, add a rich rule to policy fedora-harden-killswitch; to remove everything: sudo ./fedora-harden.sh --rollback"
-	fi
-}
-
-# _wg_check_config <file> - Validate a WireGuard config for a leak-proof tunnel.
-# Sets _WG_ENDPOINT_IP, _WG_ENDPOINT_PORT, _WG_HAS_DNS. Returns 1 (with a reason)
-# when the config cannot be used.
-_wg_check_config() {
-	local f="$1" key endpoint host port allowed
-	_WG_ENDPOINT_IP="" _WG_ENDPOINT_PORT="" _WG_HAS_DNS=0
-	for key in PrivateKey Address PublicKey Endpoint AllowedIPs; do
-		if ! grep -qiE "^[[:space:]]*${key}[[:space:]]*=" "$f"; then
-			warn "WireGuard config $f has no $key — not installed."
-			add_action_item 17 MEDIUM "WG_CONFIG_INVALID" "The WireGuard config $f is incomplete (no $key). Download a complete config from your provider."
-			return 1
-		fi
-	done
-	allowed="$(grep -iE '^[[:space:]]*AllowedIPs[[:space:]]*=' "$f" | cut -d= -f2- | tr -d ' ')"
-	if [[ ",$allowed," != *",0.0.0.0/0,"* ]]; then
-		warn "WireGuard config routes only part of the traffic (AllowedIPs = $allowed) — a kill switch needs a full tunnel. Not installed."
-		add_action_item 17 MEDIUM "WG_SPLIT_TUNNEL" \
-			"$f is a split tunnel (AllowedIPs = $allowed). Use a full-tunnel config (AllowedIPs = 0.0.0.0/0, ::/0) for leak protection."
-		return 1
-	fi
-	if [[ ",$allowed," != *",::/0,"* ]]; then
-		# Not a leak: the kill switch rejects IPv6 outside the tunnel. But IPv6 stops working.
-		warn "The WireGuard config carries IPv4 only (no ::/0): with the kill switch, IPv6 traffic is blocked."
-		add_action_item 17 LOW "WG_NO_IPV6" \
-			"$f routes only IPv4 through the tunnel (AllowedIPs has no ::/0), so the kill switch blocks IPv6. Use your provider's config with IPv6 (AllowedIPs = 0.0.0.0/0, ::/0) if you need it."
-	fi
-	if (($(grep -ciE '^[[:space:]]*\[Peer\]' "$f") != 1)); then
-		warn "WireGuard config must have exactly one [Peer] — not installed."
-		return 1
-	fi
-	endpoint="$(grep -iE '^[[:space:]]*Endpoint[[:space:]]*=' "$f" | head -1 | cut -d= -f2- | tr -d ' ')"
-	port="${endpoint##*:}"
-	host="${endpoint%:*}"
-	host="${host#[}"
-	host="${host%]}"
-	if [[ ! "$port" =~ ^[0-9]+$ ]]; then
-		warn "WireGuard endpoint '$endpoint' has no port — not installed."
-		return 1
-	fi
-	if [[ ! "$host" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
-		# A hostname would need DNS before the tunnel is up, which the kill switch
-		# blocks: pin the address it resolves to now.
-		local ip
-		ip="$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR == 1 {print $1}')"
-		if [[ -z "$ip" ]]; then
-			warn "Cannot resolve the WireGuard endpoint $host — not installed."
-			return 1
-		fi
-		info "Endpoint $host resolves to $ip; the tunnel and kill switch use that address."
-		add_action_item 17 LOW "WG_ENDPOINT_PINNED" \
-			"The WireGuard endpoint $host was pinned to $ip. If your provider changes that address, re-run section 17."
-		host="$ip"
-	fi
-	grep -qiE '^[[:space:]]*DNS[[:space:]]*=' "$f" && _WG_HAS_DNS=1
-	if ((!_WG_HAS_DNS)); then
-		add_action_item 17 MEDIUM "WG_NO_DNS" \
-			"The WireGuard config sets no DNS server, so DNS lookups do not go through the tunnel. Add your provider's DNS (DNS = ...) under [Interface] and re-run section 17."
-	fi
-	_WG_ENDPOINT_IP="$host" _WG_ENDPOINT_PORT="$port"
-}
-
-# _wg_kill_switch <endpoint-ip> <port> - firewalld policies: the host may send to the
-# tunnel zone and to the endpoint; every other outbound packet is rejected.
-_wg_kill_switch() {
-	local ip="$1" port="$2" fw
-	fw="$(fw_cmd)"
-	local -a cmds=(
-		"--permanent --new-zone=fedora-harden-vpn"
-		"--permanent --zone=fedora-harden-vpn --add-interface=${WG_IF}"
-		"--permanent --new-policy=fedora-harden-vpn-out"
-		# firewall-cmd accepts one of these options per call (ingress/egress zone,
-		# target/priority cannot be combined).
-		"--permanent --policy=fedora-harden-vpn-out --add-ingress-zone=HOST"
-		"--permanent --policy=fedora-harden-vpn-out --add-egress-zone=fedora-harden-vpn"
-		"--permanent --policy=fedora-harden-vpn-out --set-target=ACCEPT"
-		"--permanent --policy=fedora-harden-vpn-out --set-priority=-200"
-		"--permanent --new-policy=fedora-harden-killswitch"
-		"--permanent --policy=fedora-harden-killswitch --add-ingress-zone=HOST"
-		"--permanent --policy=fedora-harden-killswitch --add-egress-zone=ANY"
-		"--permanent --policy=fedora-harden-killswitch --set-target=REJECT"
-		"--permanent --policy=fedora-harden-killswitch --set-priority=-100"
-		"--permanent --policy=fedora-harden-killswitch --add-service=dhcp"
-		"--permanent --policy=fedora-harden-killswitch --add-service=dhcpv6"
-		"--permanent --policy=fedora-harden-killswitch --add-rich-rule='rule family=ipv4 destination address=${ip} port port=${port} protocol=udp accept'"
-	)
-	local c failed=0 info=""
-	for c in "${cmds[@]}"; do
-		# On a re-run the objects already exist; the check below judges the result.
-		run "$fw $c >/dev/null 2>&1 || true"
-	done
-	((FW_OFFLINE)) || run "firewall-cmd --reload" || failed=1
-	if ((!DRY_RUN)); then
-		info="$($fw --permanent --info-policy=fedora-harden-killswitch 2>/dev/null || true)"
-		[[ "$info" == *"target: REJECT"* && "$info" == *"egress-zones: ANY"* && "$info" == *"address=\"${ip}\""* ]] || failed=1
-	fi
-	if ((failed)); then
-		warn "firewalld did not accept the kill switch — outbound traffic is NOT restricted."
-		add_action_item 17 HIGH "WG_KILLSWITCH_FAILED" "The kill switch could not be loaded: check 'sudo firewall-cmd --list-all-policies' and journalctl -u firewalld."
-		return 1
-	fi
-	ok "Kill switch on: outbound traffic goes through ${WG_IF} or to ${ip}:${port} only."
-}
-
-# ============================================================================
-#  SECTION 18 — Fail2Ban
-# ============================================================================
-# sec_18_fail2ban() - Install and configure Fail2Ban IDS
-# Installs Fail2Ban for intrusion detection and auto-banning of brute-force attempts.
-sec_18_fail2ban() {
-	should_run 18 || return 0
-	section 18 "Fail2Ban"
-	pkg_install fail2ban
-	local fb_dir="/etc/fail2ban"
-	local jl="${fb_dir}/jail.local"
-
-	if ((DRY_RUN)); then
-		if [[ -f "$jl" ]]; then
-			info "$jl already exists — would leave unchanged."
-		else
-			info "Would write $jl (not present yet)"
-		fi
-	else
-		# Ensure configuration directory exists before writing jail.local.
-		if ! run "install -d -m 0755 '$fb_dir'"; then
-			warn "Could not create $fb_dir; skipping Fail2Ban configuration for now."
-			add_action_item 18 HIGH "FAIL2BAN_DIR_CREATE_FAILED" \
-				"Failed to create $fb_dir. Fix filesystem permissions and re-run section 18."
-			return 0
-		fi
-
-		if [[ ! -f "$jl" ]]; then
-			backup_file "$jl" || return 0
-			if ! cat 2>/dev/null >"$jl" <<'EOF'; then
-[DEFAULT]
-bantime  = 3600
-findtime = 600
-maxretry = 5
-backend  = systemd
-
-[sshd]
-enabled = true
-port    = ssh
-logpath = %(sshd_log)s
-backend = systemd
+	write_new_file /etc/fedora-harden/snapshots 0600 <<EOF || return 0
+# Written by fedora-harden.sh (section 20).
+BACKEND=$backend
+HOME_DIR=$home
+TARGET=$target
+EXCLUDES=""
 EOF
-				warn "Could not write $jl; skipping Fail2Ban activation for now."
-				add_action_item 18 HIGH "FAIL2BAN_JAIL_WRITE_FAILED" \
-					"Failed to write $jl. Fix filesystem/permissions and re-run section 18."
-				return 0
+	# The snapshot store is created by the helper on the first snapshot (Snapper's
+	# config on Bazzite: it thins to 24 recent, 7 daily, 4 weekly).
+	if ((! DRY_RUN)); then
+		if [[ "$backend" == rsync ]]; then
+			install -d -m 700 "$target" && record_change SNAPSHOT_DATA "$target"
+		else
+			record_change SNAPSHOT_DATA "$home/.snapshots"
+			if ((home_pending)); then
+				install -d -m 700 /var/lib/fedora-harden
+				grep -qx '\.' /var/lib/fedora-harden/exclude-queue 2>/dev/null ||
+					echo . >>/var/lib/fedora-harden/exclude-queue
+				add_action_item 20 MEDIUM "HOME_SUBVOLUME_PENDING" \
+					"Restart once to finish setting up home snapshots: at the next boot, before anyone logs in, $home becomes its own Btrfs subvolume (contents and permissions kept)."
 			fi
-			ok "Wrote $jl"
-		else
-			info "$jl already exists — leaving unchanged."
-		fi
-
-		# rpm-ostree hosts may have fail2ban staged but not active until reboot.
-		if ((IS_OSTREE)) && ! systemctl list-unit-files 2>/dev/null | grep -q '^fail2ban\.service'; then
-			warn "fail2ban is staged but not active yet on rpm-ostree. Reboot required before enabling service."
-			add_action_item 18 HIGH "FAIL2BAN_PENDING_REBOOT" \
-				"Reboot to activate staged fail2ban packages, then re-run section 18."
-			return 0
-		fi
-
-		if ! run "systemctl enable --now fail2ban"; then
-			warn "Unable to enable/start fail2ban right now."
-			add_action_item 18 MEDIUM "FAIL2BAN_ENABLE_FAILED" \
-				"Run: sudo systemctl enable --now fail2ban (after reboot on rpm-ostree hosts)."
-			return 0
 		fi
 	fi
 
-	# Post-enable status check and report
-	if ((!DRY_RUN)); then
-		local f2b_active=0 f2b_status=""
-		systemctl is-active --quiet fail2ban 2>/dev/null && f2b_active=1 || true
-		if ((f2b_active)); then
-			f2b_status="$(fail2ban-client status 2>&1 || true)"
-			ok "fail2ban is active."
-		else
-			warn "fail2ban is not active after enable — see report."
-			add_action_item 18 HIGH "FAIL2BAN_NOT_RUNNING" \
-				"fail2ban service is not running — run: sudo systemctl restart fail2ban"
-		fi
-		{
-			printf '=== Section 18: Fail2Ban Report ===\n'
-			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-			printf -- '--- Service status ---\n'
-			systemctl status fail2ban --no-pager 2>&1 || true
-			printf '\n--- Jail summary ---\n%s\n' "$f2b_status"
-			printf '\n--- jail.local contents ---\n'
-			[[ -f "$jl" ]] && cat "$jl" || printf '(not found)\n'
-		} | write_user_report "section-18-fail2ban-${REPORT_DATE}.txt" || true
-		if ((f2b_active)); then
-			add_action_item 18 LOW "FAIL2BAN_REVIEW" \
-				"Review fail2ban jail status and ban history: sudo fail2ban-client status sshd"
-		fi
+	_routine_timer snapshot "Home snapshot when due (frequency follows how actively this machine is used)" hourly || return 0
+	_routine_timer index "Weekly home index: note what grew, flag new large folders" weekly || return 0
+	if [[ "$backend" != rsync ]]; then
+		write_new_file /etc/systemd/system/fedora-harden-exclude.service 0644 <<EOF || return 0
+[Unit]
+Description=Leave approved folders out of home snapshots (fedora-harden), before anyone logs in
+Before=systemd-user-sessions.service
+ConditionFileNotEmpty=/var/lib/fedora-harden/exclude-queue
+
+[Service]
+Type=oneshot
+ExecStart=$ROUTINE_HELPER exclude-convert
+
+[Install]
+WantedBy=multi-user.target
+EOF
+		backup_file /etc/systemd/system/multi-user.target.wants/fedora-harden-exclude.service || return 0
+		run "systemctl daemon-reload && systemctl enable fedora-harden-exclude.service" || true
 	fi
+
+	if ((! DRY_RUN)); then
+		info "Indexing the home folder (folders of 5 GB or more)..."
+		FH_NO_WAIT=1 "$ROUTINE_HELPER" index >/dev/null 2>&1 || true
+		_snapshot_exclusions "$backend"
+	fi
+	_offsite_options "$home"
+	ok "Home protection on: $backend. The first snapshot comes within the hour; how often depends on how much the machine is used."
+}
+
+# _backup_target <home> - Where copies go without Btrfs: --backup-target, or a drive
+# configured for backups (/backup, /mnt/backup) — only if it is a different device;
+# otherwise /var/lib/fedora-harden/home-copies on the same disk.
+_backup_target() {
+	local home="$1" t
+	for t in "$BACKUP_TARGET" /backup /mnt/backup; do
+		[[ -n "$t" && -d "$t" ]] || continue
+		if [[ "$(stat -c %d "$t")" != "$(stat -c %d "$home")" ]]; then
+			echo "$t/fedora-harden-home"
+			return 0
+		fi
+		[[ "$t" == "$BACKUP_TARGET" ]] && warn "$t is on the same drive as $home; using the default location."
+	done
+	add_action_item 20 MEDIUM "COPIES_SAME_DISK" \
+		"Home copies are kept on the same disk ($home): they help with deleted files, not a failed disk. With a second drive: sudo ./fedora-harden.sh --only 20 --backup-target /path/on/that/drive"
+	echo /var/lib/fedora-harden/home-copies
+}
+
+# _snapshot_exclusions <backend> - Offer to leave each large replaceable folder of
+# the index out of snapshots (asked one by one; off under --yes).
+_snapshot_exclusions() {
+	local backend="$1" index=/var/lib/fedora-harden/home-index.tsv path size class excl=""
+	[[ -s "$index" ]] || return 0
+	while IFS=$'\t' read -r path size class; do
+		[[ "$class" == replaceable ]] || continue
+		confirm "Leave $path ($size GB, replaceable) out of home snapshots?" no || continue
+		if [[ "$backend" == rsync ]]; then
+			excl+="$path "
+		else
+			printf '%s\n' "$path" >>/var/lib/fedora-harden/exclude-queue
+			info "$path will become its own subvolume at the next boot, before anyone logs in."
+		fi
+	done < <(sort -t$'\t' -k2 -rn "$index")
+	[[ -n "$excl" ]] && sed -i "s|^EXCLUDES=.*|EXCLUDES=\"${excl% }\"|" /etc/fedora-harden/snapshots
+	return 0
+}
+
+# _offsite_options <home> - Snapshots live on the same disk. Rank the ways to keep a
+# copy elsewhere by what this machine has, and let the person choose.
+_offsite_options() {
+	local usb net have_pika=0 have_dejadup=0
+	usb="$(lsblk -nrpo MOUNTPOINT,HOTPLUG 2>/dev/null | awk '$2 == 1 && $1 != "" {print $1; exit}' || true)"
+	net="$(findmnt -rn -t cifs,nfs,nfs4,smb3 -o TARGET 2>/dev/null | head -1 || true)"
+	flatpak info org.gnome.World.PikaBackup >/dev/null 2>&1 && have_pika=1
+	flatpak info org.gnome.DejaDup >/dev/null 2>&1 && have_dejadup=1
+	local n=1
+	if [[ -n "$usb" ]]; then
+		add_action_item 20 MEDIUM "OFFSITE_${n}" \
+			"Off-machine copy, best fit (external drive at $usb): Pika Backup$( ((have_pika)) && echo ' (installed)' || echo ' — flatpak install flathub org.gnome.World.PikaBackup'). Encrypted, deduplicated, runs on a schedule."
+		((++n))
+	fi
+	if [[ -n "$net" ]]; then
+		add_action_item 20 MEDIUM "OFFSITE_${n}" \
+			"Off-machine copy to the network share at $net: Pika Backup to that folder, or restic in a box for a server you reach over SSH."
+		((++n))
+	fi
+	add_action_item 20 LOW "OFFSITE_${n}" \
+		"Off-machine copy to cloud storage: Déjà Dup$( ((have_dejadup)) && echo ' (installed)' || echo ' — flatpak install flathub org.gnome.DejaDup') (Google Drive, Microsoft OneDrive, a Nextcloud/WebDAV server, or a folder), encrypted."
+	((++n))
+	[[ -z "$usb" ]] && add_action_item 20 LOW "OFFSITE_${n}" \
+		"Off-machine copy to an external drive (plug one in and re-run section 20 for a tailored suggestion): Pika Backup, flatpak install flathub org.gnome.World.PikaBackup"
+	return 0
 }
 
 # ============================================================================
-#  SECTION 19 — Disable unnecessary services (interactive)
+#  SECTION 21 — Disable unnecessary services (interactive)
 # ============================================================================
-# sec_19_services() - Disable unnecessary services
+# sec_21_services() - Disable unnecessary services
 # Disables avahi, cups, bluetooth, modemmanager and similar auto-start services.
-sec_19_services() {
-	should_run 19 || return 0
-	section 19 "Disable unnecessary services (interactive)"
+sec_21_services() {
+	should_run 21 || return 0
+	section 21 "Disable unnecessary services (interactive)"
 	local svc
-	# Each entry: "service:description"
+	# Each entry: "service:default answer:description". Unencrypted remote shells are
+	# switched off by default; services people use (printing, discovery, Bluetooth,
+	# modems, network storage) only when asked — never silently under --yes.
 	local candidates=(
-		"avahi-daemon:mDNS/Bonjour (local network discovery)"
-		"cups:Local/network printing daemon"
-		"cups-browsed:Auto-discovery of network printers"
-		"bluetooth:Bluetooth stack"
-		"ModemManager:Mobile broadband / 4G modem manager"
-		"iscsi:iSCSI initiator (network block storage)"
-		"iscsid:iSCSI daemon"
-		"nfs-server:NFS server (network file sharing)"
-		"rpcbind:RPC portmapper (required by NFS)"
-		"telnet.socket:Telnet socket (unencrypted remote shell)"
-		"rsh.socket:RSH socket (unencrypted remote shell)"
-		"rlogin.socket:RLogin socket (unencrypted remote login)"
+		"avahi-daemon:no:mDNS/Bonjour (local network discovery)"
+		"cups:no:Local/network printing daemon"
+		"cups-browsed:no:Auto-discovery of network printers"
+		"bluetooth:no:Bluetooth stack"
+		"ModemManager:no:Mobile broadband / 4G modem manager"
+		"iscsi:no:iSCSI initiator (network block storage)"
+		"iscsid:no:iSCSI daemon"
+		"nfs-server:no:NFS server (network file sharing)"
+		"rpcbind:no:RPC portmapper (required by NFS)"
+		"telnet.socket:yes:Telnet socket (unencrypted remote shell)"
+		"rsh.socket:yes:RSH socket (unencrypted remote shell)"
+		"rlogin.socket:yes:RLogin socket (unencrypted remote login)"
 	)
 
 	# On tiling/minimal WMs (Sway, Hyprland, i3), bluetooth is typically unwanted —
@@ -7392,30 +8230,34 @@ sec_19_services() {
 	if ((HAS_SWAY || HAS_HYPRLAND || HAS_I3)); then
 		info "Tiling WM detected: consider disabling bluetooth unless you use BT peripherals."
 	fi
+	local def desc
 	for entry in "${candidates[@]}"; do
 		svc="${entry%%:*}"
-		local desc="${entry#*:}"
+		def="${entry#*:}"
+		desc="${def#*:}"
+		def="${def%%:*}"
 		if systemctl is-enabled --quiet "$svc" 2>/dev/null || systemctl is-active --quiet "$svc" 2>/dev/null; then
-			if confirm "Disable $svc ($desc)?"; then
+			if confirm "Disable $svc ($desc)?" "$def"; then
 				run "systemctl disable --now $svc || true"
 			fi
 		fi
 	done
+	_sandbox_exposed_services
 	info "Service security overview (higher = less sandboxed):"
 	run "systemd-analyze security --no-pager | head -25 || true"
 }
 
 # ============================================================================
-#  SECTION 20 — File permission hardening
+#  SECTION 22 — File permission hardening
 # ============================================================================
-# sec_20_perms() - Harden file permissions, umask, core dumps, hostname & username privacy
+# sec_22_perms() - Harden file permissions, umask, core dumps, hostname & username privacy
 # Tightens permissions on shadow files, /tmp, and compiler access (20a). Sets umask 077
 # for restrictive default file creation (20b). Disables core dumps via limits.d (20c).
 # Checks hostname for identity leakage (20d) and flags non-generic usernames (20e) per
 # privacyguides.org and inteltechniques.com recommendations.
-sec_20_perms() {
-	should_run 20 || return 0
-	section 20 "File permission hardening"
+sec_22_perms() {
+	should_run 22 || return 0
+	section 22 "File permission hardening"
 	# Fedora defaults are already strict, but re-affirm.
 	run "chmod 000 /etc/shadow"
 	run "chmod 000 /etc/gshadow"
@@ -7462,29 +8304,26 @@ sec_20_perms() {
 	done </proc/swaps
 	if [[ -n "$plain_swaps" ]]; then
 		warn "Unencrypted swap in use: ${plain_swaps% } — memory contents can be written to disk in the clear."
-		add_action_item 20 HIGH "SWAP_UNENCRYPTED" \
+		add_action_item 22 HIGH "SWAP_UNENCRYPTED" \
 			"Swap on ${plain_swaps% } is not encrypted. Use ZRAM (Fedora's default: zram-generator) and disable disk swap, or put swap inside LUKS (privacyguides.org)."
 	else
 		ok "Swap is ZRAM or encrypted (or not in use)."
 	fi
 
-	# 20b — umask 077 (inteltechniques.com: restrict new file visibility)
+	# 22b — umask 077 for regular users (inteltechniques.com: new files private).
+	# Not for root and system accounts: files root creates for services (configs,
+	# keys) must stay readable by them, a known source of hard-to-trace breakage.
 	local umask_f="/etc/profile.d/99-umask.sh"
-	if ((DRY_RUN)); then
-		info "Would write $umask_f (umask 077)"
-	elif [[ ! -f "$umask_f" ]]; then
-		backup_file "$umask_f" || return 0
-		if ! cat 2>/dev/null >"$umask_f" <<'EOF'; then
-# Set restrictive default umask so new files are not world/group readable
-umask 077
-EOF
-			warn "Failed to write $umask_f"
-		else
-			chmod 644 "$umask_f" 2>/dev/null || true
-			ok "Wrote $umask_f (umask 077 — new files private by default)"
-		fi
+	if ! grep -qs 'id -u' "$umask_f"; then
+		write_new_file "$umask_f" 0644 <<'UMASK' && ((! DRY_RUN)) && ok "Wrote $umask_f (umask 077 for regular users — new files private by default)"
+# Written by fedora-harden.sh (section 22b): new files private for regular users.
+# Root and system accounts keep the default, so services can read what root creates.
+if [ "$(id -u)" -ge 1000 ]; then
+	umask 077
+fi
+UMASK
 	else
-		info "$umask_f already exists — leaving unchanged."
+		info "$umask_f already limits umask 077 to regular users — leaving unchanged."
 	fi
 
 	# 20c — Core dump suppression via limits.d (privacyguides.org)
@@ -7493,10 +8332,11 @@ EOF
 		info "Would write $coredump_f (disable core dumps)"
 	elif [[ ! -f "$coredump_f" ]]; then
 		backup_file "$coredump_f" || return 0
-		if ! cat 2>/dev/null >"$coredump_f" <<'EOF'; then
+		if ! cat 2>/dev/null >"$coredump_f" <<'EOF'
 * soft core 0
 * hard core 0
 EOF
+		then
 			warn "Failed to write $coredump_f"
 		else
 			chmod 644 "$coredump_f" 2>/dev/null || true
@@ -7513,7 +8353,7 @@ EOF
 	if [[ -n "$current_hostname" && -n "$real_name" ]]; then
 		if grep -qi "$real_name" <<<"$current_hostname" 2>/dev/null; then
 			warn "Hostname '$current_hostname' appears to contain your username — consider a non-identifying hostname."
-			add_action_item 20 MEDIUM "HOSTNAME_PRIVACY" \
+			add_action_item 22 MEDIUM "HOSTNAME_PRIVACY" \
 				"Hostname '$current_hostname' may leak identity — change with: sudo hostnamectl set-hostname <generic-name>"
 		fi
 	fi
@@ -7529,7 +8369,7 @@ EOF
 		*)
 			info "Current username: '$cur_user' — privacyguides.org recommends a generic username" \
 				"(e.g., 'user') rather than a real name to limit OS-level personal-data exposure."
-			add_action_item 20 LOW "USERNAME_PRIVACY" \
+			add_action_item 22 LOW "USERNAME_PRIVACY" \
 				"Consider a non-identifying system username instead of '$cur_user' (privacyguides.org recommendation)"
 			;;
 		esac
@@ -7537,603 +8377,956 @@ EOF
 }
 
 # ============================================================================
-#  SECTION 21 — ClamAV
+#  SECTION 23 — USBGuard
 # ============================================================================
-# sec_21_clamav() - Install ClamAV antivirus with on-access scanning
-# Installs ClamAV engine, clamd daemon, and freshclam for signature updates.
-# Enables clamav-freshclam for automatic daily database updates and clamd@scan
-# for real-time scanning. Configures on-access scanning for /home directories
-# in /etc/clamd.d/scan.conf per inteltechniques.com recommendation.
-sec_21_clamav() {
-	should_run 21 || return 0
-	if ((IS_OSTREE)); then
-		_clamav_container
+# sec_23_usbguard() - Install and configure USBGuard
+# Configures device control policy; note: can lock out input devices if misconfigured.
+sec_23_usbguard() {
+	should_run 23 || return 0
+	section 23 "USBGuard — ⚠ BE CAREFUL ⚠"
+	if ((GUI_FULL_MODE)); then
+		gui_alert warning "USBGuard can block unapproved USB devices, including keyboard/mouse.\n\nBefore continuing, connect all required USB devices and ensure you have an alternate recovery path."
+	else
+		cat <<'EOF'
+USBGuard will block every USB device that isn't in its policy file,
+including your keyboard and mouse if they are USB. The policy is generated
+from currently connected devices, so BEFORE continuing:
+
+  1. Plug in every USB device you use (keyboard, mouse, webcam, YubiKey...)
+  2. Have a way to reach the machine without USB input if possible (serial,
+     SSH from another host, PS/2 keyboard, etc.) in case the policy misfires.
+
+You can later manage devices with:
+  sudo usbguard list-devices
+  sudo usbguard allow-device <ID> [--permanent]
+EOF
+	fi
+	# Opt-in: a new keyboard or dock would be blocked, so --yes never turns it on.
+	if ! confirm "Install and enable USBGuard with the current devices whitelisted?" no; then
+		info "Skipped USBGuard."
 		return 0
 	fi
-	section 21 "ClamAV antivirus"
-	pkg_install clamav clamd clamav-update clamav-scanner-systemd
-	info "Updating ClamAV signatures (freshclam)..."
-	# freshclam can fail if the daemon already holds the lock; suppress for idempotency
-	run "timeout 900 freshclam || true"
-	run "systemctl enable --now clamav-freshclam || true"
-	# Configure clamd BEFORE starting it: Fedora ships /etc/clamd.d/scan.conf with
-	# LocalSocket commented out, and clamd refuses to start without a socket
-	# ("Please define server type").
-	local clamd_conf="/etc/clamd.d/scan.conf"
-	if [[ -f "$clamd_conf" ]]; then
-		backup_file "$clamd_conf" || return 0
-		local kv
-		local -a clamd_settings=(
-			"LocalSocket /run/clamd.scan/clamd.sock"
-			# On-access scanning of home directories (inteltechniques.com); clamonacc
-			# reads these. The clamd user is excluded to avoid scan loops.
-			"OnAccessIncludePath /home"
-			"OnAccessExcludeRootUID yes"
-			"OnAccessExcludeUname clamscan"
-			"OnAccessPrevention no"
-			# Scan size limits — handle large archives/ISOs without
-			# LibClamAV 'decompress file size exceeds limits' noise
-			"MaxFileSize 500M"
-			"MaxScanSize 2000M"
-			"MaxRecursion 16"
-			"StreamMaxLength 500M"
-		)
-		for kv in "${clamd_settings[@]}"; do
-			set_conf_key "$clamd_conf" "${kv%% *}" "${kv#* }" " " || true
-		done
-		((DRY_RUN)) || ok "Configured clamd socket, on-access scanning (/home) and scan limits in $clamd_conf"
+
+	pkg_install usbguard usbguard-tools
+	if ((DRY_RUN)); then
+		info "Would generate policy: usbguard generate-policy > /etc/usbguard/rules.conf"
 	else
-		info "ClamAV clamd config not found at $clamd_conf — on-access config skipped."
-		add_action_item 21 LOW "CLAMAV_ONACCESS_CONFIG" \
-			"Manually configure on-access scanning: add 'OnAccessIncludePath /home' to your clamd config (/etc/clamd.d/scan.conf)"
+		umask 077
+		local tmp_usbguard="/tmp/usbguard-rules-$$-$RANDOM-$SECONDS.conf"
+		register_tmp "$tmp_usbguard"
+		if ! usbguard generate-policy >"$tmp_usbguard" 2>/dev/null; then
+			warn "usbguard generate-policy failed — daemon may not be running yet or no USB devices enumerable."
+			rm -f "$tmp_usbguard" 2>/dev/null || true
+			add_action_item 23 HIGH "USBGUARD_POLICY_MISSING" \
+				"USBGuard policy not generated — reboot, plug in all USB devices, then run: sudo usbguard generate-policy > /etc/usbguard/rules.conf && sudo systemctl enable --now usbguard"
+			return 0
+		fi
+		backup_file /etc/usbguard/rules.conf
+		if ! install -m 0600 -o root -g root "$tmp_usbguard" /etc/usbguard/rules.conf 2>/dev/null; then
+			warn "Failed to install USBGuard rules (filesystem may be read-only)"
+			rm -f "$tmp_usbguard" 2>/dev/null || true
+			add_action_item 23 HIGH "USBGUARD_INSTALL_FAILED" \
+				"USBGuard rules could not be written — run: sudo install -m 0600 /tmp/usbguard-rules.conf /etc/usbguard/rules.conf"
+			return 0
+		fi
+		rm -f "$tmp_usbguard" 2>/dev/null || true
+		ok "Wrote /etc/usbguard/rules.conf (0600 root:root)"
 	fi
+	run "systemctl enable --now usbguard || true"
 
-	if ! run "systemctl enable --now clamd@scan"; then
-		warn "clamd@scan failed to start — check: journalctl -u clamd@scan"
-	fi
-	# clamonacc performs the on-access scanning (fanotify; needs a running clamd@scan).
-	if systemctl list-unit-files clamav-clamonacc.service >/dev/null 2>&1; then
-		if ! run "systemctl enable --now clamav-clamonacc"; then
-			warn "clamav-clamonacc failed to start — on-access scanning inactive (journalctl -u clamav-clamonacc)."
-			add_action_item 21 MEDIUM "CLAMAV_ONACCESS_NOT_RUNNING" \
-				"On-access scanning is configured but clamonacc is not running: sudo systemctl enable --now clamav-clamonacc"
+	if pkg_cached plasma-workspace; then
+		if confirm "Install graphical USBGuard notifier (usbguard-notifier)?"; then
+			pkg_install usbguard-notifier || true
 		fi
-	fi
-
-	# Post-enable status check and report
-	if ((!DRY_RUN)); then
-		local freshclam_active=0 clamd_active=0
-		if systemctl is-active --quiet clamav-freshclam 2>/dev/null; then
-			freshclam_active=1
-		fi
-		if systemctl is-active --quiet clamd@scan 2>/dev/null || systemctl is-active --quiet clamd@scan.service 2>/dev/null; then
-			clamd_active=1
-		fi
-		# Collect status output safely
-		{
-			printf '=== Section 21: ClamAV Report ===\n'
-			printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-			printf -- '--- clamav-freshclam status ---\n'
-			systemctl status clamav-freshclam --no-pager 2>&1 || true
-			printf '\n--- clamd@scan status ---\n'
-			systemctl status clamd@scan --no-pager 2>&1 || systemctl status clamd@scan.service --no-pager 2>&1 || true
-			printf '\n--- ClamAV version / DB ---\n'
-			clamscan --version 2>&1 || true
-			freshclam --version 2>&1 || true
-		} | write_user_report "section-21-clamav-${REPORT_DATE}.txt" || true
-		((freshclam_active)) || add_action_item 21 MEDIUM "CLAMAV_FRESHCLAM_NOT_RUNNING" \
-			"clamav-freshclam is not running — run: sudo systemctl start clamav-freshclam"
-		((clamd_active)) || add_action_item 21 MEDIUM "CLAMAV_CLAMD_NOT_RUNNING" \
-			"clamd@scan is not running — run: sudo systemctl start clamd@scan"
-		if cmd_exists clamscan; then
-			add_action_item 21 MEDIUM "CLAMAV_INITIAL_SCAN" \
-				"Run initial ClamAV home-directory scan (handled automatically in remediation step)."
-		else
-			add_action_item 21 HIGH "CLAMAV_NOT_INSTALLED" \
-				"ClamAV could not be installed — install it, then re-run section 21: sudo dnf install clamav clamd clamav-update && sudo ./fedora-harden.sh --only 21"
-		fi
-		add_action_item 21 LOW "CLAMAV_REVIEW" \
-			"Review ClamAV status: $USER_RESULTS_DIR/section-21-clamav-${REPORT_DATE}.txt"
 	fi
 }
 
-# _clamav_container() - Section 21 on image-based systems: a weekly scan of /home in
-# a throwaway container (Podman quadlet) instead of layering ClamAV into the image.
-# The signatures ship in the image, refreshed before each scan (Pull=newer). The
-# container sees /home read-only, has no network and a read-only root, and keeps a
-# single capability: reading any file (DAC_READ_SEARCH). SELinux labelling is off
-# for it because relabelling /home for a container would change every file's label.
-_clamav_container() {
-	section 21 "ClamAV scan (container, image-based system)"
-	if ! cmd_exists podman; then
-		warn "podman is not available — scheduled ClamAV container scan not set up."
-		add_action_item 21 MEDIUM "CLAMAV_NO_PODMAN" "Install podman (it ships in Fedora Atomic images), then re-run section 21."
+# ============================================================================
+#  SECTION 24 — AIDE file integrity
+# ============================================================================
+# sec_24_ids() - File integrity baseline with AIDE, checked weekly by a timer.
+# Runs last, so the baseline includes every change this run made. The baseline is
+# recorded in the background (a transient systemd unit): it takes minutes, and the
+# run does not need to wait for it. rkhunter is not used: its heuristics give false
+# alarms on Fedora after updates, and AIDE already covers file integrity.
+sec_24_ids() {
+	should_run 24 || return 0
+	if ((IS_OSTREE)); then
+		_ostree_integrity
 		return 0
 	fi
-	local home_dir quadlet="/etc/containers/systemd/fedora-harden-clamscan.container"
-	home_dir="$(readlink -f /home 2>/dev/null || echo /home)"
-	write_new_file "$quadlet" 0644 <<EOF || return 0
-# Written by fedora-harden.sh (section 21): weekly ClamAV scan of $home_dir in a
-# throwaway container. Results: journalctl -u fedora-harden-clamscan
-[Unit]
-Description=ClamAV scan of home directories in a container (fedora-harden)
+	section 24 "AIDE file integrity"
 
-[Container]
-Image=$CLAMAV_IMAGE
-Pull=newer
-Entrypoint=clamscan
-Exec=--recursive --infected /scan
-Volume=$home_dir:/scan:ro
-ReadOnly=true
-Network=none
-DropCapability=all
-AddCapability=DAC_READ_SEARCH
-NoNewPrivileges=true
-SecurityLabelDisable=true
+	pkg_install aide
+	if ! cmd_exists aide; then
+		if ((DRY_RUN)); then
+			info "aide is not installed yet — a real run installs it and records the baseline."
+		else
+			warn "aide is unavailable after the install attempt — no file integrity baseline."
+			add_action_item 24 MEDIUM "AIDE_INSTALL_FAILED" "Install AIDE manually: sudo dnf install -y aide"
+		fi
+		return 0
+	fi
+
+	# Weekly check as a systemd timer (journald keeps the result; catches up after the
+	# machine was off). Replaces the cron job of earlier versions.
+	write_new_file /etc/systemd/system/fedora-harden-aide-check.service 0644 <<'UNIT' || return 0
+[Unit]
+Description=AIDE file integrity check (fedora-harden)
+ConditionPathExists=/var/lib/aide/aide.db.gz
 
 [Service]
 Type=oneshot
-TimeoutStartSec=6h
-EOF
-	write_new_file /etc/systemd/system/fedora-harden-clamscan.timer 0644 <<'EOF' || return 0
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/sbin/aide --check
+UNIT
+	write_new_file /etc/systemd/system/fedora-harden-aide-check.timer 0644 <<'UNIT' || return 0
 [Unit]
-Description=Weekly ClamAV container scan (fedora-harden)
+Description=Weekly AIDE file integrity check (fedora-harden)
 
 [Timer]
 OnCalendar=weekly
+RandomizedDelaySec=6h
 Persistent=true
-RandomizedDelaySec=2h
 
 [Install]
 WantedBy=timers.target
-EOF
-	# Check the quadlet before enabling: a typo would otherwise only show in the journal.
-	if ((!DRY_RUN)) && [[ -x /usr/libexec/podman/quadlet ]] &&
-		! QUADLET_UNIT_DIRS=/etc/containers/systemd /usr/libexec/podman/quadlet -dryrun >/dev/null 2>&1; then
-		warn "Podman rejected $quadlet — run: /usr/libexec/podman/quadlet -dryrun"
-		add_action_item 21 MEDIUM "CLAMAV_QUADLET_INVALID" "Podman rejected $quadlet — check: QUADLET_UNIT_DIRS=/etc/containers/systemd /usr/libexec/podman/quadlet -dryrun"
+UNIT
+	enable_timer fedora-harden-aide-check.timer || true
+	if [[ -e /etc/cron.weekly/aide-check ]]; then
+		backup_file /etc/cron.weekly/aide-check && run "rm -f /etc/cron.weekly/aide-check"
+	fi
+
+	# The baseline itself is recorded at the very end of the run (start_aide_baseline),
+	# after everything else has written its files.
+	AIDE_BASELINE_PENDING=1
+	add_action_item 24 LOW "AIDE_RECHECK" \
+		"After package updates, record a new AIDE baseline: sudo sh -c 'aide --init && mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
+}
+
+# start_aide_baseline() - Record the AIDE baseline last, in the background, so it
+# includes every file this run wrote (the recovery file included).
+start_aide_baseline() {
+	((AIDE_BASELINE_PENDING)) || return 0
+	# The database is moved into place only when init succeeds.
+	local init='aide --init && mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'
+	if ((DRY_RUN)); then
+		info "Would record the AIDE baseline in the background: $init"
+	elif [[ -d /run/systemd/system ]] && cmd_exists systemd-run &&
+		run "systemd-run --quiet --collect --unit=fedora-harden-aide-init --nice=19 -p IOSchedulingClass=idle /bin/sh -c '$init'"; then
+		ok "AIDE baseline is being recorded in the background (systemctl status fedora-harden-aide-init)."
+	elif run "$init"; then
+		ok "AIDE baseline recorded: /var/lib/aide/aide.db.gz"
+	else
+		warn "aide --init failed."
+		add_action_item 24 MEDIUM "AIDE_INIT_FAILED" "AIDE baseline failed — run: sudo sh -c '$init'"
+	fi
+}
+
+# ---------- Protection scorecard (--score, summary, --report) ----------------
+# Checks the LIVE system, not what this run did: each line says whether something
+# protects the machine now and, if not, how to fix it. Read-only, nothing leaves the
+# machine. Rows: "state|label|detail|fix" with state ok, no, na (not applicable) or
+# info (advice).
+declare -ga SCORE_ROWS=()
+
+_score() { # _score <ok|no|na|info> <label> <detail> [fix]
+	SCORE_ROWS+=("$1|$2|$3|${4:-}")
+}
+
+# _score_user_cmd <cmd...> - Run a read-only settings query as the desktop user.
+_score_user_cmd() {
+	local user="${TARGET_USER:-${SUDO_USER:-}}"
+	[[ -n "$user" && "$user" != root ]] && id "$user" >/dev/null 2>&1 || return 1
+	runuser -u "$user" -- "$@" 2>/dev/null
+}
+
+protection_scorecard() {
+	SCORE_ROWS=()
+	local src v zone policy user="${TARGET_USER:-${SUDO_USER:-}}"
+
+	# Disk encryption: is the root file system (the OSTree sysroot on image-based
+	# systems) on a LUKS device?
+	src="$(findmnt -no SOURCE /sysroot 2>/dev/null || true)"
+	[[ -n "$src" ]] || src="$(findmnt -no SOURCE / 2>/dev/null || true)"
+	src="${src%%\[*}"
+	if [[ "$src" != /dev/* ]]; then
+		_score na "Disk encryption" "no disk behind / (container or network root)"
+	elif lsblk -s -no TYPE "$src" 2>/dev/null | grep -qx crypt; then
+		_score ok "Disk encryption" "the system disk is encrypted (LUKS)"
+	else
+		_score no "Disk encryption" "the system disk is not encrypted" \
+			"Encryption is chosen at install time (Anaconda: Encrypt my data). An installed system needs a reinstall, or an offline 'cryptsetup reencrypt' with a full backup first."
+	fi
+
+	# Secure Boot, from the firmware variable (no extra tools needed).
+	v="$(od -An -t u1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | awk '{print $NF}' || true)"
+	if [[ ! -d /sys/firmware/efi ]]; then
+		_score na "Secure Boot" "legacy BIOS boot (no UEFI)"
+	elif [[ "$v" == 1 ]]; then
+		_score ok "Secure Boot" "on"
+	else
+		_score no "Secure Boot" "off" "Turn on Secure Boot in the UEFI firmware setup (Fedora's shim is signed), then check: mokutil --sb-state"
+	fi
+
+	# Firewall
+	if systemctl is-active --quiet firewalld 2>/dev/null; then
+		zone="$(firewall-cmd --get-default-zone 2>/dev/null || true)"
+		_score ok "Firewall" "firewalld is running (default zone: ${zone:-unknown})"
+	else
+		_score no "Firewall" "firewalld is not running" "sudo systemctl enable --now firewalld, or run section 6: sudo $SCRIPT_NAME --only 6"
+	fi
+
+	# Automatic updates
+	if ((IS_OSTREE)); then
+		policy="$(sed -n 's/^AutomaticUpdatePolicy=//p' /etc/rpm-ostreed.conf 2>/dev/null | tail -n 1 || true)"
+		if systemctl is-enabled --quiet uupd.timer 2>/dev/null; then
+			_score ok "Automatic updates" "uupd updates the system, Flatpaks and boxes"
+		elif [[ "$policy" =~ ^(stage|apply)$ ]] && systemctl is-enabled --quiet rpm-ostreed-automatic.timer 2>/dev/null; then
+			_score ok "Automatic updates" "rpm-ostree stages updates automatically ($policy)"
+		else
+			_score no "Automatic updates" "system updates are not staged automatically" "Run section 2: sudo $SCRIPT_NAME --only 2"
+		fi
+	elif systemctl is-enabled --quiet dnf5-automatic.timer 2>/dev/null ||
+		systemctl is-enabled --quiet dnf-automatic.timer 2>/dev/null ||
+		systemctl is-enabled --quiet dnf-automatic-install.timer 2>/dev/null; then
+		_score ok "Automatic updates" "dnf automatic updates are enabled"
+	else
+		_score no "Automatic updates" "no automatic updates" "Run section 2: sudo $SCRIPT_NAME --only 2"
+	fi
+
+	# SELinux
+	v="$(getenforce 2>/dev/null || echo unknown)"
+	if [[ "$v" == Enforcing ]]; then
+		_score ok "SELinux" "enforcing"
+	else
+		_score no "SELinux" "${v,,}" "Run section 5: sudo $SCRIPT_NAME --only 5 (a disabled system is relabelled first)"
+	fi
+
+	# SSH server: off, or keys only without root login
+	if ! systemctl is-active --quiet sshd 2>/dev/null && ! systemctl is-enabled --quiet sshd 2>/dev/null; then
+		_score ok "SSH server" "off"
+	else
+		v="$(sshd -T 2>/dev/null | awk '$1 == "passwordauthentication" || $1 == "permitrootlogin" {print $1 "=" $2}' | sort | paste -sd' ' - || true)"
+		if [[ "$v" == *"passwordauthentication=no"* && "$v" == *"permitrootlogin=no"* ]]; then
+			_score ok "SSH server" "on, keys only, no root login"
+		else
+			_score no "SSH server" "on and accepts passwords or root logins" "Run section 7: sudo $SCRIPT_NAME --only 7 (copy your SSH key first), or turn it off: sudo systemctl disable --now sshd"
+		fi
+	fi
+
+	# DNS over TLS: resolved uses it and /etc/resolv.conf goes through resolved
+	v="$(readlink -f /etc/resolv.conf 2>/dev/null || true)"
+	if systemctl is-active --quiet systemd-resolved 2>/dev/null &&
+		resolvectl status 2>/dev/null | grep -q '+DNSOverTLS' && [[ "$v" == /run/systemd/resolve/* ]]; then
+		_score ok "DNS over TLS" "DNS lookups are encrypted"
+	else
+		_score no "DNS over TLS" "DNS lookups are sent in the clear" "Run section 11: sudo $SCRIPT_NAME --only 11"
+	fi
+
+	# Backups of home: section 20's snapshots/copies, or Snapper's home config
+	if systemctl is-enabled --quiet fedora-harden-snapshot.timer 2>/dev/null ||
+		{ have_cmd snapper && snapper -c home get-config >/dev/null 2>&1; }; then
+		_score ok "Home snapshots" "home is snapshotted or copied regularly"
+	else
+		_score no "Home snapshots" "no regular snapshots or copies of home" "Run section 20: sudo $SCRIPT_NAME --only 20"
+	fi
+
+	# Screen lock (GNOME and KDE settings of the desktop user)
+	if ((! HAS_DESKTOP)); then
+		_score na "Screen lock" "no desktop"
+	elif v="$(_score_user_cmd gsettings get org.gnome.desktop.screensaver lock-enabled)" && [[ -n "$v" ]]; then
+		if [[ "$v" == true ]]; then
+			_score ok "Screen lock" "the screen locks when idle"
+		else
+			_score no "Screen lock" "the screen does not lock" "Run section 13: sudo $SCRIPT_NAME --only 13"
+		fi
+	elif have_cmd kreadconfig6 || have_cmd kreadconfig5; then
+		v="$(_score_user_cmd "$(command -v kreadconfig6 || command -v kreadconfig5)" --file kscreenlockerrc --group Daemon --key Autolock || true)"
+		if [[ "$v" != false ]]; then
+			_score ok "Screen lock" "the screen locks when idle"
+		else
+			_score no "Screen lock" "the screen does not lock" "Run section 13: sudo $SCRIPT_NAME --only 13"
+		fi
+	else
+		_score na "Screen lock" "not checked on this desktop"
+	fi
+
+	# Flatpak apps kept out of home and the host file system
+	if ! have_cmd flatpak; then
+		_score na "Flatpak restrictions" "Flatpak not installed"
+	elif v="$(flatpak override --system --show 2>/dev/null)" && [[ "$v" == *'!home'* && "$v" == *'!host'* ]]; then
+		_score ok "Flatpak restrictions" "apps cannot read home or the host file system unless granted"
+	else
+		_score no "Flatpak restrictions" "apps can read home or the host file system" "Run section 4: sudo $SCRIPT_NAME --only 4"
+	fi
+
+	# Firmware security level (fwupd Host Security ID), when fwupd can tell
+	if have_cmd fwupdmgr && v="$(timeout 60 fwupdmgr security </dev/null 2>/dev/null | grep -oE 'HSI:[0-9]' | head -n 1)" && [[ -n "$v" ]]; then
+		if [[ "$v" == HSI:0 ]]; then
+			_score no "Firmware security" "$v: basic firmware protections are missing" "Run 'fwupdmgr security' to see which (BIOS write protection, Secure Boot, TPM, DMA protection) and turn them on in the firmware setup."
+		else
+			_score ok "Firmware security" "$v (fwupd Host Security ID; higher is better)"
+		fi
+	else
+		_score na "Firmware security" "fwupd cannot rate this firmware"
+	fi
+
+	# Daily account with admin rights: advice only
+	if [[ -n "$user" && "$user" != root ]] && id -nG "$user" 2>/dev/null | grep -qw wheel; then
+		_score info "Admin rights" "your everyday account can use sudo" \
+			"Optional: create a separate admin account, check that it can use sudo, then remove the everyday account from the wheel group."
+	fi
+	return 0
+}
+
+# show_protection_scorecard - Print the scorecard (terminal) or show it in the window.
+show_protection_scorecard() {
+	local row state label detail fix tag col ok=0 total=0
+	protection_scorecard
+	if ((GUI_FULL_MODE)); then
+		for row in "${SCORE_ROWS[@]}"; do
+			IFS='|' read -r state label detail fix <<<"$row"
+			gui_send SCORE "$state" "$label" "$detail" "$fix"
+		done
 		return 0
 	fi
-	if enable_timer fedora-harden-clamscan.timer; then
-		ok "Weekly ClamAV container scan scheduled (fedora-harden-clamscan.timer)."
-	else
-		warn "Could not enable fedora-harden-clamscan.timer."
-	fi
-	add_action_item 21 MEDIUM "CLAMAV_FIRST_SCAN" \
-		"Run the first ClamAV scan (pulls $CLAMAV_IMAGE): sudo systemctl start fedora-harden-clamscan — results: journalctl -u fedora-harden-clamscan (the unit fails when a file is FOUND)."
-	if rpm -q clamav >/dev/null 2>&1; then
-		add_action_item 21 LOW "CLAMAV_LAYERED" \
-			"ClamAV is layered into this image. Once the container scan works, the layer can go: rpm-ostree uninstall clamav clamd clamav-update (plus clamtk if installed), then reboot."
-	fi
-}
-
-# ============================================================================
-#  SECTION 22 — OpenSCAP
-# ============================================================================
-# sec_22_openscap() - Install and run OpenSCAP compliance scanner
-# Installs OpenSCAP framework and runs initial compliance scan against security baseline.
-sec_22_openscap() {
-	should_run 22 || return 0
-	section 22 "OpenSCAP compliance scanner"
-	if ((IS_OSTREE)); then
-		_oscap_in_container
-	else
-		_oscap_on_host || return 0
-	fi
-	_oscap_report
-}
-
-# _oscap_in_container() - Image-based systems: scan the host read-only from a
-# throwaway Fedora container (oscap-chroot) instead of layering OpenSCAP.
-_oscap_in_container() {
-	local release="${FEDORA_MAJOR:-0}"
-	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo 44)"
-	local image="registry.fedoraproject.org/fedora:${release}"
-	if ! cmd_exists podman; then
-		warn "podman is not available — OpenSCAP scan skipped."
-		return 0
-	fi
-	info "Image-based system: OpenSCAP runs in a throwaway $image container and reads the host read-only (nothing is layered)."
-	if confirm "Run a baseline scan now (results in /root/scap-report.html)?"; then
-		# Host networking: the container only downloads the scanner, and this avoids
-		# depending on the container network stack (nested setups, unusual firewalls).
-		# Its package cache lives in memory: the container is thrown away anyway.
-		# oscap exits 2 when rules fail, so success is judged by the results file.
-		((DRY_RUN)) || rm -f /root/scap-results.xml /root/scap-report.html
-		run "podman run --rm --network host --tmpfs /var/cache/libdnf5:rw,size=2g --tmpfs /tmp:rw,size=512m --security-opt label=disable -v /:/host:ro -v /root:/out '$image' sh -c 'dnf -y -q install openscap-scanner scap-security-guide >/dev/null && oscap-chroot /host xccdf eval --profile xccdf_org.ssgproject.content_profile_standard --results /out/scap-results.xml --report /out/scap-report.html /usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml' || true"
-		if ((DRY_RUN)); then
-			return 0
-		elif [[ -s /root/scap-results.xml ]]; then
-			ok "Report: /root/scap-report.html"
-		else
-			local why=""
-			[[ -s "${ERROR_CAPTURE_FILE:-}" ]] && why="$(tail -n 3 "$ERROR_CAPTURE_FILE" | tr '\n' ' ')"
-			warn "The OpenSCAP container produced no results${why:+: $why}"
-			add_action_item 22 MEDIUM "SCAP_CONTAINER_FAILED" \
-				"The OpenSCAP scan container did not produce results${why:+ ($why)}. Check network access to registry.fedoraproject.org and re-run section 22."
-		fi
-	fi
-}
-
-# _oscap_on_host() - Package-based systems: install OpenSCAP and scan. Returns 1 to skip.
-_oscap_on_host() {
-	pkg_install openscap-scanner scap-security-guide
-	# On rpm-ostree, packages are staged — oscap may not be available until reboot.
-	# Use cmd_exists check only; do not hard-fail if missing.
-	ensure_command_dep oscap "OpenSCAP compliance scan" openscap-scanner || true
-	if ! cmd_exists oscap; then
-		warn "oscap command is unavailable after dependency checks — skipping section 22."
-		return 1
-	fi
-	local content="/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml"
-	if [[ ! -f "$content" ]]; then
-		warn "SSG content missing at expected path; retrying dependency install and alternate path lookup."
-		pkg_install scap-security-guide
-		if [[ ! -f "$content" ]]; then
-			local alt_content=""
-			local candidate
-			for candidate in /usr/share/xml/scap/ssg/content/ssg-fedora*-ds.xml; do
-				[[ -f "$candidate" ]] || continue
-				alt_content="$candidate"
-				break
-			done
-			if [[ -n "$alt_content" ]]; then
-				content="$alt_content"
-				info "Using alternate SSG content path: $content"
-			else
-				warn "No Fedora SSG datastream found; skipping OpenSCAP scan."
-				return 1
-			fi
-		fi
-	fi
-	info "Available profiles:"
-	run "oscap info '$content' | grep -E '^(Profile|Title)' | head -20 || true"
-	if confirm "Run a baseline scan now (results in /root/scap-report.html)?"; then
-		run "oscap xccdf eval \
-            --profile xccdf_org.ssgproject.content_profile_standard \
-            --results /root/scap-results.xml \
-            --report  /root/scap-report.html \
-            '$content' || true"
-		ok "Report: /root/scap-report.html"
-	fi
-}
-
-# scap_results() - Parse an XCCDF results file. Prints "<pass> <fail> <notchecked>",
-# or with "failing" the IDs of failed rules. Each result is a <rule-result idref=...>
-# element with a nested <result>fail</result>, not a result="..." attribute.
-# Usage: scap_results <results.xml> [counts|failing]
-scap_results() {
-	awk -v want="${2:-counts}" '
-		/<rule-result[ >]/ {
-			id = ""
-			if (match($0, /idref="[^"]*"/)) id = substr($0, RSTART + 7, RLENGTH - 8)
-		}
-		/<result>[a-z]+<\/result>/ {
-			r = $0
-			sub(/.*<result>/, "", r)
-			sub(/<\/result>.*/, "", r)
-			n[r]++
-			if (want == "failing" && r == "fail" && id != "") print id
-		}
-		END { if (want == "counts") print n["pass"] + 0, n["fail"] + 0, n["notchecked"] + 0 }
-	' "$1"
-}
-
-# _oscap_report() - Copy results to the user's results folder and summarise them.
-_oscap_report() {
-	if ((!DRY_RUN)); then
-		copy_to_user_results /root/scap-report.html "section-22-openscap-${REPORT_DATE}.html"
-		copy_to_user_results /root/scap-results.xml "section-22-openscap-results-${REPORT_DATE}.xml"
-		local pass_count="?" fail_count="?" notchecked_count="?"
-		if [[ -f /root/scap-results.xml ]]; then
-			read -r pass_count fail_count notchecked_count < <(
-				scap_results /root/scap-results.xml 2>/dev/null || printf '? ? ?\n'
-			)
-			info "OpenSCAP results — pass: $pass_count  fail: $fail_count  not-checked: $notchecked_count"
-			{
-				printf '=== Section 22: OpenSCAP Compliance Summary ===\n'
-				printf 'Generated: %s\n\n' "$RUN_STAMP_HUMAN"
-				printf 'Results XML:  /root/scap-results.xml\n'
-				printf 'HTML report:  /root/scap-report.html\n\n'
-				printf 'Pass:         %s\n' "$pass_count"
-				printf 'Fail:         %s\n' "$fail_count"
-				printf 'Not checked:  %s\n\n' "$notchecked_count"
-				printf -- '--- Top 25 failing rules ---\n'
-				scap_results /root/scap-results.xml failing 2>/dev/null |
-					head -25 ||
-					printf '(no failures found or XML parse error)\n'
-			} | write_user_report "section-22-openscap-summary-${REPORT_DATE}.txt" || true
-			local fail_n
-			fail_n="${fail_count//[^0-9]/}"
-			if [[ -n "$fail_n" ]] && ((fail_n > 0)) 2>/dev/null; then
-				add_action_item 22 HIGH "SCAP_FAILED_RULES" \
-					"OpenSCAP: $fail_count rule(s) failed — review $USER_RESULTS_DIR/section-22-openscap-${REPORT_DATE}.html"
-			else
-				ok "OpenSCAP scan: $pass_count passing, $fail_count failing."
-			fi
-		else
-			add_action_item 22 MEDIUM "SCAP_NO_SCAN" \
-				"OpenSCAP scan was skipped or results not found — rerun section 22 to generate compliance report."
-		fi
-	fi
-}
-
-# ============================================================================
-#  SECTION 23 — Container Security (Podman + Toolbox)
-# ============================================================================
-# sec_23_containers() - Rootless Podman + Toolbox containerized-mindset hardening.
-# Establishes a "containerized mindset" security posture where:
-#   • System-level administration runs natively (this script, system tools)
-#   • Development, daily work, and untrusted software run inside containers
-# Hardens image policy, runtime defaults, and registry resolution to reduce
-# the attack surface of containerised workloads.
-sec_23_containers() {
-	should_run 23 || return 0
-	section 23 "Container security (Podman + Toolbox — containerized mindset)"
-
-	local box_tool
-	box_tool="$(image_box_tool)"
-	if ((IS_OSTREE)); then
-		# Atomic images ship podman and their box tool; layer toolbox only where it
-		# is the platform's tool and missing (Universal Blue uses distrobox).
-		pkg_install podman
-		[[ "$box_tool" == toolbox ]] && pkg_install toolbox
-	else
-		pkg_install podman toolbox
-	fi
-	ensure_command_dep podman "rootless container engine" podman || true
-	if ! cmd_exists podman; then
-		warn "podman not available after install attempt — skipping section 23."
-		return 0
-	fi
-
-	if ((IS_OSTREE)); then
-		_tools_box_setup "$box_tool"
-	else
-		if confirm "Install buildah (OCI image builder) and skopeo (image inspection/transfer)?"; then
-			pkg_install buildah skopeo
-		fi
-		if confirm "Install podman-compose (docker-compose compatibility layer)?"; then
-			pkg_install podman-compose
-		fi
-	fi
-
-	# ── Rootless Podman: subuid/subgid ───────────────────────────────────────
-	local run_user="${TARGET_USER:-${SUDO_USER:-}}"
-	if [[ -n "$run_user" && "$run_user" != "root" ]]; then
-		if ! grep -q "^${run_user}:" /etc/subuid 2>/dev/null; then
-			info "Adding subuid range for rootless Podman (user: $run_user)..."
-			if ((!DRY_RUN)); then
-				usermod --add-subuids 100000-165535 "$run_user" 2>/dev/null ||
-					printf '%s:100000:65536\n' "$run_user" >>/etc/subuid
-			else
-				info "[DRY] Would add subuid 100000-165535 for $run_user"
-			fi
-		else
-			ok "subuid entry already present for $run_user."
-		fi
-		if ! grep -q "^${run_user}:" /etc/subgid 2>/dev/null; then
-			info "Adding subgid range for rootless Podman (user: $run_user)..."
-			if ((!DRY_RUN)); then
-				usermod --add-subgids 100000-165535 "$run_user" 2>/dev/null ||
-					printf '%s:100000:65536\n' "$run_user" >>/etc/subgid
-			else
-				info "[DRY] Would add subgid 100000-165535 for $run_user"
-			fi
-		else
-			ok "subgid entry already present for $run_user."
-		fi
-
-		# ── User-level containers.conf with secure runtime defaults ──────────
-		local user_home cont_conf_dir cont_conf
-		user_home="$(user_home "$run_user")"
-		cont_conf_dir="${user_home}/.config/containers"
-		cont_conf="${cont_conf_dir}/containers.conf"
-		if [[ -n "$user_home" ]]; then
-			if ((!DRY_RUN)); then
-				install -d -m 700 "$cont_conf_dir" 2>/dev/null || true
-				if [[ ! -f "$cont_conf" ]]; then
-					backup_file "$cont_conf" || return 0
-					cat 2>/dev/null >"$cont_conf" <<'EOF'
-# Rootless Podman hardening defaults — written by fedora-harden.sh
-[containers]
-# Block privilege escalation inside containers
-no_new_privileges = true
-
-# Enforce kernel syscall allowlist (system default seccomp profile)
-seccomp_profile = "/usr/share/containers/seccomp.json"
-
-# Minimal capability set — grant only what is explicitly required per workload
-default_capabilities = [
-    "CHOWN",
-    "DAC_OVERRIDE",
-    "FOWNER",
-    "FSETID",
-    "KILL",
-    "NET_BIND_SERVICE",
-    "SETFCAP",
-    "SETGID",
-    "SETPCAP",
-    "SETUID",
-    "SYS_CHROOT",
-]
-
-[engine]
-# crun is the default OCI runtime on Fedora; preferred over runc for performance + security
-# runtime = "crun"
-EOF
-					run "chown '${run_user}:${run_user}' '${cont_conf}'"
-					ok "Wrote rootless containers.conf for $run_user (no-new-privileges + seccomp defaults)."
-				else
-					ok "containers.conf already exists for $run_user — not overwriting."
-				fi
-			else
-				info "[DRY] Would write ${cont_conf} with no-new-privileges + seccomp + minimal caps."
-			fi
-		fi
-	fi
-
-	# ── System image policy: reject pulls from unregistered registries ────────
-	# Default Fedora policy is 'insecureAcceptAnything' for all registries.
-	# Hardened policy sets default to 'reject' and explicitly allows trusted sources.
-	local policy_file="/etc/containers/policy.json"
-	# Merge, never replace: image-based systems sign their own updates in this file
-	# (e.g. Universal Blue: sigstoreSigned for ghcr.io/ublue-os); replacing it would
-	# drop that check. Only the catch-all for unknown registries becomes "reject",
-	# and the trusted registries are added if they are missing.
-	if [[ ! -f "$policy_file" ]]; then
-		warn "Container image policy file not found at $policy_file — skipping policy hardening."
-	elif ! have_cmd python3; then
-		add_action_item 23 LOW "CONTAINER_POLICY_REVIEW" \
-			"Review /etc/containers/policy.json: unknown registries should be rejected (python3 is needed to edit it safely)."
-	else
-		local policy_state
-		policy_state="$(
-			python3 - "$policy_file" <<'PY' 2>/dev/null || echo error
-import json, sys
-p = json.load(open(sys.argv[1]))
-docker = p.get("transports", {}).get("docker", {})
-catch = docker.get("", p.get("default", []))
-print("open" if any(r.get("type") == "insecureAcceptAnything" for r in catch) else "restricted")
-PY
-		)"
-		case "$policy_state" in
-		restricted)
-			ok "Container image policy already rejects unknown registries."
-			;;
-		open)
-			if confirm "Harden the container image policy to reject unknown registries? (keeps existing signature rules; allows Fedora, CentOS, Red Hat, quay.io, docker.io)"; then
-				backup_file "$policy_file" || return 0
-				if ((DRY_RUN)); then
-					info "Would merge a reject-by-default rule into $policy_file"
-				elif python3 - "$policy_file" <<'PY'; then
-import json, os, sys
-path = sys.argv[1]
-p = json.load(open(path))
-docker = p.setdefault("transports", {}).setdefault("docker", {})
-for registry in ("registry.fedoraproject.org", "registry.centos.org",
-                 "registry.access.redhat.com", "quay.io", "docker.io"):
-    docker.setdefault(registry, [{"type": "insecureAcceptAnything"}])
-docker[""] = [{"type": "reject"}]
-p["default"] = [{"type": "reject"}]
-with open(path, "w") as f:
-    json.dump(p, f, indent=4)
-    f.write("\n")
-PY
-					ok "Image policy hardened — pulls from unlisted registries are rejected; existing signature rules kept."
-				else
-					warn "Could not update $policy_file."
-				fi
-			else
-				add_action_item 23 LOW "CONTAINER_POLICY_PERMISSIVE" \
-					"Container image policy accepts images from any registry. Consider rejecting unknown registries in /etc/containers/policy.json."
-			fi
-			;;
-		*)
-			warn "Could not read $policy_file as JSON — leaving it unchanged."
-			;;
+	printf '\n%s══════════════════════ Protection now ══════════════════════%s\n' "$C_CYN" "$C_RST"
+	for row in "${SCORE_ROWS[@]}"; do
+		IFS='|' read -r state label detail fix <<<"$row"
+		case "$state" in
+		ok) tag="[ OK ]" col="$C_GRN" ;;
+		no) tag="[ NO ]" col="$C_RED" ;;
+		info) tag="[INFO]" col="$C_BLU" ;;
+		*) tag="[ -- ]" col="" ;;
 		esac
-	fi
-
-	# ── Block unqualified image names resolving silently to docker.io ─────────
-	# Without this, 'podman pull nginx' silently resolves to docker.io/library/nginx.
-	# Requiring fully-qualified names (registry/org/image:tag) prevents supply-chain
-	# confusion and makes registry provenance explicit.
-	local reg_conf_d="/etc/containers/registries.conf.d"
-	local reg_conf="${reg_conf_d}/99-hardening.conf"
-	if [[ ! -f "$reg_conf" ]]; then
-		if ((!DRY_RUN)); then
-			install -d -m 755 "$reg_conf_d" 2>/dev/null || true
-			backup_file "$reg_conf" || return 0
-			cat 2>/dev/null >"$reg_conf" <<'EOF'
-# Require fully-qualified image names — written by fedora-harden.sh
-# An empty list prevents silent docker.io resolution for unqualified names.
-# Always use full names: docker.io/library/nginx, quay.io/fedora/fedora, etc.
-unqualified-search-registries = []
-EOF
-			ok "Blocked unqualified image name resolution — explicit registry required for all pulls."
-		else
-			info "[DRY] Would write ${reg_conf} disabling unqualified registry search."
-		fi
-	else
-		ok "Registry conf.d override already present at $reg_conf."
-	fi
-
-	# ── Box tool availability check ───────────────────────────────────────────
-	if ! cmd_exists "$box_tool"; then
-		warn "$box_tool command not found after install. On rpm-ostree systems a reboot may be required."
-	else
-		ok "$box_tool is available for development and command-line tools."
-	fi
-
-	# ── What a box is (and is not) ────────────────────────────────────────────
-	# toolbox and distrobox containers are privileged (rootless), run without SELinux
-	# separation, share your home directory and mount the host's / at /run/host. They
-	# keep the host clean; they do not contain what runs inside them.
-	warn "Toolbox and distrobox are not a security boundary: their containers share your home, see the host at /run/host and run without SELinux separation. Use them to keep the host clean, not to run untrusted software."
-
-	# ── Post-run guidance action items ────────────────────────────────────────
-	add_action_item 23 MEDIUM "CONTAINER_WORKFLOW" \
-		"Use $box_tool for development and command-line tools so the host stays clean — it does not isolate them (shared home, host access). For untrusted software use a Flatpak with tight permissions, or: podman run --rm --read-only --cap-drop all --security-opt no-new-privileges --network none -v ./dir:/work:ro,Z IMAGE"
-	add_action_item 23 LOW "CONTAINER_NETWORK_AUDIT" \
-		"Review Podman network isolation: run 'podman network ls' and use 'podman network create --internal' for workloads that must not reach the internet. Verify inter-container traffic is explicitly controlled."
-
-	ok "Section 23 complete — rootless Podman hardened, image policy set, $box_tool ready."
+		[[ "$state" == ok || "$state" == no ]] && ((++total))
+		[[ "$state" == ok ]] && ((++ok))
+		printf '  %s%s%s %-22s %s\n' "$col" "$tag" "$C_RST" "$label" "$detail"
+		[[ -n "$fix" && "$state" != ok ]] && printf '         → %s\n' "$fix"
+	done
+	printf '  %d of %d protections in place (checked on the live system).\n' "$ok" "$total"
+	return 0
 }
 
-# _tools_box_setup() - Image-based systems: keep build and audit tools out of the
-# image. Writes a distrobox manifest (distrobox) or prints the toolbox commands.
-_tools_box_setup() {
-	local box_tool="$1" run_user="${TARGET_USER:-${SUDO_USER:-}}"
-	local release="${FEDORA_MAJOR:-0}"
-	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo 44)"
-	info "Image-based system: build and audit tools ($TOOLS_BOX_PKGS) go in the '$TOOLS_BOX' $box_tool box, not the image."
-	if [[ "$box_tool" != distrobox ]]; then
-		add_action_item 23 LOW "TOOLS_BOX" \
-			"Create the tools box: toolbox create --release $release $TOOLS_BOX && toolbox run -c $TOOLS_BOX sudo dnf install -y $TOOLS_BOX_PKGS"
+# ---------- Kernel boot hardening (section 9, opt-in) ------------------------
+# Memory-safety options on the kernel command line. They cost about 1-5% in some
+# workloads (init_on_free zeroes freed memory), so they are opt-in: asked, or
+# --kernel-hardening; never by default with --yes, and not offered for gaming.
+KERNEL_HARDENING_ARGS=(init_on_free=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on)
+
+_kernel_boot_hardening() {
+	local current add=() a profile
+	profile="$PROFILE_ARG"
+	[[ -n "$profile" ]] || profile="$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"' || true)"
+	if [[ ",${profile// /,}," == *,gaming,* ]] && ((! KERNEL_HARDENING)); then
+		info "Kernel boot hardening skipped for the gaming use case (it costs a few % of performance); --kernel-hardening turns it on."
 		return 0
 	fi
-	if [[ -z "$run_user" || "$run_user" == root ]]; then
-		info "No desktop user (run with sudo or --user NAME) — distrobox manifest not written."
+	if systemd-detect-virt --container --quiet 2>/dev/null; then
+		info "Kernel boot hardening needs a booted system (this is a container) — skipped."
 		return 0
 	fi
-	local home ini
-	home="$(user_home "$run_user")"
-	[[ -n "$home" && -d "$home" ]] || return 0
-	ini="$home/.config/distrobox/$TOOLS_BOX.ini"
-	if [[ -f "$ini" ]]; then
-		ok "Distrobox manifest already present: $ini"
+	if ((IS_OSTREE)); then
+		current="$(rpm-ostree kargs 2>/dev/null || true)"
+	elif have_cmd grubby; then
+		current="$(grubby --info=DEFAULT 2>/dev/null | sed -n 's/^args="\(.*\)"$/\1/p' || true)"
 	else
-		write_new_file "$ini" 0644 <<EOF || return 0
-# Build and audit tools kept out of the host image — written by fedora-harden.sh.
-# Create or recreate the box:
-#   distrobox assemble create --file $ini
-#   ujust distrobox-assemble CONTAINER=$TOOLS_BOX FILE=$ini   (Universal Blue)
-# Scan the host from inside it:  sudo oscap-chroot /run/host xccdf eval ...
-# Like every distrobox, it shares your home and sees the host: it keeps the host
-# clean, it does not isolate what runs inside it.
-[$TOOLS_BOX]
-image=registry.fedoraproject.org/fedora-toolbox:$release
-additional_packages="$TOOLS_BOX_PKGS"
-pull=true
-EOF
-		if ((!DRY_RUN)); then
-			chown -R "$run_user:" "$home/.config/distrobox" 2>/dev/null || true
-			ok "Wrote distrobox manifest $ini"
-		fi
+		info "Kernel boot hardening: neither rpm-ostree nor grubby is available — skipped."
+		return 0
 	fi
-	add_action_item 23 LOW "TOOLS_BOX" \
-		"Create the tools box (as $run_user): distrobox assemble create --file $ini — on Universal Blue also: ujust distrobox-assemble CONTAINER=$TOOLS_BOX FILE=$ini"
+	for a in "${KERNEL_HARDENING_ARGS[@]}"; do
+		[[ " $current " == *" $a "* ]] || add+=("$a")
+	done
+	if ((${#add[@]} == 0)); then
+		ok "Kernel boot hardening options are already set."
+		return 0
+	fi
+	if ((! KERNEL_HARDENING)); then
+		confirm "Add kernel boot hardening (${add[*]})? It makes memory bugs harder to exploit and costs about 1-5% in some workloads." no || {
+			info "Kernel boot hardening not added (opt-in: --kernel-hardening)."
+			return 0
+		}
+	fi
+	if ((IS_OSTREE)); then
+		local -a opts=()
+		for a in "${add[@]}"; do opts+=("--append-if-missing=$a"); done
+		run "rpm-ostree kargs ${opts[*]}" || {
+			warn "rpm-ostree could not add the kernel options."
+			return 0
+		}
+	else
+		run "grubby --update-kernel=ALL --args='${add[*]}'" || {
+			warn "grubby could not add the kernel options."
+			return 0
+		}
+	fi
+	record_change KERNEL_ARGS "${add[*]}"
+	ok "Kernel boot hardening added: ${add[*]} (takes effect after a reboot)."
+	add_action_item 9 LOW "KERNEL_ARGS_REBOOT" "Reboot to apply the kernel boot hardening options (${add[*]}); --rollback removes them."
+}
+
+# ---------- Sandboxing of exposed services (section 21) -----------------------
+# For network services that are running, a drop-in with conservative systemd
+# sandboxing; kept only when the service restarts cleanly with it. sshd is left
+# alone on purpose: its sandbox would also apply to every login session it starts.
+_sandbox_dropin() { # _sandbox_dropin <service> — the directives for that service
+	case "$1" in
+	cups)
+		# cupsd runs filters and backends (USB, network); keep it able to.
+		cat <<'EOF'
+[Service]
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+LockPersonality=yes
+EOF
+		;;
+	avahi-daemon)
+		cat <<'EOF'
+[Service]
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+NoNewPrivileges=yes
+LockPersonality=yes
+EOF
+		;;
+	*) return 1 ;;
+	esac
+}
+
+_exposure() { # _exposure <service> — systemd-analyze's exposure score (lower is better)
+	systemd-analyze security --no-pager "$1.service" 2>/dev/null | sed -n 's/.*Overall exposure level for [^:]*: \([0-9.]*\).*/\1/p' || true
+}
+
+_sandbox_exposed_services() {
+	local svc drop before after
+	for svc in cups avahi-daemon; do
+		systemctl is-active --quiet "$svc" 2>/dev/null || continue
+		drop="/etc/systemd/system/$svc.service.d/50-fedora-harden-sandbox.conf"
+		[[ -e "$drop" ]] && continue
+		before="$(_exposure "$svc")"
+		_sandbox_dropin "$svc" | write_new_file "$drop" 0644 || continue
+		((DRY_RUN)) && continue
+		if run "systemctl daemon-reload && systemctl restart $svc" && systemctl is-active --quiet "$svc"; then
+			after="$(_exposure "$svc")"
+			ok "Sandboxed $svc (exposure ${before:-?} → ${after:-?}; lower is better)."
+		else
+			warn "$svc did not start with the sandbox — removed it again."
+			rm -f "$drop"
+			systemctl daemon-reload 2>/dev/null || true
+			systemctl restart "$svc" 2>/dev/null || true
+			add_action_item 21 LOW "SANDBOX_FAILED_${svc//-/_}" \
+				"$svc did not start with the sandbox drop-in, so it runs without it. Check: journalctl -u $svc -b"
+		fi
+	done
+	systemctl is-active --quiet sshd 2>/dev/null &&
+		info "sshd is not sandboxed: a sandbox would also restrict every SSH login session."
+	return 0
+}
+
+# ============================================================================
+#  Personal setup (section 19) and the recovery file
+# ============================================================================
+# Section 19 tailors the machine to its use cases. Besides the routine timers it
+# offers, once each: ready-made boxes for development and DaVinci Resolve (nothing
+# layered), the private-browsing browsers, a Flathub limited to verified apps, a
+# security key for sudo and login, unlocking the encrypted disk with the TPM or a
+# FIDO2 key, and pointers to OpenSnitch. Every one is a question (off under --yes
+# unless a use case implies it) and is undone by --rollback.
+#
+# After every run the recovery file (root-only, no secrets) records what this
+# machine was set up with; --restore replays it after a reinstall or a recovery.
+
+RECOVERY_FILE="/etc/fedora-harden/machine.conf"
+DEV_BOX_PKGS="gcc gcc-c++ make cmake git python3 python3-pip"
+declare -ga BOXES_MADE=()      # boxes created or already present this run
+declare -gA SETUP_CHOICES=()   # personal choices made this run (recovery file)
+declare -gA RESTORE_ANSWERS=() # answers loaded by --restore, by question key
+declare -gA ANSWERS=()         # answers given this run, by question key
+declare -gA ANSWER_TEXT=()     # the question behind each key
+
+# _answer_key <question> - Short stable key for a question (recovery file).
+_answer_key() {
+	printf '%s' "$1" | sha256sum | cut -c1-12
+}
+
+# _personal_setup <use cases> - Section 19's personal choices.
+_personal_setup() {
+	local uses="$1"
+	_use_case_boxes "$uses"
+	[[ " $uses " == *" private "* ]] && _private_browsing
+	_flathub_verified
+	_security_key_login
+	_disk_unlock
+	_opensnitch_pointer
+	return 0
+}
+
+# _has_nvidia - True when an NVIDIA GPU is driven by the proprietary driver.
+_has_nvidia() {
+	[[ -e /proc/driver/nvidia/version ]] || lspci 2>/dev/null | grep -qiE 'vga.*nvidia|3d.*nvidia'
+}
+
+# _use_case_boxes <use cases> - dev: a box with compilers and build tools;
+# creative: the davincibox container for DaVinci Resolve (as Bazzite does).
+# Created for the person in the background; upgraded weekly by the routine.
+_use_case_boxes() {
+	local uses="$1" user="${TARGET_USER:-${SUDO_USER:-}}" tool release
+	[[ " $uses " == *" dev "* || " $uses " == *" creative "* ]] || return 0
+	if [[ -z "$user" || "$user" == root ]]; then
+		info "No desktop user (run with sudo or --user NAME) — use-case boxes not created."
+		return 0
+	fi
+	tool="$(image_box_tool)"
+	if ! cmd_exists "$tool" && ((! IS_OSTREE)); then
+		pkg_install "$tool"
+	fi
+	if ((! DRY_RUN)) && ! cmd_exists "$tool"; then
+		info "$tool is not available — use-case boxes not created."
+		return 0
+	fi
+	release="${FEDORA_MAJOR:-0}"
+	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo 45)"
+	if [[ " $uses " == *" dev "* ]] &&
+		confirm "Create a 'dev' $tool box with compilers and build tools ($DEV_BOX_PKGS), so they stay out of the system?" yes; then
+		_make_box "$user" "$tool" dev "registry.fedoraproject.org/fedora-toolbox:$release" "$DEV_BOX_PKGS"
+	fi
+	if [[ " $uses " == *" creative "* ]]; then
+		if cmd_exists ujust && ujust --list 2>/dev/null | grep -q install-resolve; then
+			return 0 # Bazzite's own installer does the same (action item from section 19)
+		fi
+		confirm "Create the 'davincibox' container for DaVinci Resolve (the davincibox project, as Bazzite does)?" yes || return 0
+		local image="ghcr.io/zelikos/davincibox-opencl:latest" setup
+		_has_nvidia && image="ghcr.io/zelikos/davincibox:latest"
+		_make_box "$user" "$tool" davincibox "$image" ""
+		_render_groups "$user"
+		if [[ "$tool" == distrobox ]]; then
+			setup="distrobox enter davincibox -- setup-davinci squashfs-root/AppRun distrobox"
+		else
+			setup="toolbox run --container davincibox setup-davinci squashfs-root/AppRun toolbox"
+		fi
+		add_action_item 19 LOW "DAVINCIBOX_SETUP" \
+			"Install DaVinci Resolve into davincibox: download the Linux installer from blackmagicdesign.com, run '<installer>.run --appimage-extract' in its folder, then: $setup — Resolve then appears in your app menu."
+	fi
+}
+
+# _make_box <user> <tool> <name> <image> [packages] - Create a box for the person,
+# in the background (images are large). Journaled for --rollback.
+_make_box() {
+	local user="$1" tool="$2" name="$3" image="$4" extra="${5:-}" uid home box_cmd
+	uid="$(id -u "$user" 2>/dev/null)" || return 0
+	home="$(user_home "$user")" || return 0
+	if runuser -u "$user" -- podman container exists "$name" 2>/dev/null; then
+		ok "The '$name' box already exists for $user."
+		BOXES_MADE+=("$name")
+		return 0
+	fi
+	if [[ "$tool" == distrobox ]]; then
+		box_cmd="distrobox create --yes --name $name --image $image"
+		[[ -n "$extra" ]] && box_cmd+=" --additional-packages '$extra'"
+		# The build tools work from the host's terminal too.
+		[[ "$name" == dev ]] && box_cmd+=" && for b in gcc g++ make cmake; do distrobox enter $name -- distrobox-export --bin /usr/bin/\$b --export-path '$home/.local/bin'; done"
+	else
+		box_cmd="toolbox --assumeyes create --image $image $name"
+		[[ -n "$extra" ]] && box_cmd+=" && toolbox run --container $name sudo dnf install -y $extra"
+	fi
+	if ((DRY_RUN)); then
+		info "Would create the $tool box '$name' ($image) for $user in the background"
+		return 0
+	fi
+	if [[ ! -d /run/systemd/system ]] || ! cmd_exists systemd-run; then
+		add_action_item 19 LOW "BOX_${name^^}" "Create the '$name' box (as $user): $box_cmd"
+		return 0
+	fi
+	local -a env=(--setenv=HOME="$home")
+	[[ -d "/run/user/$uid" ]] && env+=(--setenv=XDG_RUNTIME_DIR="/run/user/$uid")
+	log "[RUN]   systemd-run --uid=$uid --unit=fedora-harden-box-$name: $box_cmd"
+	if systemd-run --quiet --no-block --collect --unit="fedora-harden-box-$name" --uid="$uid" \
+		"${env[@]}" /bin/bash -c "$box_cmd" 2>/dev/null; then
+		record_change BOX "$user:$tool:$name"
+		BOXES_MADE+=("$name")
+		ok "Creating the '$name' box for $user in the background (journalctl -u fedora-harden-box-$name)."
+	else
+		warn "Could not start creating the '$name' box."
+		add_action_item 19 LOW "BOX_${name^^}" "Create the '$name' box (as $user): $box_cmd"
+	fi
+}
+
+# _render_groups <user> - GPU compute in davincibox needs the render and video groups.
+_render_groups() {
+	local user="$1" g
+	for g in render video; do
+		getent group "$g" >/dev/null || continue
+		id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx "$g" && continue
+		if run "usermod -aG $g '$user'"; then
+			record_change GROUP_ADD "$user:$g"
+		fi
+	done
+}
+
+# _private_browsing - The "private" use case: Tor Browser (through its launcher,
+# which verifies the download) and Mullvad Browser, both from Flathub.
+_private_browsing() {
+	if ! cmd_exists flatpak || ! flatpak remotes --columns=name 2>/dev/null | grep -qx flathub; then
+		((DRY_RUN)) || {
+			warn "Flathub is not set up (section 4) — private-browsing browsers not installed."
+			return 0
+		}
+	fi
+	info "Private browsing: Tor Browser and Mullvad Browser (Flathub). Only Tor Browser hides who you are; see the README."
+	flatpak_install_or_update flathub org.torproject.torbrowser-launcher
+	flatpak_install_or_update flathub net.mullvad.MullvadBrowser
+	SETUP_CHOICES[PRIVATE_BROWSING]=yes
+}
+
+# _flathub_verified - Optionally show only Flathub apps published by their own
+# developers (the "verified" subset).
+_flathub_verified() {
+	cmd_exists flatpak || return 0
+	local subset
+	subset="$(flatpak remotes --columns=name,subset 2>/dev/null | awk '$1 == "flathub" {print $2}' || true)"
+	[[ -n "$subset" ]] || return 0 # no Flathub remote
+	if [[ "$subset" == verified ]]; then
+		SETUP_CHOICES[FLATHUB_VERIFIED]=yes
+		return 0
+	fi
+	confirm "Show only verified Flathub apps (published by their own developers)? Unverified apps disappear from app stores." no || {
+		SETUP_CHOICES[FLATHUB_VERIFIED]=no
+		return 0
+	}
+	if run "flatpak remote-modify --subset=verified flathub"; then
+		record_change FLATPAK_SUBSET "flathub:${subset/#-/}"
+		SETUP_CHOICES[FLATHUB_VERIFIED]=yes
+		ok "Flathub now offers verified apps only (undo: flatpak remote-modify --subset= flathub)."
+	fi
+}
+
+# _security_key_login - Optionally require the person's security key, as a second
+# factor, for sudo and login (pam-u2f through authselect). The key is registered
+# first; without a registration nothing changes.
+_security_key_login() {
+	local user="${TARGET_USER:-${SUDO_USER:-}}" home keys
+	[[ -n "$user" && "$user" != root ]] || return 0
+	cmd_exists pamu2fcfg && cmd_exists authselect || return 0 # section 1 installs pam-u2f for key owners
+	if authselect current 2>/dev/null | grep -q 'with-pam-u2f'; then
+		SETUP_CHOICES[PAM_U2F]=yes
+		return 0
+	fi
+	confirm "Require your security key, besides your password, for sudo and login (pam-u2f)? Keep a second key registered: losing the only key locks you out." no || {
+		SETUP_CHOICES[PAM_U2F]=no
+		return 0
+	}
+	if ! authselect current >/dev/null 2>&1; then
+		add_action_item 19 MEDIUM "PAM_U2F_NO_AUTHSELECT" \
+			"This system's PAM is not managed by authselect; add pam_u2f by hand (see man pam_u2f) or run: sudo authselect select local --force"
+		return 0
+	fi
+	home="$(user_home "$user")"
+	keys="$home/.config/Yubico/u2f_keys"
+	if ((DRY_RUN)); then
+		info "Would register $user's security key ($keys) and run: authselect enable-feature with-pam-u2f-2fa"
+		return 0
+	fi
+	if [[ ! -s "$keys" ]]; then
+		info "Touch your security key when it blinks (registering it for $user)..."
+		backup_file "$keys" || return 0
+		install -d -m 700 -o "$user" -g "$user" "$home/.config/Yubico" 2>/dev/null
+		if ! runuser -u "$user" -- pamu2fcfg -u "$user" >"$keys" 2>/dev/null || [[ ! -s "$keys" ]]; then
+			rm -f "$keys"
+			warn "No security key was registered — sudo and login are unchanged."
+			return 0
+		fi
+		chown "$user:" "$keys" && chmod 600 "$keys"
+	fi
+	if run "authselect enable-feature with-pam-u2f-2fa"; then
+		record_change AUTHSELECT_FEATURE with-pam-u2f-2fa
+		SETUP_CHOICES[PAM_U2F]=yes
+		ok "sudo and login now ask for the security key too. Register a second key: pamu2fcfg -n >> $keys"
+	fi
+}
+
+# _luks_root_device - The LUKS partition under the root filesystem, if any.
+_luks_root_device() {
+	local src
+	src="$(findmnt -no SOURCE /sysroot 2>/dev/null || findmnt -no SOURCE / 2>/dev/null)"
+	src="${src%%[*}"
+	[[ -n "$src" ]] || return 1
+	lsblk -nrso NAME,FSTYPE "$src" 2>/dev/null | awk '$2 == "crypto_LUKS" {print "/dev/" $1; exit}' | grep .
+}
+
+# _disk_unlock - When the root disk is already encrypted, optionally unlock it with
+# the TPM plus a PIN, or a FIDO2 key. The passphrase stays as a fallback; no
+# keyslot is ever removed except the one added here (by --rollback).
+_disk_unlock() {
+	local dev kind="" opt name
+	dev="$(_luks_root_device)" || return 0
+	cmd_exists systemd-cryptenroll || return 0
+	if systemd-cryptenroll "$dev" 2>/dev/null | grep -qE 'tpm2|fido2'; then
+		SETUP_CHOICES[LUKS_UNLOCK]="$(systemd-cryptenroll "$dev" 2>/dev/null | awk '/tpm2|fido2/ {print ($0 ~ /tpm2/ ? "tpm2" : "fido2"); exit}')"
+		return 0
+	fi
+	if [[ -e /dev/tpmrm0 ]] &&
+		confirm "Unlock the encrypted disk with the TPM plus a PIN instead of the long passphrase? (The passphrase keeps working.)" no; then
+		kind=tpm2
+	elif systemd-cryptenroll --fido2-device=list 2>/dev/null | grep -q /dev/ &&
+		confirm "Unlock the encrypted disk with your FIDO2 security key? (The passphrase keeps working.)" no; then
+		kind=fido2
+	fi
+	if [[ -z "$kind" ]]; then
+		SETUP_CHOICES[LUKS_UNLOCK]=passphrase
+		return 0
+	fi
+	if ((DRY_RUN)); then
+		info "Would enroll $kind for $dev, add $kind-device=auto to /etc/crypttab and rebuild the initramfs"
+		return 0
+	fi
+	if ((GUI_FULL_MODE)); then # enrollment asks for the passphrase in a terminal
+		add_action_item 19 LOW "LUKS_$kind" \
+			"Unlock the disk with $kind: in a terminal run sudo ./fedora-harden.sh --only 19 (it asks for the passphrase there)."
+		return 0
+	fi
+	info "Enter the disk passphrase, then $([[ $kind == tpm2 ]] && echo 'choose a PIN' || echo 'touch the key')..."
+	if [[ "$kind" == tpm2 ]]; then
+		systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes "$dev" || {
+			warn "TPM enrollment did not complete — the disk still unlocks with the passphrase only."
+			return 0
+		}
+	else
+		systemd-cryptenroll --fido2-device=auto "$dev" || {
+			warn "FIDO2 enrollment did not complete — the disk still unlocks with the passphrase only."
+			return 0
+		}
+	fi
+	record_change LUKS_TOKEN "$dev:$kind"
+	# Ask for the token at boot: <name> <device> <key> <options>
+	opt="$kind-device=auto"
+	name="$(awk -v u="$(blkid -s UUID -o value "$dev")" '$2 == "UUID=" u {print $1}' /etc/crypttab 2>/dev/null || true)"
+	if [[ -n "$name" ]] && backup_file /etc/crypttab; then
+		awk -v n="$name" -v o="$opt" 'BEGIN{OFS="\t"} $1 == n && $4 !~ o {$4 = ($4 == "" || $4 == "none") ? o : $4 "," o} {print}' \
+			/etc/crypttab >/etc/crypttab.fh-new && cat /etc/crypttab.fh-new >/etc/crypttab
+		rm -f /etc/crypttab.fh-new
+	fi
+	if ((IS_OSTREE)); then
+		if run "rpm-ostree initramfs --enable"; then
+			record_change OSTREE_INITRAMFS enable
+		fi
+	else
+		run "dracut -f" || true
+	fi
+	SETUP_CHOICES[LUKS_UNLOCK]="$kind"
+	ok "The disk unlocks with $kind from the next boot (the passphrase still works)."
+}
+
+# _opensnitch_pointer - OpenSnitch (an application firewall that asks before apps
+# connect out) is not packaged by Fedora; the script installs nothing from outside
+# Fedora and Flathub, so it only points to it when the person wants it.
+_opensnitch_pointer() {
+	confirm "Would you like an application firewall that asks before apps connect to the internet (OpenSnitch)?" no || {
+		SETUP_CHOICES[OPENSNITCH]=no
+		return 0
+	}
+	SETUP_CHOICES[OPENSNITCH]=wanted
+	add_action_item 19 LOW "OPENSNITCH" \
+		"OpenSnitch is not packaged by Fedora, so the script does not install it. Its signed RPMs are on github.com/evilsocket/opensnitch/releases (on an image-based system they must be layered). Expect many questions at first."
+}
+
+# ---------- The recovery file -----------------------------------------------
+# _recovery_get <key> [file] - Value of KEY=... (last one wins, quotes removed).
+_recovery_get() {
+	[[ -r "${2:-$RECOVERY_FILE}" ]] || return 0
+	sed -n "s/^$1=//p" "${2:-$RECOVERY_FILE}" | tail -n 1 | sed 's/^"\(.*\)"$/\1/'
+}
+
+# _union <list> <list> - Space-separated union, first-seen order.
+# shellcheck disable=SC2086  # the lists are split on purpose
+_union() {
+	printf '%s\n' $1 $2 | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//'
+}
+
+# write_recovery_file - Record what this machine was set up with (after a real run).
+write_recovery_file() {
+	((DRY_RUN)) && return 0
+	local f="$RECOVERY_FILE" s sections="" flatpaks="" timers wg="" key copy
+	for s in "${SECTIONS[@]}"; do
+		[[ -n "$ONLY_LIST" ]] && ! in_list "$s" "$ONLY_LIST" && continue
+		[[ -n "$SKIP_LIST" ]] && in_list "$s" "$SKIP_LIST" && continue
+		sections+="$s "
+	done
+	sections="$(_union "$(_recovery_get SECTIONS)" "$sections" | tr ' ' '\n' | sort -n | tr '\n' ' ' | sed 's/ $//')"
+	[[ -n "$ROLLBACK_JOURNAL" ]] &&
+		flatpaks="$(awk -F'|' '$2 == "FLATPAK_INSTALL" {print $3}' "$ROLLBACK_JOURNAL" 2>/dev/null | tr '\n' ' ')"
+	flatpaks="$(_union "$(_recovery_get FLATPAKS)" "$flatpaks")"
+	timers="$(systemctl list-unit-files 'fedora-harden-*.timer' --state=enabled --no-legend 2>/dev/null | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//' || true)"
+	[[ -e /etc/wireguard/wg0.conf ]] &&
+		wg="supply the provider config again with --wireguard-config FILE (it was installed as /etc/wireguard/wg0.conf)"
+	copy="${RECOVERY_BACKUP_ARG:-$(_recovery_get BACKUP_COPY)}"
+	[[ -n "$copy" ]] || copy=yes
+	# Earlier answers are kept unless this run answered the same question.
+	local -A all=() text=()
+	while IFS='=' read -r key s; do
+		all[${key#ANSWER_}]="$s"
+	done < <(grep -E '^ANSWER_[0-9a-f]{12}=(yes|no)$' "$f" 2>/dev/null)
+	while IFS= read -r s; do
+		text[${s%%|*}]="${s#*|}"
+	done < <(awk '/^# Q / {q=substr($0, 5); next} /^ANSWER_/ {split($1, a, "[_=]"); print a[2] "|" q}' "$f" 2>/dev/null)
+	for key in "${!ANSWERS[@]}"; do
+		all[$key]="${ANSWERS[$key]}"
+		text[$key]="${ANSWER_TEXT[$key]}"
+	done
+	local release="${FEDORA_MAJOR:-0}" edition
+	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo unknown)"
+	# shellcheck source=/dev/null
+	edition="$(. /etc/os-release 2>/dev/null && echo "${VARIANT_ID:-${ID:-fedora}}")"
+	local new
+	new="$(mktemp)" || return 0
+	register_tmp "$new"
+	cat >"$new" <<EOF || {
+# fedora-harden recovery file: what this machine was set up with, kept up to date
+# after every run. After a reinstall or a recovery, put things back with:
+#   sudo ./fedora-harden.sh --restore $f
+# It holds no secrets (no keys, passwords or tunnel configs).
+# BACKUP_COPY=no keeps it out of the home snapshots (or: --recovery-backup off).
+UPDATED=$(date '+%F %T')
+SESSION=$RUN_STAMP
+FEDORA_RELEASE=$release
+EDITION=$edition
+IMAGE_BASED=$( ((IS_OSTREE)) && echo yes || echo no)
+TARGET_USER=${TARGET_USER:-$(_recovery_get TARGET_USER)}
+SECTIONS="$sections"
+USE_CASES="$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"')"
+BOXES="$(_union "$(_recovery_get BOXES)" "${BOXES_MADE[*]}")"
+FLATPAKS="$flatpaks"
+TIMERS="$timers"
+SNAPSHOT_BACKEND=$(sed -n 's/^BACKEND=//p' /etc/fedora-harden/snapshots 2>/dev/null)
+BACKUP_TARGET=${BACKUP_TARGET:-$(_recovery_get BACKUP_TARGET)}
+WIREGUARD="${wg:-$(_recovery_get WIREGUARD)}"
+LUKS_UNLOCK=${SETUP_CHOICES[LUKS_UNLOCK]:-$(_recovery_get LUKS_UNLOCK)}
+PAM_U2F=${SETUP_CHOICES[PAM_U2F]:-$(_recovery_get PAM_U2F)}
+FLATHUB_VERIFIED=${SETUP_CHOICES[FLATHUB_VERIFIED]:-$(_recovery_get FLATHUB_VERIFIED)}
+PRIVATE_BROWSING=${SETUP_CHOICES[PRIVATE_BROWSING]:-$(_recovery_get PRIVATE_BROWSING)}
+OPENSNITCH=${SETUP_CHOICES[OPENSNITCH]:-$(_recovery_get OPENSNITCH)}
+BACKUP_COPY=$copy
+# Answers to the questions (Q = the question; --restore gives the same answers).
+$(for key in $(printf '%s\n' "${!all[@]}" | sort); do printf '# Q %s\nANSWER_%s=%s\n' "${text[$key]//$'\n'/ }" "$key" "${all[$key]}"; done)
+EOF
+		warn "Could not write the recovery file (disk full?) — keeping the previous one."
+		return 0
+	}
+	# Rewrite only when something besides the date and session changed, so a
+	# repeated run leaves /etc as it was.
+	if [[ -f "$f" ]] && diff -q <(grep -vE '^(UPDATED|SESSION)=' "$f") <(grep -vE '^(UPDATED|SESSION)=' "$new") >/dev/null 2>&1; then
+		_recovery_backup_copy "$copy"
+		return 0
+	fi
+	write_new_file "$f" 0600 <"$new" || return 0
+	_recovery_backup_copy "$copy"
+}
+
+# _recovery_backup_copy <yes|no> - Keep a copy inside the home folder's backups
+# (section 20 snapshots or copies everything under it), or remove it.
+_recovery_backup_copy() {
+	local want="$1" home dest
+	home="$(sed -n 's/^HOME_DIR=//p' /etc/fedora-harden/snapshots 2>/dev/null || true)"
+	[[ -n "$home" && -d "$home" ]] || return 0
+	dest="$home/.fedora-harden/machine.conf"
+	if [[ "$want" != yes ]]; then
+		if [[ -e "$dest" ]] && backup_file "$dest"; then
+			rm -f "$dest" && info "Recovery file no longer copied into the home backups."
+		fi
+		return 0
+	fi
+	install -d -m 700 "$home/.fedora-harden" 2>/dev/null || return 0
+	cmp -s "$RECOVERY_FILE" "$dest" && return 0
+	backup_file "$dest" || return 0
+	cp -f "$RECOVERY_FILE" "$dest" && chmod 600 "$dest" || return 0
+	info "Recovery file copied into the home backups ($dest); turn off with --recovery-backup off."
+}
+
+# load_recovery_file <file> - --restore: read a recovery file (never sourced) and
+# set this run up to reapply it without questions.
+load_recovery_file() {
+	local f="$1" v key s
+	[[ -r "$f" ]] || {
+		err "--restore: cannot read '$f'."
+		exit 2
+	}
+	grep -q '^# fedora-harden recovery file' "$f" || {
+		err "--restore: '$f' is not a fedora-harden recovery file."
+		exit 2
+	}
+	v="$(_recovery_get SECTIONS "$f")"
+	if [[ -z "$ONLY_LIST" && "$v" =~ ^[0-9\ ]+$ ]]; then
+		ONLY_LIST="${v// /,}"
+	fi
+	v="$(_recovery_get USE_CASES "$f")"
+	[[ -z "$PROFILE_ARG" && "$v" =~ ^[a-z\ ]+$ ]] && PROFILE_ARG="${v// /,}"
+	v="$(_recovery_get TARGET_USER "$f")"
+	[[ -z "$TARGET_USER" && "$v" =~ ^[a-z_][a-z0-9_.-]*$ ]] && getent passwd "$v" >/dev/null && TARGET_USER="$v"
+	v="$(_recovery_get BACKUP_TARGET "$f")"
+	[[ -z "$BACKUP_TARGET" && -n "$v" && -d "$v" ]] && BACKUP_TARGET="$v"
+	v="$(_recovery_get BACKUP_COPY "$f")"
+	[[ -z "$RECOVERY_BACKUP_ARG" && "$v" =~ ^(yes|no)$ ]] && RECOVERY_BACKUP_ARG="$v"
+	while IFS='=' read -r key s; do
+		RESTORE_ANSWERS[${key#ANSWER_}]="$s"
+	done < <(grep -E '^ANSWER_[0-9a-f]{12}=(yes|no)$' "$f")
+	ASSUME_YES=1
+	printf '%s[INFO]%s  Restoring from %s (written %s on Fedora %s %s):\n' "$C_BLU" "$C_RST" "$f" \
+		"$(_recovery_get UPDATED "$f")" "$(_recovery_get FEDORA_RELEASE "$f")" "$(_recovery_get EDITION "$f")"
+	printf '         sections %s; use cases: %s; boxes: %s\n' "${ONLY_LIST:-all}" \
+		"$(_recovery_get USE_CASES "$f")" "$(_recovery_get BOXES "$f")"
+	printf '         %d earlier answers reused; everything else takes the default.\n' "${#RESTORE_ANSWERS[@]}"
+	v="$(_recovery_get WIREGUARD "$f")"
+	[[ -n "$v" && -z "$WG_CONFIG" ]] && printf '         WireGuard: %s\n' "$v"
+	v="$(_recovery_get LUKS_UNLOCK "$f")"
+	[[ "$v" == tpm2 || "$v" == fido2 ]] && printf '         Disk unlock was %s: re-enroll it when asked (needs the passphrase).\n' "$v"
+	return 0
+}
+
+# _report_recovery - HTML report: say whether a recovery file exists and when it
+# was updated; its contents only with --include-setup.
+_report_recovery() {
+	if [[ ! -f "$RECOVERY_FILE" ]]; then
+		printf '<h2>Recovery file</h2><p>None yet (written after a real run).</p>\n'
+		return 0
+	fi
+	printf '<h2>Recovery file</h2><p>%s, updated %s. Restore with <code>sudo %s --restore %s</code>.</p>\n' \
+		"$(_html "$RECOVERY_FILE")" "$(_html "$(_recovery_get UPDATED)")" "$SCRIPT_NAME" "$(_html "$RECOVERY_FILE")"
+	((INCLUDE_SETUP)) || {
+		printf '<p>Its contents are left out of this report; add <code>--include-setup</code> to include them.</p>\n'
+		return 0
+	}
+	printf '<table>\n'
+	local key val
+	while IFS='=' read -r key val; do
+		printf '<tr><td>%s</td><td>%s</td></tr>\n' "$(_html "$key")" "$(_html "${val//\"/}")"
+	done < <(grep -E '^[A-Z_]+=' "$RECOVERY_FILE" | grep -v '^ANSWER_')
+	printf '</table>\n'
 }
 
 # ---------- Actionable-items display + remediation --------------------------
 # show_actionable_items() - Print the full prioritized actionable items list.
 show_actionable_items() {
 	if ((${#ACTIONABLE_ITEMS[@]} == 0)); then
-		ok "No actionable items — sections 12/18/21/22/23 appear clean."
+		ok "No actionable items — sections 12/16/17/18/24 appear clean."
 		return 0
 	fi
-	if ((!GUI_FULL_MODE)); then
+	if ((! GUI_FULL_MODE)); then
 		printf '\n%s════════ Actionable Items (%d found) ════════%s\n' "$C_YEL" "${#ACTIONABLE_ITEMS[@]}" "$C_RST"
 		local idx=1
 		for item in "${ACTIONABLE_ITEMS[@]}"; do
@@ -8226,7 +9419,7 @@ remediate_item() {
 		} | write_user_report "section-21-clamav-initial-scan-${REPORT_DATE}.txt" || true
 		if ((infected > 0)); then
 			warn "ClamAV found $infected infected file(s) — review the scan report."
-			add_action_item 21 HIGH "CLAMAV_INFECTED" \
+			add_action_item 16 HIGH "CLAMAV_INFECTED" \
 				"ClamAV found $infected infected file(s) — manual quarantine/deletion required."
 			return 1
 		fi
@@ -8257,12 +9450,6 @@ remediate_item() {
 				head -10 |
 				while IFS= read -r rule; do info "    • $rule"; done || true
 		fi
-		return 1
-		;;
-	RK_WARNINGS)
-		info "rkhunter warnings require manual investigation:"
-		info "  Report: ${USER_RESULTS_DIR:+$USER_RESULTS_DIR/section-12-rkhunter-aide-${REPORT_DATE}.txt}"
-		info "  After investigating, run: sudo rkhunter --propupd"
 		return 1
 		;;
 	AIDE_RECHECK | FAIL2BAN_REVIEW | CLAMAV_REVIEW | SCAP_NO_SCAN | CLAMAV_INFECTED)
@@ -8358,7 +9545,7 @@ resume_followups() {
 	mapfile -t ACTIONABLE_ITEMS < <(grep -v '^$' "$dir/.followups")
 	info "Open follow-ups from session ${dir##*/harden-backups-}:"
 	handle_actionable_follow_up ""
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		if ((${#ACTIONABLE_ITEMS[@]})); then
 			printf '%s\n' "${ACTIONABLE_ITEMS[@]}" 2>/dev/null >"$dir/.followups" || true
 		else
@@ -8372,6 +9559,30 @@ _html() {
 	local t="${1//&/&amp;}"
 	t="${t//</&lt;}"
 	printf '%s' "${t//>/&gt;}"
+}
+
+# report_redact - Filter stdin for a report meant to be shared: the host name, local
+# user names, home paths, IPv4/IPv6 and MAC addresses become placeholders.
+report_redact() {
+	local -a expr=() u
+	local esc
+	# Home paths first (they contain the user name), then names, then addresses.
+	expr+=(-e 's#/(var/)?home/[^/[:space:]<"]+#/home/\&lt;user\&gt;#g')
+	while IFS=: read -r u _ uid _ _ home _; do
+		((uid >= 1000 && uid < 60000)) || [[ "$u" == "${SUDO_USER:-}" || "$u" == "${TARGET_USER:-}" ]] || continue
+		((${#u} >= 3)) || continue
+		esc="$(printf '%s' "$u" | sed 's/[][\.*^$/+?(){}|]/\\&/g')"
+		expr+=(-e "s/\\b${esc}\\b/\\&lt;user\\&gt;/g")
+	done </etc/passwd
+	if [[ -n "$HOST_LABEL" && "$HOST_LABEL" != unknown ]]; then
+		esc="$(printf '%s' "$HOST_LABEL" | sed 's/[][\.*^$/+?(){}|]/\\&/g')"
+		expr+=(-e "s/\\b${esc}\\b/\\&lt;host\\&gt;/g")
+	fi
+	expr+=(-e 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}(\/[0-9]{1,2})?\b/\&lt;address\&gt;/g'
+		-e 's/\b([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b/\&lt;address\&gt;/g'
+		-e 's/(\b[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4})*)?::[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4})*\b/\&lt;address\&gt;/g'
+		-e 's/\b[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4}){7}\b/\&lt;address\&gt;/g')
+	sed -E "${expr[@]}"
 }
 
 # write_html_report [file] - One self-contained page about the last session: what it
@@ -8389,7 +9600,10 @@ write_html_report() {
 		info "Would write the report for session $session to $out"
 		return 0
 	fi
-	local verify="$SCRIPT_DIR/tests/verify-host.sh"
+	local verify="$SCRIPT_DIR/tests/verify-host.sh" raw
+	raw="$(mktemp)" || return 1
+	register_tmp "$raw"
+	protection_scorecard
 	{
 		printf '<!doctype html><meta charset="utf-8"><title>fedora-harden report %s</title>\n' "$session"
 		printf '<style>body{font:15px/1.5 system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;color:#1d2320;background:#fbfbf9}h1,h2{font-weight:600}pre{background:#eef1ee;padding:.75rem;overflow-x:auto;white-space:pre-wrap}td{padding:.2rem .6rem;vertical-align:top;border-bottom:1px solid #dde2dd}</style>\n'
@@ -8411,7 +9625,9 @@ write_html_report() {
 		else
 			printf '<tr><td>None.</td></tr>\n'
 		fi
-		printf '</table>\n<h2>Warnings and errors logged</h2><pre>\n'
+		printf '</table>\n'
+		_report_recovery
+		printf '<h2>Warnings and errors logged</h2><pre>\n'
 		if ((LOG_JOURNAL)); then
 			journalctl -t fedora-harden "FH_SESSION=$session" -p warning -o short-iso --no-pager 2>/dev/null |
 				while IFS= read -r line; do
@@ -8424,7 +9640,15 @@ write_html_report() {
 				printf '\n'
 			done
 		fi
-		printf '</pre>\n<h2>In effect now</h2>\n'
+		printf '</pre>\n<h2>Protection now</h2><table>\n'
+		local row state label detail fix
+		for row in "${SCORE_ROWS[@]}"; do
+			IFS='|' read -r state label detail fix <<<"$row"
+			case "$state" in ok) state="Protected" ;; no) state="Not protected" ;; info) state="Advice" ;; *) state="Not applicable" ;; esac
+			printf '<tr><td>%s</td><td>%s</td><td>%s%s</td></tr>\n' "$(_html "$state")" "$(_html "$label")" \
+				"$(_html "$detail")" "${fix:+<br>Fix: $(_html "$fix")}"
+		done
+		printf '</table>\n<h2>In effect now</h2>\n'
 		if [[ -x "$verify" ]]; then
 			printf '<pre>\n'
 			"$verify" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | while IFS= read -r line; do
@@ -8435,7 +9659,13 @@ write_html_report() {
 		else
 			printf '<p>Live checks need tests/verify-host.sh next to the script.</p>\n'
 		fi
-	} 2>/dev/null >"$out" || {
+		((REPORT_FULL)) || printf '<p><small>Host name, user names, home paths and addresses are replaced with placeholders; <code>--report --full</code> keeps them.</small></p>\n'
+	} 2>/dev/null >"$raw"
+	if ((REPORT_FULL)); then
+		cat "$raw" 2>/dev/null >"$out"
+	else
+		report_redact <"$raw" 2>/dev/null >"$out"
+	fi || {
 		err "Could not write $out"
 		return 1
 	}
@@ -8445,7 +9675,7 @@ write_html_report() {
 	ok "Report: $out"
 }
 
-# final_summary() - Analyze section 12/18/21/22/23 findings, write all reports to
+# final_summary() - Analyze section 12/16/17/18/24 findings, write all reports to
 # user Downloads/<project>/results and Downloads/<project>/logs, display actionable list, and ask
 # whether to implement recommended next steps. If declined, they are kept for --resume
 # report plus TXT import bundle into the user's Downloads directory instead of
@@ -8477,7 +9707,7 @@ final_summary() {
 					((++idx))
 				done
 			else
-				printf '  None — sections 12/18/21/22/23 appear clean.\n'
+				printf '  None — sections 12/16/17/18/24 appear clean.\n'
 			fi
 			printf '\n=== Remediated Items (%d) ===\n' "${#REMEDIATED_ITEMS[@]}"
 			if ((${#REMEDIATED_ITEMS[@]} > 0)); then
@@ -8489,10 +9719,10 @@ final_summary() {
 			fi
 			printf '\n=== Manual Follow-up Items ===\n'
 			printf '  • LUKS full-disk encryption  — set during Fedora installation only.\n'
-			printf '  • GRUB password (section 6b) — run: sudo grub2-mkpasswd-pbkdf2\n'
+			printf '  • GRUB password (section 3b) — run: sudo grub2-mkpasswd-pbkdf2\n'
 			printf '  • SSH keys                   — generate on CLIENT, then: ssh-copy-id user@host\n'
-			printf '  • VPN                        — if not detected in section 16b: install Mullvad, ProtonVPN, or IVPN.\n'
-			printf '  • WireGuard tunnel           — re-run with --only 17 --wireguard-config <provider.conf>.\n'
+			printf '  • VPN                        — if not detected in section 14b: install Mullvad, ProtonVPN, or IVPN.\n'
+			printf '  • WireGuard tunnel           — re-run with --only 15 --wireguard-config <provider.conf>.\n'
 			printf '  • arkenfox overrides         — add exceptions in user-overrides.js as needed.\n'
 			printf '  • KDE GUI-only settings      — KWallet master password, Privacy, Activity.\n'
 			printf '  • AIDE re-init               — after any future package updates.\n'
@@ -8510,7 +9740,7 @@ final_summary() {
 	copy_log_to_user
 
 	# Display terminal summary
-	if ((!GUI_FULL_MODE)); then
+	if ((! GUI_FULL_MODE)); then
 		printf '\n%s════════════════════════ Summary ════════════════════════%s\n' "$C_GRN" "$C_RST"
 		local reports_line="" ostree_line=""
 		[[ -n "$USER_RESULTS_DIR" ]] && reports_line=" Reports:      $USER_RESULTS_DIR"
@@ -8523,10 +9753,10 @@ final_summary() {
     $reports_line
     Manual follow-up items (from the guide, NOT automated by this script):
        • LUKS full-disk encryption — set during Fedora installation only.
-       • GRUB password (§6b) — run 'sudo grub2-mkpasswd-pbkdf2' manually.
+       • GRUB password (§3b) — run 'sudo grub2-mkpasswd-pbkdf2' manually.
        • SSH keys — generate on your CLIENT machine and ssh-copy-id to this host.
-       • VPN — if not detected in §16b: install Mullvad, ProtonVPN, or IVPN.
-       • WireGuard tunnel — re-run with: --only 17 --wireguard-config <provider.conf> (kill switch included).
+       • VPN — if not detected in §14b: install Mullvad, ProtonVPN, or IVPN.
+       • WireGuard tunnel — re-run with: --only 15 --wireguard-config <provider.conf> (kill switch included).
        • Review arkenfox defaults and add local exceptions in user-overrides.js as needed.
        • KDE GUI-only settings: KWallet master password, Privacy, Activity tracking.
        • Re-initialize AIDE database after any legitimate package upgrade.
@@ -8546,7 +9776,7 @@ EOF
 	((${#ACTIONABLE_ITEMS[@]} == 0)) && gui_items="No follow-up items."
 	gui_final_summary "$gui_headline" "${gui_items}\nA reboot is recommended.\n\nLog: $LOG_WHERE\nBackups: $BACKUP_DIR${USER_RESULTS_DIR:+\nReports: $USER_RESULTS_DIR}"
 
-	# Display the actionable items from sections 12/18/21/22/23 and handle approval/selection.
+	# Display the actionable items from sections 12/16/17/18/24 and handle approval/selection.
 	handle_actionable_follow_up "$summary_path"
 
 	# Re-write the summary with final state (after remediation updates ACTIONABLE/REMEDIATED lists)
@@ -8573,6 +9803,58 @@ EOF
 	fi
 }
 
+# ---------- Safety point ----------------------------------------------------
+# ostree_deployment_index <checksum> - Index of a deployment in `ostree admin status`
+# (what `ostree admin pin` takes), or nothing.
+ostree_deployment_index() {
+	ostree admin status 2>/dev/null | awk -v c="$1" '
+		/^[* ] [^ ]+ [0-9a-f]{64}\.[0-9]+/ { split($3, a, "."); if (a[1] == c) { print n; exit } n++ }'
+}
+
+# safety_point() - Before changing anything, keep a way back to the system as it was:
+# on image-based Fedora the booted deployment is pinned (it stays bootable from the
+# boot menu, whatever updates follow); on traditional Fedora with Btrfs a read-only
+# snapshot of / is taken (the three newest are kept). Elsewhere --rollback is the
+# way back.
+safety_point() {
+	((DRY_RUN)) && {
+		info "Would set a safety point before changing anything (pinned deployment or / snapshot)"
+		return 0
+	}
+	if ((IS_OSTREE)) && cmd_exists ostree; then
+		local csum idx
+		csum="$(ostree admin status 2>/dev/null | awk '/^\* [^ ]+ [0-9a-f]{64}\.[0-9]+/ { split($3, a, "."); print a[1]; exit }')"
+		[[ -n "$csum" ]] || return 0
+		if ostree admin status 2>/dev/null | awk -v c="$csum" '
+			/^[* ] / { cur = ($3 ~ "^" c) } cur && /Pinned: yes/ { found = 1 } END { exit !found }'; then
+			info "Safety point: the booted deployment is already pinned."
+			return 0
+		fi
+		idx="$(ostree_deployment_index "$csum")"
+		if [[ -n "$idx" ]] && ostree admin pin "$idx" >/dev/null 2>&1; then
+			record_change OSTREE_PIN "$csum"
+			ok "Safety point: the booted deployment is pinned (boot it from the boot menu to go back)."
+		else
+			warn "Could not pin the booted deployment — --rollback remains the way back."
+		fi
+		return 0
+	fi
+	[[ "$(findmnt -no FSTYPE / 2>/dev/null || true)" == btrfs ]] && cmd_exists btrfs || return 0
+	local dir=/var/lib/fedora-harden/root-snapshots snap old
+	snap="$dir/before-$RUN_STAMP"
+	install -d -m 700 "$dir" 2>/dev/null || return 0
+	if btrfs subvolume snapshot -r / "$snap" >/dev/null 2>&1; then
+		record_change ROOT_SNAPSHOT "$snap"
+		ok "Safety point: read-only snapshot of / at $snap"
+		# Keep the three newest safety points.
+		while IFS= read -r old; do
+			btrfs subvolume delete "$old" >/dev/null 2>&1 || true
+		done < <(find "$dir" -mindepth 1 -maxdepth 1 -name 'before-*' 2>/dev/null | sort -r | tail -n +4)
+	else
+		warn "Could not snapshot / — --rollback remains the way back."
+	fi
+}
+
 # ---------- Main ------------------------------------------------------------
 # main() - Master orchestrator for fedora-harden script execution
 # Manages command-line argument parsing, permission verification, session tracking,
@@ -8581,6 +9863,7 @@ EOF
 # Exit codes: 0 = success, 1 = preflight failed, catch-all for other errors
 main() {
 	parse_args "$@"
+	[[ -n "$RESTORE_FILE" ]] && load_recovery_file "$RESTORE_FILE"
 
 	# --list-sessions: show past sessions without running a full preflight
 	if ((LIST_SESSIONS_MODE)); then
@@ -8609,6 +9892,14 @@ main() {
 		exit "$rb_rc"
 	fi
 
+	# --score: read-only, no session, no report folders
+	if ((SCORE_MODE)); then
+		SESSION_REPORT_FILE=""
+		show_protection_scorecard
+		EXPECTED_ABORT=1
+		exit 0
+	fi
+
 	init_user_report_dirs
 	if ((REPORT_MODE)); then
 		local rp_rc=0
@@ -8624,37 +9915,44 @@ main() {
 	fi
 	calc_section_total
 	abort_if_cancelled
+	safety_point
 
 	# Execution order is optimized for dependency flow and operational safety.
-	sec_02_updates
-	sec_03_dnf_automatic
-	sec_06_secureboot
-	sec_13_flatpak
-	sec_04_selinux
-	sec_05_firewalld
+	sec_01_updates
+	sec_02_dnf_automatic
+	sec_03_secureboot
+	sec_04_flatpak
+	sec_05_selinux
+	sec_06_firewalld
 	sec_07_ssh
-	sec_09_pam
-	sec_10_sysctl
-	sec_11_auditd
-	sec_14_dot
-	sec_18_fail2ban
-	sec_15_desktop
-	sec_16_firefox
-	sec_17_wireguard
-	sec_21_clamav
-	sec_22_openscap
-	sec_23_containers
-	sec_24_routine
-	sec_25_snapshots
-	sec_12_ids
-	sec_19_services
-	sec_20_perms
-	sec_08_usbguard
-	record_etc_baseline
+	sec_08_pam
+	sec_09_sysctl
+	sec_10_auditd
+	sec_11_dot
+	sec_12_fail2ban
+	sec_13_desktop
+	sec_14_firefox
+	sec_15_wireguard
+	sec_16_clamav
+	sec_17_openscap
+	sec_18_containers
+	sec_19_routine
+	sec_20_snapshots
+	sec_21_services
+	sec_22_perms
+	sec_23_usbguard
+	sec_24_ids
 	record_routine_state
 
 	diagnose_failures
 	final_summary
+	show_protection_scorecard
+	write_recovery_file
+	# Last to write: the /etc and AIDE baselines include everything this run wrote,
+	# the recovery file and any follow-ups applied included, so the first checks
+	# start clean. Follow-ups are saved after them so a late item is kept.
+	record_etc_baseline
+	start_aide_baseline
 	save_followups
 
 	SESSION_STATUS="completed"

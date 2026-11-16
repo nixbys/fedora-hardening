@@ -174,7 +174,7 @@ main() {
             missing+=("$rpm")
         fi
     done
-    if ((!SKIP_OPTIONAL)); then
+    if ((! SKIP_OPTIONAL)); then
         for rpm in "${OPTIONAL_RPMS[@]}"; do
             rpm -q "$rpm" >/dev/null 2>&1 || missing+=("$rpm")
         done
