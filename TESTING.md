@@ -15,18 +15,41 @@ runs on the release it tests:
 | Full tier | `registry.fedoraproject.org/fedora-minimal:45` with systemd as PID 1 (`base` image) |
 | GUI tier | `registry.fedoraproject.org/fedora:45` + Xvfb, GTK4/libadwaita for Python (`gui` image) |
 | VM tier | the real image-based systems: `quay.io/fedora/fedora-silverblue:45` and a Universal Blue desktop (`ghcr.io/ublue-os/bazzite:stable`), installed with bootc and booted |
-| VM tier | the same images installed on a virtual disk with `bootc install to-disk` and booted with KVM |
-| CI (`.github/workflows/ci.yml`) | static jobs run in a `fedora:45` container; container tests run on a Fedora CoreOS 45 VM (`tests/fedora-host.sh`); repository scans use `fedora:44` as a tool host |
-| Developer tooling (`setup-dev.sh`, pre-commit) | Fedora RPMs (`ShellCheck yamllint ruff hadolint gitleaks pre-commit python3-mcp`); shfmt is an RPM on 44 and built at the same pinned version with Fedora's Go on 45 (`tests/install-shfmt.sh`) |
+| CI (`.github/workflows/ci.yml`) | static jobs run in a `fedora:45` container; container tests run on a Fedora CoreOS 45 VM (`tests/fedora-host.sh`) |
+| Developer tooling (`setup-dev.sh`, pre-commit) | Fedora RPMs (`ShellCheck yamllint ruff hadolint gitleaks pre-commit python3-mcp`); shfmt is built at a pinned version with Fedora's Go (`tests/install-shfmt.sh`) |
 
 On an rpm-ostree host (Silverblue, Kinoite, Bazzite, …) do development inside a
-Fedora 44 toolbox:
+Fedora 45 toolbox:
 
 ```bash
-toolbox create --image registry.fedoraproject.org/fedora-toolbox:44 fh-dev
+toolbox create --image registry.fedoraproject.org/fedora-toolbox:45 fh-dev
 toolbox enter fh-dev
 ./setup-dev.sh
 ```
+
+## Quick start
+
+All tests run in rootless Podman containers or VMs; the host is never modified.
+
+```bash
+./tests/run-suite.sh                   # static, quick, full and gui
+./tests/run-suite.sh --tier static     # lint only
+./tests/run-suite.sh --tier quick      # CLI + dry run, no systemd
+```
+
+`./test-in-podman.sh` runs the script itself in a throwaway container:
+
+```bash
+./test-in-podman.sh --quick --dry-run         # fastest, no systemd (256 MB)
+./test-in-podman.sh --dry-run --only 6,9      # systemd container, selected sections
+./test-in-podman.sh                           # real run inside the container
+./test-in-podman.sh --quick -it               # interactive shell
+```
+
+Flags: `--quick` (no-systemd image), `--dry-run`, `--only`/`--skip`,
+`--memory`/`--cpus` (default 1g/2, quick 256m/1), `--artifacts DIR`, `--keep` (keep
+the container), `-it` (shell). The artifact directory holds `output.log`, the logs,
+the session reports and `fs-diff.txt` (files changed inside the container).
 
 All tests that change system state run in throwaway **rootless** podman containers;
 the host is never modified.
