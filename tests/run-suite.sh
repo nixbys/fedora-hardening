@@ -395,6 +395,9 @@ tier_quick() {
     expect_rc "quick: --gui-full is gone (one GUI mode: --gui)" 2 quick_run --gui-full
     expect_rc "quick: --only without value exits 2" 2 quick_run --only
     expect_rc "quick: --user without value exits 2" 2 quick_run --user
+    check "quick: --score prints the protection scorecard and exits 0" \
+        bash -c 'quick_out="$(podman run --rm -v "$1:/root/fedora-harden.sh:ro,z" --entrypoint /root/fedora-harden.sh "$2" --score </dev/null 2>&1)" &&
+            grep -q "Protection now" <<<"$quick_out" && grep -q "SELinux" <<<"$quick_out"' _ "$SCRIPT" "$IMG_QUICK"
 
     # Non-root must be refused before anything happens.
     local log="$ARTIFACTS/quick_nonroot.log" rc=0
@@ -714,6 +717,30 @@ tier_full() {
     check "full: the home index is written" fx test -s /var/lib/fedora-harden/home-index.notes
     check "full: off-machine backup options are offered" grep -q "Off-machine copy" "$log"
 
+    # --- --score: the live system, read-only ----------------------------------------
+    check "full: --report includes the protection scorecard" fx grep -q "<h2>Protection now</h2>" /tmp/report.html
+    log="$ARTIFACTS/full_score.log"
+    local sessions_before sessions_after
+    sessions_before="$(fx bash -c 'ls -d /root/harden-backups-* /root/sessions/session-* 2>/dev/null | wc -l')"
+    rc=0
+    fx /root/fedora-harden.sh --score >"$log" 2>&1 || rc=$?
+    sessions_after="$(fx bash -c 'ls -d /root/harden-backups-* /root/sessions/session-* 2>/dev/null | wc -l')"
+    if ((rc == 0)) && grep -qE '\[ OK \].*Firewall' "$log" && grep -qE '\[ OK \].*SELinux|\[ NO \].*SELinux' "$log" &&
+        [[ "$sessions_before" == "$sessions_after" ]]; then
+        record PASS "full: --score reads the live system (firewall on) and creates no session"
+    else
+        record FAIL "full: --score reads the live system (firewall on) and creates no session" \
+            "exit $rc, sessions $sessions_before -> $sessions_after (see $log)"
+    fi
+
+    # --- section 21: a running network service gets a sandbox drop-in ----------------
+    log="$ARTIFACTS/full_sandbox.log"
+    fx bash -c 'dnf -y -q install avahi >/dev/null 2>&1 && systemctl start avahi-daemon' >/dev/null 2>&1 || true
+    fx bash -c 'yes n | /root/fedora-harden.sh --only 21 --user testuser' >"$log" 2>&1 || true
+    check "full: avahi-daemon runs with the sandbox drop-in (section 21)" \
+        fx bash -c 'test -s /etc/systemd/system/avahi-daemon.service.d/50-fedora-harden-sandbox.conf &&
+            systemctl is-active --quiet avahi-daemon && systemctl show -p ProtectHome avahi-daemon | grep -q =yes'
+
     # --- sessions + rollback ------------------------------------------------------
     log="$ARTIFACTS/full_list_sessions.log"
     rc=0
@@ -740,7 +767,8 @@ tier_full() {
         /etc/profile.d/99-umask.sh /etc/security/limits.d/99-coredump.conf \
         /var/lib/flatpak/overrides/global /usr/local/libexec/fedora-harden-routine /etc/fedora-harden/profile \
         /etc/systemd/system/fedora-harden-drift.timer /etc/systemd/journald.conf.d/50-fedora-harden.conf \
-        /etc/fedora-harden/snapshots /etc/systemd/system/fedora-harden-snapshot.timer; do
+        /etc/fedora-harden/snapshots /etc/systemd/system/fedora-harden-snapshot.timer \
+        /etc/systemd/system/avahi-daemon.service.d/50-fedora-harden-sandbox.conf; do
         fx test -e "$f" && ((++hardened_left))
     done
     if ((hardened_left == 0)) && cmp -s <(grep pwquality.conf "$ARTIFACTS/etc.0") \
@@ -750,6 +778,8 @@ tier_full() {
         record FAIL "full: rollback removed drop-ins and restored pwquality.conf" \
             "$hardened_left drop-in(s) remain; residual diff in $ARTIFACTS/full_rollback.residual"
     fi
+    check "full: rollback removes the sandbox and avahi-daemon keeps running" \
+        fx bash -c 'systemctl is-active --quiet avahi-daemon && systemctl show -p ProtectHome avahi-daemon | grep -q =no'
     check "full: rollback keeps home copies (the person's data) but removes their timer" \
         fx bash -c 'ls -d /var/lib/fedora-harden/home-copies/2*[0-9] >/dev/null && ! systemctl is-enabled --quiet fedora-harden-snapshot.timer'
 

@@ -27,7 +27,7 @@ This is a personal hardening script that has grown a substantial feature set and
 - **VPN detection** — WireGuard, Mullvad, ProtonVPN, IVPN detection with recommendations when absent
 - **Full rollback** — per-session change journal; `--rollback` or `--rollback all` to undo any or every run
 - **Logs in the system journal** — `journalctl -t fedora-harden`; failed services are reported with their own log lines
-- **Reports and follow-ups** — `--report` writes one HTML page per session; `--resume` brings back open follow-ups
+- **Reports and follow-ups** — `--report` writes one HTML page per session; `--resume` brings back open follow-ups; `--score` shows what protects the machine right now
 - **Dry-run mode** — preview all changes without touching the system
 - **GUI** — `--gui` runs the whole session in one window: sections, progress, live activity log, questions and summary, in a Material Design dark theme (see [GUI](#gui))
 - **4-layer caching** — memoized command checks, package status, user home dirs, and rpm-ostree pending layers
@@ -118,6 +118,8 @@ sudo ./fedora-harden.sh [options]
       --gui               Windowed frontend: progress window, dialogs and summary
       --report [file]     Write an HTML report of the last session and exit
       --resume            Review the last session's open follow-ups and exit
+      --score             Show what protects this machine now (read-only) and exit
+      --kernel-hardening  Add the kernel boot hardening options (section 9; opt-in)
       --wireguard-config <file>  Install this WireGuard config with a kill switch (section 15)
       --profile <list>    Use cases for section 19: everyday,gaming,creative,dev,laptop
       --backup-target <dir>  Second drive for home copies on systems without Btrfs (section 20)
@@ -372,7 +374,28 @@ journalctl -t fedora-harden                         # every run
 journalctl -t fedora-harden FH_SESSION=20261110-213440 -p warning   # one run, problems only
 sudo ./fedora-harden.sh --resume                    # the last run's open follow-ups, fixes offered again
 sudo ./fedora-harden.sh --report                    # one HTML page: changes, follow-ups, warnings, live checks
+sudo ./fedora-harden.sh --score                     # what protects this machine now, and how to fix the rest
 ```
+
+**Protection scorecard.** At the end of every run, on the `--gui` summary page, in
+`--report` and with `--score`, the script checks the live system, not what the run
+did: disk encryption, Secure Boot, firewall, automatic updates, SELinux, the SSH
+server, DNS over TLS, home snapshots, screen lock, Flatpak restrictions, the
+firmware security level (fwupd HSI) and, as advice, whether the everyday account is
+an administrator. Each line that is not protected says how to fix it. `--score`
+changes nothing and creates no session.
+
+**Kernel boot hardening (opt-in).** Section 9 can add `init_on_free=1`,
+`slab_nomerge`, `page_alloc.shuffle=1` and `randomize_kstack_offset=on` to the
+kernel command line (grubby, or `rpm-ostree kargs` on image-based systems). They make
+memory bugs harder to exploit and cost about 1–5% in some workloads, so they are
+asked for, never added by `--yes` alone (use `--kernel-hardening`), and not offered
+for the gaming use case. `--rollback` removes exactly the options it added.
+
+**Service sandboxing.** Section 21 gives running network services (CUPS, Avahi) a
+drop-in with conservative systemd sandboxing, keeps it only if the service restarts
+cleanly, and reports the `systemd-analyze security` exposure before and after.
+sshd is left alone: its sandbox would also restrict every SSH login session.
 
 ---
 
