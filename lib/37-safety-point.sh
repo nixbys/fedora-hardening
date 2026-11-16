@@ -7,11 +7,10 @@ ostree_deployment_index() {
 		/^[* ] [^ ]+ [0-9a-f]{64}\.[0-9]+/ { split($3, a, "."); if (a[1] == c) { print n; exit } n++ }'
 }
 
-# safety_point() - Before changing anything, keep a way back to the system as it was:
-# on image-based Fedora the booted deployment is pinned (it stays bootable from the
-# boot menu, whatever updates follow); on traditional Fedora with Btrfs a read-only
-# snapshot of / is taken (the three newest are kept). Elsewhere --rollback is the
-# way back.
+# Before changing anything, keep a way back to the system as it was: on image-based
+# Fedora the booted deployment is pinned (it stays bootable from the boot menu,
+# whatever updates follow); on traditional Fedora with Btrfs a read-only snapshot
+# of / is taken (the three newest are kept). Elsewhere --rollback is the way back.
 safety_point() {
 	((DRY_RUN)) && {
 		info "Would set a safety point before changing anything (pinned deployment or / snapshot)"

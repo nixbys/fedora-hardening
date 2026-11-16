@@ -15,8 +15,8 @@ GUI_RX_FD=""   # Window → script answers and stop requests
 GUI_ENDED=0    # END was sent
 declare -gA GUI_SECTION_TITLES=()
 
-# gui_dir() - Private directory for the app: /run/fedora-harden/gui (root-only tmpfs,
-# cleared at reboot), falling back to a private /tmp directory.
+# /run/fedora-harden/gui (root-only tmpfs, cleared at reboot), falling back to a
+# private /tmp directory.
 gui_dir() {
 	local dir="/run/fedora-harden/gui"
 	if ! install -d -m 700 "$dir" 2>/dev/null; then
@@ -25,14 +25,14 @@ gui_dir() {
 	GUI_DIR="$dir"
 }
 
-# gui_deps_ok() - True when python3 can load GTK4 and libadwaita.
+# True when python3 can load GTK4 and libadwaita.
 gui_deps_ok() {
 	have_cmd python3 && python3 -c 'import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1"); from gi.repository import Adw, Gtk' >/dev/null 2>&1
 }
 
-# setup_ui_mode() - With --gui and a display, open the window; otherwise stay in the
-# terminal. On a package-based system the GTK4 Python stack is installed if missing;
-# on an Atomic system it is part of the image (nothing is layered for the GUI).
+# With --gui and a display, open the window; otherwise stay in the terminal. On a
+# package-based system the GTK4 Python stack is installed if missing; on an Atomic
+# system it is part of the image (nothing is layered for the GUI).
 setup_ui_mode() {
 	((FORCE_GUI)) || return 0
 	if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
@@ -82,7 +82,7 @@ setup_ui_mode() {
 	gui_send MODE "$mode"
 }
 
-# gui_send() - Send one event to the window: gui_send <KIND> [field...]
+# Send one event to the window: gui_send <KIND> [field...]
 # Fields are escaped (backslash, tab, newline) so every event is one line.
 gui_send() {
 	[[ -n "$GUI_TX_FD" ]] || return 0
@@ -97,13 +97,13 @@ gui_send() {
 	return 0
 }
 
-# gui_text() - Messages written for the terminal use a literal "\n" for line breaks.
+# Messages written for the terminal use a literal "\n" for line breaks.
 gui_text() {
 	printf '%s' "${1//\\n/$'\n'}"
 }
 
-# calc_section_total() - Count the sections this run will execute (--only/--skip
-# applied) and, with --gui, show them in the window in execution order.
+# Count the sections this run will execute (--only/--skip applied) and, with
+# --gui, show them in the window in execution order.
 calc_section_total() {
 	local s n=0 num title
 	if ((GUI_FULL_MODE)); then
@@ -121,15 +121,15 @@ calc_section_total() {
 	UI_SECTION_DONE=0
 }
 
-# gui_alert() - Something the user should read: a notice in the window (it stays
-# until dismissed). Usage: gui_alert <info|warning|error> <message>
+# Something the user should read: a notice in the window (it stays until
+# dismissed). Usage: gui_alert <info|warning|error> <message>
 gui_alert() {
 	((GUI_FULL_MODE)) || return 0
 	gui_send NOTICE "$1" "$(gui_text "$2")"
 }
 
-# gui_send_items() - Show the follow-up items (open ones by priority, then the ones
-# resolved this run) on the window's summary page.
+# Show the follow-up items (open ones by priority, then the ones resolved this
+# run) on the window's summary page.
 gui_send_items() {
 	((GUI_FULL_MODE)) || return 0
 	local item section priority tag desc
@@ -144,16 +144,15 @@ gui_send_items() {
 	done
 }
 
-# gui_final_summary() - Switch the window to its summary page.
-# Usage: gui_final_summary <headline> <details>
+# Switch the window to its summary page: gui_final_summary <headline> <details>
 gui_final_summary() {
 	((GUI_FULL_MODE)) || return 0
 	gui_send SUMMARY "$1" "$(gui_text "$2")"
 	gui_send_items
 }
 
-# gui_finish() - Tell the window the run is over (once; called from the EXIT trap).
-# The window stays open for reading; the script does not wait for it.
+# Tell the window the run is over (once; called from the EXIT trap). The window
+# stays open for reading; the script does not wait for it.
 gui_finish() {
 	local rc="$1" msg
 	((GUI_FULL_MODE && ! GUI_ENDED)) || return 0
@@ -172,16 +171,16 @@ gui_finish() {
 	return 0
 }
 
-# gui_lost() - The window went away mid-run: the user closed it (it asks first) or it
-# crashed. Either way the run stops instead of going on unseen.
+# The window went away mid-run: the user closed it (it asks first) or it crashed.
+# Either way the run stops instead of going on unseen.
 gui_lost() {
 	GUI_CANCEL_REQUESTED=1
 	[[ -n "$GUI_DIR" ]] && : >"$GUI_DIR/cancelled" 2>/dev/null
 	return 0
 }
 
-# gui_read_line() - Read one line from the window into the named variable; on EOF
-# (window gone) mark the run as cancelled. Usage: gui_read_line <var> [timeout]
+# Read one line from the window into the named variable; on EOF (window gone) mark
+# the run as cancelled. Usage: gui_read_line <var> [timeout]
 gui_read_line() {
 	local -n _line="$1"
 	local -a t=()
@@ -194,7 +193,7 @@ gui_read_line() {
 	return 0
 }
 
-# gui_ask() - Ask in the window and wait for the answer.
+# Ask in the window and wait for the answer.
 # Usage: gui_ask <confirm|input> <default> <text> <result-var>
 # Returns 1 when there is no answer (window gone or the user stopped the run).
 gui_ask() {
@@ -216,8 +215,8 @@ gui_ask() {
 	return 1
 }
 
-# gui_check_cancel() - True once the user stopped the run (Stop button, or closing the
-# window and confirming) or the window went away.
+# True once the user stopped the run (Stop button, or closing the window and
+# confirming) or the window went away.
 gui_check_cancel() {
 	((GUI_FULL_MODE)) || return 1
 	((GUI_CANCEL_REQUESTED)) && return 0
@@ -234,7 +233,6 @@ gui_check_cancel() {
 	return 1
 }
 
-# abort_if_cancelled() - Stop the run when the user asked to.
 abort_if_cancelled() {
 	if gui_check_cancel; then
 		err "Execution cancelled by user from the window."
@@ -242,8 +240,7 @@ abort_if_cancelled() {
 	fi
 }
 
-# prompt_input() - Request free-form input from user in GUI or terminal mode.
-# Usage: prompt_input <prompt> [default_value]
+# Free-form input, in the window or the terminal: prompt_input <prompt> [default]
 prompt_input() {
 	local prompt="$1" default_value="${2:-}" value=""
 

@@ -2,14 +2,12 @@
 # ============================================================================
 #  SECTION 1 — System updates
 # ============================================================================
-# sec_01_updates() - Perform full system package updates plus firmware/microcode
-# Runs dnf upgrade (or rpm-ostree update on immutable systems). Also installs fwupd
-# for firmware updates (privacyguides.org) and ensures CPU microcode is current
-# (Intel: microcode_ctl; AMD: linux-firmware) to patch Spectre/Meltdown and similar.
-# Optionally installs hardware security key support (YubiKey/FIDO2/PIV: pcsc-lite,
-# opensc, libfido2, yubico-piv-tool, yubikey-manager, pam-u2f) and reminds the user
-# to have the key plugged in before section 23 (USBGuard) runs.
-# Recommends reboot after completion.
+# Full system update (dnf, or rpm-ostree on image-based systems), firmware updates with
+# fwupd (privacyguides.org) and current CPU microcode (Intel: microcode_ctl; AMD:
+# linux-firmware) against Spectre/Meltdown-class flaws. Optionally installs hardware
+# security key support (YubiKey/FIDO2/PIV: pcsc-lite, opensc, libfido2, yubico-piv-tool,
+# yubikey-manager, pam-u2f) and reminds the user to have the key plugged in before
+# section 23 (USBGuard) runs. Recommends a reboot afterwards.
 sec_01_updates() {
 	should_run 1 || return 0
 	section 1 "System updates"

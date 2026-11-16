@@ -2,9 +2,7 @@
 # ============================================================================
 #  SECTION 5 — SELinux
 # ============================================================================
-# sec_05_selinux() - Verify SELinux is enforcing and install tools
-# Confirms SELinux is in enforcing mode; installs debugging and management tools
-# (policycoreutils, selinux-policy-devel). Logs policy violations.
+# Confirms enforcing mode and installs the troubleshooting and policy tools.
 sec_05_selinux() {
 	should_run 5 || return 0
 	section 5 "SELinux (verify enforcing + install tools)"

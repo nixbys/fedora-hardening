@@ -2,8 +2,7 @@
 # ============================================================================
 #  SECTION 23 — USBGuard
 # ============================================================================
-# sec_23_usbguard() - Install and configure USBGuard
-# Configures device control policy; note: can lock out input devices if misconfigured.
+# Device control policy. Caution: a wrong policy can lock out input devices.
 sec_23_usbguard() {
 	should_run 23 || return 0
 	section 23 "USBGuard — ⚠ BE CAREFUL ⚠"

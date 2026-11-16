@@ -2,12 +2,10 @@
 # ============================================================================
 #  SECTION 2 — automatic security updates (dnf5-plugin-automatic, Fedora 41+)
 # ============================================================================
-# sec_02_dnf_automatic() - Configure automatic security updates + countme opt-out
-# Sets up dnf5-plugin-automatic for mutable systems or rpm-ostreed policy for immutable
-# systems to apply security patches automatically. On rpm-ostree, stages updates.
-# Sub-section 2b disables the Fedora system-counting mechanism: sets countme=false
-# in /etc/dnf/dnf.conf on mutable systems, or masks rpm-ostree-countme.timer on
-# immutable ones — per privacyguides.org recommendation.
+# dnf5-plugin-automatic on package-based systems, rpm-ostreed's update policy on
+# image-based ones (updates are staged). 2b turns off Fedora's system counting
+# (privacyguides.org): countme=false in /etc/dnf/dnf.conf, or rpm-ostree-countme.timer
+# masked.
 sec_02_dnf_automatic() {
 	should_run 2 || return 0
 	section 2 "Automatic security updates"
@@ -53,10 +51,10 @@ sec_02_dnf_automatic() {
 	fi
 }
 
-# _ostree_auto_updates() - Automatic updates on rpm-ostree systems (section 2).
-# Universal Blue images (Bazzite, Bluefin, Aurora) update through uupd.timer and
-# keep rpm-ostreed's own policy at "none"; enabling rpm-ostreed-automatic as well
-# would run two updaters against the same deployments, so leave uupd in charge.
+# Automatic updates on rpm-ostree systems (section 2). Universal Blue images
+# (Bazzite, Bluefin, Aurora) update through uupd.timer and keep rpm-ostreed's own
+# policy at "none"; enabling rpm-ostreed-automatic as well would run two updaters
+# against the same deployments, so leave uupd in charge.
 _ostree_auto_updates() {
 	if [[ -r /usr/share/ublue-os/image-info.json ]] && systemctl list-unit-files uupd.timer >/dev/null 2>&1; then
 		if systemctl is-enabled --quiet uupd.timer 2>/dev/null; then
@@ -97,7 +95,7 @@ _ostree_auto_updates() {
 	fi
 }
 
-# _dnf_auto_updates() - Automatic security updates on dnf systems (section 2).
+# Automatic security updates on dnf systems (section 2).
 _dnf_auto_updates() {
 	# Handle mutable systems. Fedora 41+ uses dnf5, whose automatic-update plugin is
 	# packaged as dnf5-plugin-automatic (timer: dnf5-automatic.timer). It ships

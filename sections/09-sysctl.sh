@@ -2,12 +2,10 @@
 # ============================================================================
 #  SECTION 9 — Kernel sysctl
 # ============================================================================
-# sec_09_sysctl() - Apply kernel sysctl hardening
-# Hardens network, VM, filesystem, memory protections via kernel parameters.
-# Covers: network spoofing/ICMP/redirect/forwarding mitigations, ASLR (randomize_va_space +
-# mmap_rnd_bits), BPF JIT hardening, kexec disable, ptrace restriction, sysrq disable,
-# TCP timestamp privacy, IPv6 privacy extensions, and core dump suppression.
-# Based on Madaidan's Linux Hardening Guide (linked by privacyguides.org).
+# Network (spoofing, ICMP, redirects, forwarding), ASLR (randomize_va_space,
+# mmap_rnd_bits), BPF JIT hardening, kexec off, ptrace restriction, sysrq off, TCP
+# timestamp privacy, IPv6 privacy extensions and no core dumps. Based on Madaidan's
+# Linux Hardening Guide (linked by privacyguides.org).
 sec_09_sysctl() {
 	should_run 9 || return 0
 	section 9 "Kernel & network sysctl hardening"

@@ -2,13 +2,13 @@
 # ============================================================================
 #  SECTION 19 — Your routine (use-case automation)
 # ============================================================================
-# sec_19_routine() - Set up the upkeep this machine's use cases need, as systemd
-# timers calling one small helper (fedora-harden-routine). Everyday: monthly cleanup,
-# daily free-space check, weekly drift check and weekly summary (with a 90-day
-# relevance review), Btrfs scrub, disk health, a journal size cap. Creative and dev
-# add box upgrades and build-cache cleanup; laptop adds an optional charge limit.
-# Heavy jobs wait for mains power and for a game to end. Desktop notifications only
-# when something needs the person. Everything is undone by --rollback.
+# Set up the upkeep this machine's use cases need, as systemd timers calling one
+# small helper (fedora-harden-routine). Everyday: monthly cleanup, daily free-space
+# check, weekly drift check and weekly summary (with a 90-day relevance review),
+# Btrfs scrub, disk health, a journal size cap. Creative and dev add box upgrades and
+# build-cache cleanup; laptop adds an optional charge limit. Heavy jobs wait for
+# mains power and for a game to end. Desktop notifications only when something needs
+# the person. Everything is undone by --rollback.
 sec_19_routine() {
 	should_run 19 || return 0
 	section 19 "Your routine: upkeep for how this machine is used"
@@ -103,7 +103,7 @@ EOF
 	ok "Routine in place for: $uses. Weekly summary every Monday; desktop notifications only when something needs you."
 }
 
-# install_routine_helper() - Write the helper the routine timers call (sections 19, 20).
+# The helper the routine timers call (sections 19, 20): libexec/fedora-harden-routine.
 install_routine_helper() {
 	write_new_file "$ROUTINE_HELPER" 0755 <"$SCRIPT_DIR/libexec/fedora-harden-routine"
 }
@@ -140,7 +140,7 @@ EOF
 	return 0
 }
 
-# _battery_limit() - Optional charge limit (80%) where the hardware supports it.
+# Optional charge limit (80%) where the hardware supports it.
 _battery_limit() {
 	local f
 	for f in /sys/class/power_supply/BAT*/charge_control_end_threshold; do
@@ -161,8 +161,8 @@ EOF
 	info "This battery has no adjustable charge limit — skipped."
 }
 
-# _layer_audit() - Image-based systems: packages layered into the image that have a
-# better home (a Flatpak, a container or a box), with how to move them.
+# Image-based systems: packages layered into the image that have a better home (a
+# Flatpak, a container or a box), with how to move them.
 _layer_audit() {
 	local layered pkg hint n=0
 	layered="$(rpm-ostree status --json 2>/dev/null | python3 -c 'import json,sys
@@ -184,8 +184,8 @@ print(" ".join(b[0].get("requested-packages", []) + b[0].get("requested-local-pa
 	return 0
 }
 
-# record_routine_state() - At the end of a run with section 19: checksums of the /etc
-# files this run manages and the services it started, for the weekly drift check.
+# At the end of a run with section 19: checksums of the /etc files this run
+# manages and the services it started, for the weekly drift check.
 record_routine_state() {
 	((ROUTINE_ACTIVE)) || return 0
 	((DRY_RUN)) && return 0

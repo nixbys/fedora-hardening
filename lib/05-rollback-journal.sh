@@ -1,11 +1,9 @@
 # shellcheck shell=bash
 # ---------- Rollback journal helpers ----------------------------------------
 
-# record_change() - Append one change entry to the rollback journal.
-# Format written: "TIMESTAMP|CHANGE_TYPE|DETAIL"
-# Types: FILE_BACKUP, PKG_INSTALL, FLATPAK_INSTALL, SERVICE_ENABLE, SERVICE_DISABLE
-# No-ops in --dry-run mode or when journal is not yet initialized.
-# Usage: record_change <type> <detail>
+# Append "TIMESTAMP|TYPE|DETAIL" to the rollback journal (types such as FILE_BACKUP,
+# PKG_INSTALL, FLATPAK_INSTALL, SERVICE_ENABLE, SERVICE_DISABLE). No-op under
+# --dry-run or before the journal exists. Usage: record_change <type> <detail>
 record_change() {
 	[[ -z "$ROLLBACK_JOURNAL" ]] && return 0
 	((DRY_RUN)) && return 0
@@ -14,9 +12,7 @@ record_change() {
 	printf '%s|%s|%s\n' "$ts" "$1" "$2" 2>/dev/null >>"$ROLLBACK_JOURNAL" || true
 }
 
-# init_rollback_journal() - Create BACKUP_DIR and the per-session change journal.
-# Called during preflight after log initialization.
-# Usage: init_rollback_journal
+# BACKUP_DIR and the session's change journal (preflight, after the log).
 init_rollback_journal() {
 	((DRY_RUN)) && return 0
 	install -d -m 700 "$BACKUP_DIR" 2>/dev/null || true
@@ -35,10 +31,8 @@ init_rollback_journal() {
 	chmod 600 "$ROLLBACK_JOURNAL" 2>/dev/null || true
 }
 
-# init_session_dir() - Create the root-only sessions directory and write the session
-# header stub.
-# The stub is overwritten with full content by write_session_report() on exit.
-# Usage: init_session_dir
+# Root-only sessions directory and the session report stub; write_session_report
+# replaces the stub on exit.
 init_session_dir() {
 	if ! install -d -m 700 "$SESSION_DIR" 2>/dev/null; then
 		warn "Could not create sessions directory: $SESSION_DIR — session reports disabled."
@@ -58,10 +52,7 @@ init_session_dir() {
 	} >"$SESSION_REPORT_FILE" 2>/dev/null || SESSION_REPORT_FILE=""
 }
 
-# write_session_report() - Finalize and persist the session report to sessions/.
-# Called automatically from trap_cleanup on both clean exit and abort.
-# Idempotent: skips if already written (SESSION_REPORT_WRITTEN guard).
-# Usage: write_session_report
+# Called from trap_cleanup on every exit; writes once (SESSION_REPORT_WRITTEN).
 write_session_report() {
 	((SESSION_REPORT_WRITTEN)) && return 0
 	SESSION_REPORT_WRITTEN=1

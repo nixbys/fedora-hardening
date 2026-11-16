@@ -2,8 +2,7 @@
 # ============================================================================
 #  SECTION 8 — Password & PAM policy
 # ============================================================================
-# sec_08_pam() - Configure PAM policy
-# Sets password quality, account lockout, aging rules via pwquality and faillock.
+# Password quality (pwquality), lockout (faillock) and password aging.
 sec_08_pam() {
 	should_run 8 || return 0
 	section 8 "Password quality + account lockout"

@@ -1,12 +1,10 @@
 # shellcheck shell=bash
 # ---------- Report helpers --------------------------------------------------
-# add_action_item() - Register a finding for the post-run actionable list.
-# Format stored in ACTIONABLE_ITEMS: "S<num>|<priority>|<tag>|<description>"
-# Usage: add_action_item <section_num> <priority: HIGH|MEDIUM|LOW> <tag> <desc>
+# A follow-up for the post-run list, stored as "S<num>|<priority>|<tag>|<description>".
+# Usage: add_action_item <section_num> <HIGH|MEDIUM|LOW> <tag> <description>
 add_action_item() {
 	ACTIONABLE_ITEMS+=("S${1}|${2}|${3}|${4}")
 }
 
-# register_tmp() - Track a temp file path for guaranteed cleanup on EXIT.
-# Usage: register_tmp <path>
+# Temp files registered here are removed on exit.
 register_tmp() { TEMP_FILES+=("$1"); }

@@ -2,17 +2,16 @@
 # ============================================================================
 #  SECTION 11 — DNS over TLS
 # ============================================================================
-# sec_11_dot() - Configure DNS over TLS (DoT) + NetworkManager MAC randomization
-# Sets systemd-resolved to use Quad9 (Swiss non-profit, no IP logging) over TLS with
-# DNSSEC where the network allows it, and stops announcing the host name on the local
+# systemd-resolved uses Quad9 (Swiss non-profit, no IP logging) over TLS with DNSSEC
+# where the network allows it, and the host name is no longer announced on the local
 # network (LLMNR off; mDNS off unless the routine's use cases include gaming or
-# creative work, where casting and LAN discovery need it). Also writes a
-# NetworkManager drop-in (11b): a random MAC for Wi-Fi scans and connections, a
-# stable per-network random MAC for Ethernet (home DHCP reservations keep working),
-# and time sync over NTS (11c).
-# Alternative no-log DoT provider (not configured automatically but recommended by
-# privacyguides.org): Mullvad DNS — 194.242.2.2 / dns.mullvad.net — operates under
-# Sweden's strong privacy laws, enforces no-logging, and supports DoT + DoH.
+# creative work, where casting and LAN discovery need it). A NetworkManager drop-in
+# (11b) gives a random MAC for Wi-Fi scans and connections and a stable per-network
+# random MAC for Ethernet (home DHCP reservations keep working); time sync goes over
+# NTS (11c).
+# Alternative no-log DoT provider (not configured automatically, recommended by
+# privacyguides.org): Mullvad DNS — 194.242.2.2 / dns.mullvad.net — under Sweden's
+# privacy laws, no logging, DoT and DoH.
 sec_11_dot() {
 	should_run 11 || return 0
 	section 11 "DNS over TLS via systemd-resolved"

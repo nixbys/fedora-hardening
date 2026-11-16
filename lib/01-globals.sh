@@ -168,8 +168,7 @@ else
 	C_RST=""
 fi
 
-# draw_banner() - Render startup banner for improved terminal readability.
-# Uses concise host/date metadata so long runs are easier to track at a glance.
+# Host and date in the banner make long runs easier to track at a glance.
 draw_banner() {
 	printf '\n%s╔══════════════════════════════════════════════════════════════╗%s\n' "$C_CYN" "$C_RST"
 	printf '%s║%s Fedora Hardening Orchestrator                              %s║%s\n' "$C_CYN" "$C_BLD" "$C_CYN" "$C_RST"
@@ -180,7 +179,6 @@ draw_banner() {
 	printf '%s╚══════════════════════════════════════════════════════════════╝%s\n' "$C_CYN" "$C_RST"
 }
 
-# progress_bar() - Build a fixed-width textual progress bar.
 # Usage: progress_bar <current> <total> [width]
 progress_bar() {
 	local current="$1" total="$2" width="${3:-28}"

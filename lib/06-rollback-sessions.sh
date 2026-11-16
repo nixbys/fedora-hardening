@@ -1,9 +1,7 @@
 # shellcheck shell=bash
 # ---------- Rollback session helpers ----------------------------------------
 
-# find_session_backup_dir() - Locate BACKUP_DIR for a given session ID (RUN_STAMP format).
-# Prints the directory path on success; returns 1 if not found.
-# Usage: find_session_backup_dir <stamp>
+# Print the backup directory of a session ID (RUN_STAMP format); 1 if there is none.
 find_session_backup_dir() {
 	local stamp="$1"
 	local dir="/root/harden-backups-${stamp}"
@@ -14,9 +12,8 @@ find_session_backup_dir() {
 	return 1
 }
 
-# list_sessions_cmd() - Display all past sessions from the sessions/ directory.
-# Also surfaces backup directories that have no matching session report (pre-feature runs).
-# Usage: list_sessions_cmd
+# --list-sessions. Also lists backup directories without a session report (runs from
+# before session reports existed).
 list_sessions_cmd() {
 	printf '\n%s════════ Past Hardening Sessions ════════%s\n' "$C_CYN" "$C_RST"
 
@@ -66,9 +63,9 @@ list_sessions_cmd() {
 	printf 'To roll back ALL sessions:      sudo %s --rollback all\n\n' "$SCRIPT_NAME"
 }
 
-# _apply_rollback_journal() - Process journal entries in reverse, applying rollback actions.
-# Shared helper used by rollback_session() and rollback_all_sessions().
-# Modifies globals: _RBJ_RESTORED, _RBJ_ERRORS (caller must initialize).
+# Undo journal entries, newest first. Shared by rollback_session and
+# rollback_all_sessions; updates _RBJ_RESTORED and _RBJ_ERRORS (the caller sets them
+# up).
 # Arguments: <journal_file> <backup_dir> <rb_report>
 _apply_rollback_journal() {
 	local journal_file="$1" backup_dir="$2" rb_report="$3"
@@ -460,8 +457,8 @@ _apply_rollback_journal() {
 	_rollback_reload "${touched[@]}"
 }
 
-# _rollback_reload() - After restoring files, make the running system use them again.
-# Audit rules are loaded from the restored file (auditctl -R), not regenerated.
+# After restoring files, make the running system use them again. Audit rules are
+# loaded from the restored file (auditctl -R), not regenerated.
 _rollback_reload() {
 	((DRY_RUN)) && return 0
 	local p sysctl=0 audit=0 fw=0 ssh=0 units=0 journald=0 svc
@@ -493,10 +490,8 @@ _rollback_reload() {
 	return 0
 }
 
-# _restore_backup_dir_files() - Restore all backed-up files from a directory with no journal.
-# Used for pre-journal runs where only file backups are available.
-# Modifies globals: _RBJ_RESTORED, _RBJ_ERRORS.
-# Arguments: <backup_dir> <rb_report>
+# Runs from before the rollback journal have only file backups: restore all of them.
+# Updates _RBJ_RESTORED and _RBJ_ERRORS. Arguments: <backup_dir> <rb_report>
 _restore_backup_dir_files() {
 	local backup_dir="$1" rb_report="$2"
 
@@ -526,10 +521,8 @@ _restore_backup_dir_files() {
 	fi
 }
 
-# rollback_session() - Reverse all changes recorded in a single session rollback journal.
-# Restores backed-up config files, removes installed packages, reverses service
-# enables/disables, and removes Flatpak installs. Generates a rollback report in
-# the sessions/ directory.
+# Undo one session: restore backed-up files, remove the packages and Flatpaks it
+# installed, reverse its service changes; writes a rollback report to sessions/.
 # Usage: rollback_session <session-id|last>
 rollback_session() {
 	local session_id="${1:-last}"
@@ -652,13 +645,10 @@ rollback_session() {
 	return 0
 }
 
-# rollback_all_sessions() - Reverse ALL changes from every hardening session, newest first.
-# Processes sessions in reverse chronological order so the most recent changes are undone
-# first, guaranteeing a safe and consistent state across multiple runs (including aborted
-# sessions). Sessions without a rollback journal (pre-journal runs) have their backed-up
-# config files restored; package/service state cannot be inferred and is logged as unknown.
-# A combined rollback report AND a dedicated log file are written to sessions/.
-# Usage: rollback_all_sessions
+# Undo every session, newest first, so each one is undone on top of the state it left
+# (aborted sessions included). Sessions without a rollback journal have their backed-up
+# files restored; their package and service changes cannot be inferred and are
+# reported as unknown. Writes a combined report and a log to sessions/.
 rollback_all_sessions() {
 	printf '\n%s╔══════════════════════════════════════════════╗%s\n' "$C_RED" "$C_RST"
 	printf '%s║   FULL SYSTEM ROLLBACK — ALL SESSIONS        ║%s\n' "$C_RED" "$C_RST"
@@ -839,10 +829,8 @@ rollback_all_sessions() {
 	info "A system reboot is strongly recommended to finalize all rollback changes."
 	return 0
 }
-# get_user_downloads_dir() - Resolve the XDG Downloads directory for the target user.
-# Uses xdg-user-dir if available; falls back to ~/Downloads.
-# Returns 1 (prints nothing) when no valid non-root target user is configured.
-# Usage: get_user_downloads_dir
+# The target user's XDG Downloads directory (xdg-user-dir, else ~/Downloads). Returns
+# 1, printing nothing, when there is no non-root target user.
 get_user_downloads_dir() {
 	local user="${TARGET_USER:-${SUDO_USER:-}}"
 	[[ -z "$user" || "$user" == "root" ]] && return 1
@@ -855,7 +843,7 @@ get_user_downloads_dir() {
 	printf '%s' "$dl"
 }
 
-# init_user_report_dirs() - Create Downloads/<project>/results and logs with correct ownership.
+# Downloads/<project>/results and logs, owned by the target user.
 init_user_report_dirs() {
 	local user="${TARGET_USER:-${SUDO_USER:-}}"
 	USER_DOWNLOADS_DIR="$(get_user_downloads_dir 2>/dev/null || true)"
@@ -888,7 +876,7 @@ init_user_report_dirs() {
 	ok "Log dir ready: $USER_LOGS_DIR"
 }
 
-# write_user_report() - Read stdin and write to a file in the user results directory.
+# Write stdin to a file in the user's results directory.
 # Usage: { echo content; } | write_user_report <filename>
 write_user_report() {
 	local filename="$1"
@@ -912,7 +900,6 @@ write_user_report() {
 	ok "Report saved: $path"
 }
 
-# copy_to_user_results() - Copy a system-owned file into the user results directory.
 # Usage: copy_to_user_results <source_path> [dest_filename]
 copy_to_user_results() {
 	local src="$1" dest_name="${2:-$(basename "$1")}"
@@ -928,7 +915,7 @@ copy_to_user_results() {
 	ok "Copied $src -> $USER_RESULTS_DIR/$dest_name"
 }
 
-# copy_log_to_user() - Copy main and structured error logs to the user logs directory.
+# Copy the run log and the error log to the user's logs directory.
 copy_log_to_user() {
 	[[ -n "$USER_LOGS_DIR" ]] || return 0
 	((DRY_RUN)) && return 0
@@ -944,8 +931,8 @@ copy_log_to_user() {
 	ok "Log copied: $dest"
 }
 
-# select_actionable_items() - Split actionable items into selected and deferred groups.
-# Accepts 'all', item numbers, item tags, or a comma-separated mix of numbers and tags.
+# Split follow-ups into selected and deferred. Accepts 'all', item numbers, tags, or a
+# comma-separated mix of numbers and tags.
 select_actionable_items() {
 	local selection="${1:-all}"
 
@@ -990,9 +977,8 @@ select_actionable_items() {
 	((${#SELECTED_ACTIONABLE_ITEMS[@]} > 0))
 }
 
-# handle_actionable_follow_up() - Gate implementation on approval and optional item selection.
-# If declined, the items stay with the session (--resume, --report); if approved,
-# allow all or selected changes by item number and/or actionable tag.
+# Fix the follow-ups only with approval, all or selected by number and/or tag; declined
+# ones stay with the session (--resume, --report).
 handle_actionable_follow_up() {
 	local summary_path="${1:-}"
 	local selection="all"

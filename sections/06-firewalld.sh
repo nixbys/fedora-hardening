@@ -2,8 +2,7 @@
 # ============================================================================
 #  SECTION 6 — firewalld
 # ============================================================================
-# sec_06_firewalld() - Harden firewalld with drop-default policy
-# Sets default policy to DROP, allows minimal services, enables logging
+# A default zone that drops unsolicited traffic, minimal services, logging.
 sec_06_firewalld() {
 	should_run 6 || return 0
 	section 6 "firewalld — drop-by-default with explicit allow-list"
@@ -47,7 +46,7 @@ sec_06_firewalld() {
 	tool_dir_end /etc/firewalld
 }
 
-# _firewalld_configure() - Section 6: default zone, allowed services, logging.
+# Default zone, allowed services, logging.
 _firewalld_configure() {
 	# Set default zone and configure services (batch permanent operations)
 	info "Setting default zone to 'drop'..."
@@ -109,16 +108,16 @@ _firewalld_configure() {
 	ok "firewalld configured."
 }
 
-# fw_cmd() - Print the firewalld CLI to use for permanent configuration.
-# firewall-cmd talks to the running daemon; when firewalld cannot start (broken
-# nftables backend, minimal containers, ...) firewall-offline-cmd edits the same
-# permanent configuration on disk so the policy applies as soon as firewalld starts.
+# Print the firewalld CLI to use for permanent configuration. firewall-cmd talks to
+# the running daemon; when firewalld cannot start (broken nftables backend, minimal
+# containers, ...) firewall-offline-cmd edits the same permanent configuration on
+# disk so the policy applies as soon as firewalld starts.
 FW_OFFLINE=0
 fw_cmd() {
 	if ((FW_OFFLINE)); then echo firewall-offline-cmd; else echo firewall-cmd; fi
 }
 
-# firewalld_ensure_service() - Register a custom firewalld service XML if not already known.
+# Register a custom firewalld service XML if not already known.
 # Firewalld only ships built-in definitions for well-known services; KDE Connect and
 # similar require a custom XML file before --add-service can reference them.
 # Usage: firewalld_ensure_service <name> <short-desc> <port/proto> [<port/proto>...]
@@ -158,9 +157,8 @@ firewalld_ensure_service() {
 	info "Created firewalld service definition: ${svc_name}"
 }
 
-# firewalld_add_service() - Add a service to a firewalld zone (permanent), soft-failing on
-# INVALID_SERVICE (exit 101) instead of aborting the script under set -e.
-# Queues an action item for manual follow-up when the service is not recognised.
+# Add a service to a firewalld zone (permanent). INVALID_SERVICE (exit 101) becomes a
+# follow-up instead of aborting the script under set -e.
 # Usage: firewalld_add_service <zone> <service>
 firewalld_add_service() {
 	local zone="${1}" svc="${2}"

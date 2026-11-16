@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # ---------- Summary ---------------------------------------------------------
-# save_followups() - Keep this run's open follow-ups with its backups, so --resume
-# and --report can show them later.
+# Keep this run's open follow-ups with its backups, so --resume and --report can
+# show them later.
 save_followups() {
 	((DRY_RUN)) && return 0
 	[[ -d "$BACKUP_DIR" ]] || return 0
@@ -14,8 +14,8 @@ save_followups() {
 	chmod 600 "$BACKUP_DIR/.followups" 2>/dev/null || true
 }
 
-# last_session_dir() - Backup folder of the most recent earlier hardening run (the
-# ones with a .followups file; --report, --resume and --rollback runs do not count).
+# Backup folder of the most recent earlier hardening run (the ones with a .followups
+# file; --report, --resume and --rollback runs do not count).
 last_session_dir() {
 	local d latest=""
 	for d in /root/harden-backups-*/; do
@@ -27,8 +27,8 @@ last_session_dir() {
 	echo "${latest%/}"
 }
 
-# resume_followups() - Show the last session's open follow-ups and offer the fixes
-# again; what stays open is saved back to that session.
+# Show the last session's open follow-ups and offer the fixes again; what stays
+# open is saved back to that session.
 resume_followups() {
 	local dir
 	if ! dir="$(last_session_dir)" || [[ ! -s "$dir/.followups" ]]; then
@@ -47,7 +47,7 @@ resume_followups() {
 	fi
 }
 
-# _html() - Escape text for HTML.
+# Escape text for HTML.
 _html() {
 	local t="${1//&/&amp;}"
 	t="${t//</&lt;}"
@@ -168,11 +168,9 @@ write_html_report() {
 	ok "Report: $out"
 }
 
-# final_summary() - Analyze section 12/16/17/18/24 findings, write all reports to
-# user Downloads/<project>/results and Downloads/<project>/logs, display actionable list, and ask
-# whether to implement recommended next steps. If declined, they are kept for --resume
-# report plus TXT import bundle into the user's Downloads directory instead of
-# running remediation. If approved, the user can implement all or selected items.
+# Findings of sections 12, 16, 17, 18 and 24, the reports in Downloads/<project>/results
+# and logs, and the follow-up list; asks whether to fix the follow-ups now (declined ones
+# are kept for --resume and --report).
 final_summary() {
 	local summary_file="harden-summary-${REPORT_DATE}.txt"
 	local summary_path=""

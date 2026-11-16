@@ -1,10 +1,6 @@
 # shellcheck shell=bash
 # ---------- Main ------------------------------------------------------------
-# main() - Master orchestrator for fedora-harden script execution
-# Manages command-line argument parsing, permission verification, session tracking,
-# and execution of all 23 hardening sections in dependency-optimized order.
-# Ends with a diagnosis of failed services and the session report.
-# Exit codes: 0 = success, 1 = preflight failed, catch-all for other errors
+# Exit codes: 0 success, 1 preflight failed; anything else is an abort.
 main() {
 	parse_args "$@"
 	[[ -n "$RESTORE_FILE" ]] && load_recovery_file "$RESTORE_FILE"

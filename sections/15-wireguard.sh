@@ -2,10 +2,10 @@
 # ============================================================================
 #  SECTION 15 — WireGuard with kill switch
 # ============================================================================
-# sec_15_wireguard() - Install a WireGuard tunnel (--wireguard-config FILE) that
-# cannot leak: a kill switch drops outbound traffic that does not go through the
-# tunnel (also while the tunnel is down), and DNS is routed through the tunnel.
-# Without a config file the section does nothing.
+# Install a WireGuard tunnel (--wireguard-config FILE) that cannot leak: a kill
+# switch drops outbound traffic that does not go through the tunnel (also while
+# the tunnel is down), and DNS is routed through the tunnel. Without a config file
+# the section does nothing.
 WG_IF="wg0"
 sec_15_wireguard() {
 	should_run 15 || return 0

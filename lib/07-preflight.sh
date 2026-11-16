@@ -3,10 +3,7 @@
 # Initialize script environment, detect system configuration, and validate prerequisites.
 # Functions in this section handle argument parsing, system detection, and setup.
 
-# usage() - Display script usage information from embedded documentation.
-# Extracts comment header from the top-of-file documentation block.
-# Used by --help flag to show syntax, options, and section descriptions.
-# Usage: usage (called by --help or when argument parsing fails)
+# --help: the header comment of fedora-harden.sh, between its first two separator lines.
 usage() {
 	awk '
         NR == 1 { next }
@@ -16,11 +13,6 @@ usage() {
     ' "$0"
 }
 
-# list_sections() - Display all available sections with descriptions and optimized execution order.
-# Shows section numbers, names, and notes (e.g. "interactive", "manual").
-# Also displays the computed optimal execution order based on dependencies.
-# Used by --list flag to help users understand available options.
-# Usage: list_sections (called by --list flag)
 list_sections() {
 	cat <<'EOF'
    1  System updates (incl. fwupd firmware/microcode + hardware key support)
@@ -76,11 +68,6 @@ list_sections() {
 EOF
 }
 
-# parse_args() - Parse command-line arguments and set global flags.
-# Recognized options: -u/--user, -y/--yes, -n/--dry-run, --gui,
-# --report, --resume, --wireguard-config, --skip, --only, --list, -h/--help
-# Validates option syntax and applies settings globally for use throughout script.
-# Usage: parse_args "$@" (called in main before preflight)
 parse_args() {
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
@@ -237,8 +224,8 @@ parse_args() {
 	return 0
 }
 
-# validate_section_list() - Exit 2 unless <list> is comma-separated section numbers
-# this script runs (a typo would otherwise silently run nothing, or everything).
+# Exit 2 unless <list> is comma-separated section numbers this script runs (a typo
+# would otherwise silently run nothing, or everything).
 # Usage: validate_section_list <option> <list>
 validate_section_list() {
 	local opt="$1" list="$2" item known=" ${SECTIONS[*]} " # joined before IFS changes
@@ -255,10 +242,10 @@ validate_section_list() {
 	done
 }
 
-# acquire_run_lock() - Refuse to start while another run is changing the system:
-# two runs would interleave edits and journal entries. A PID file (not an inherited
-# flock) so helpers that outlive the run, like the GUI window, cannot hold it; a
-# lock left by a killed run is taken over.
+# Refuse to start while another run is changing the system: two runs would
+# interleave edits and journal entries. A PID file (not an inherited flock) so
+# helpers that outlive the run, like the GUI window, cannot hold it; a lock left by
+# a killed run is taken over.
 RUN_LOCK=""
 acquire_run_lock() {
 	local lock=/run/fedora-harden.pid other
@@ -278,11 +265,7 @@ release_run_lock() {
 	RUN_LOCK=""
 }
 
-# preflight() - Initialize script environment, detect system configuration, and validate prerequisites.
-# Runs pre-flight checks: validates root access, creates log/backup dirs, detects Fedora variant.
-# Populates release/desktop detection flags for auto-gating features and dependency decisions.
-# Sets FEDORA_MAJOR version for compatibility validation (expects 44+).
-# Usage: preflight (called in main after parse_args)
+# Root check, run lock, log, release and desktop detection (Fedora 44+), backups.
 preflight() {
 	local privilege_source="direct root login/session"
 	((FORCE_GUI)) || draw_banner

@@ -2,11 +2,9 @@
 # ============================================================================
 #  SECTION 22 — File permission hardening
 # ============================================================================
-# sec_22_perms() - Harden file permissions, umask, core dumps, hostname & username privacy
-# Tightens permissions on shadow files, /tmp, and compiler access (20a). Sets umask 077
-# for restrictive default file creation (20b). Disables core dumps via limits.d (20c).
-# Checks hostname for identity leakage (20d) and flags non-generic usernames (20e) per
-# privacyguides.org and inteltechniques.com recommendations.
+# Tightens permissions on shadow files, /tmp and compiler access (22a), umask 077 for
+# new files (22b), core dumps off via limits.d (22c), and checks the hostname (22d) and
+# user names (22e) for identity leaks (privacyguides.org, inteltechniques.com).
 sec_22_perms() {
 	should_run 22 || return 0
 	section 22 "File permission hardening"
@@ -39,7 +37,7 @@ sec_22_perms() {
 	run "find / -xdev -perm /4000 -type f 2>/dev/null | sort > /root/suid-baseline-${RUN_DATE_YMD}.txt || true"
 	info "Saved SUID baseline to /root/suid-baseline-*.txt"
 
-	# 20a2 — Swap: memory written to unencrypted disk swap survives power-off.
+	# 22a2 — Swap: memory written to unencrypted disk swap survives power-off.
 	# Source: privacyguides.org — Linux Overview (Swap and ZRAM).
 	local swap_dev swap_type backing plain_swaps=""
 	while read -r swap_dev swap_type _; do
@@ -78,7 +76,7 @@ UMASK
 		info "$umask_f already limits umask 077 to regular users — leaving unchanged."
 	fi
 
-	# 20c — Core dump suppression via limits.d (privacyguides.org)
+	# 22c — Core dump suppression via limits.d (privacyguides.org)
 	local coredump_f="/etc/security/limits.d/99-coredump.conf"
 	if ((DRY_RUN)); then
 		info "Would write $coredump_f (disable core dumps)"
@@ -98,7 +96,7 @@ EOF
 		info "$coredump_f already exists — leaving unchanged."
 	fi
 
-	# 20d — hostname privacy check (inteltechniques.com: non-identifying hostname)
+	# 22d — hostname privacy check (inteltechniques.com: non-identifying hostname)
 	local current_hostname
 	current_hostname="$(hostname -s 2>/dev/null || true)"
 	local real_name="${TARGET_USER:-$(logname 2>/dev/null || true)}"
@@ -110,7 +108,7 @@ EOF
 		fi
 	fi
 
-	# 20e — username privacy check (privacyguides.org: use generic username, not real name)
+	# 22e — username privacy check (privacyguides.org: use generic username, not real name)
 	# privacyguides.org recommends: "Consider using generic terms like 'user' rather than
 	# your actual name" to limit the amount of personal data exposed by the OS.
 	local cur_user="${TARGET_USER:-$(logname 2>/dev/null || true)}"

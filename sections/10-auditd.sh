@@ -2,10 +2,9 @@
 # ============================================================================
 #  SECTION 10 — auditd
 # ============================================================================
-# sec_10_auditd() - Configure auditd audit rules
-# Tracks identity changes, privilege escalation, kernel module loading, time
-# changes, network configuration edits, filesystem mounts, and file deletions
-# per inteltechniques.com recommendations. Covers NIST/CIS baseline events.
+# Rules for identity changes, privilege escalation, kernel modules, time changes,
+# network configuration, mounts and file deletions (inteltechniques.com; the NIST/CIS
+# baseline events).
 sec_10_auditd() {
 	should_run 10 || return 0
 	section 10 "auditd rules"

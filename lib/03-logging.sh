@@ -1,9 +1,9 @@
 # shellcheck shell=bash
 # ---------- Logging helpers -------------------------------------------------
-# init_log_target() - Choose where this run logs. On a normal system that is the
-# journal (journalctl -t fedora-harden FH_SESSION=<session>): rotation, size limits
-# and access control come with it. Without journald (minimal containers) the same
-# lines go to a file under /var/log/fedora-harden, or /tmp as a last resort.
+# Choose where this run logs. On a normal system that is the journal (journalctl -t
+# fedora-harden FH_SESSION=<session>): rotation, size limits and access control
+# come with it. Without journald (minimal containers) the same lines go to a file
+# under /var/log/fedora-harden, or /tmp as a last resort.
 init_log_target() {
 	((LOG_READY)) && return 0
 	if [[ -S /run/systemd/journal/socket ]] && have_cmd logger &&
@@ -27,9 +27,8 @@ init_log_target() {
 	return 0
 }
 
-# log() - Record a message: in the journal with the session and section as fields,
+# Record a message: in the journal with the session and section as fields,
 # or in the log file. Priority follows the message type.
-# Usage: log "message text"
 log() {
 	init_log_target || return 0
 	local msg="${*//$'\n'/ }" prio=6
@@ -48,7 +47,7 @@ log() {
 	printf '%s %s\n' "$ts" "$msg" 2>/dev/null >>"$LOG_FILE" || true
 }
 
-# log_stream() - Log every line read from stdin (command output).
+# Log every line read from stdin (command output).
 log_stream() {
 	local line
 	while IFS= read -r line || [[ -n "$line" ]]; do
@@ -57,36 +56,25 @@ log_stream() {
 	done
 }
 
-# info() - Write informational message to stdout and log (blue color).
-# Used for status updates and intermediate steps.
-# Usage: info "message text"
+# Status lines: printed in colour (err to stderr), logged and sent to the window.
 info() {
 	((! GUI_FULL_MODE)) && printf '%s[INFO]%s  %s\n' "$C_BLU" "$C_RST" "$*"
 	log "[INFO]  $*"
 	gui_send LOG info "$*"
 }
 
-# ok() - Write success message to stdout and log (green color).
-# Indicates successful completion of a task or verification.
-# Usage: ok "message text"
 ok() {
 	((! GUI_FULL_MODE)) && printf '%s[ OK ]%s  %s\n' "$C_GRN" "$C_RST" "$*"
 	log "[OK]    $*"
 	gui_send LOG ok "$*"
 }
 
-# warn() - Write warning message to stdout and log (yellow color).
-# Alerts about non-critical issues, skipped steps, or prerequisites.
-# Usage: warn "message text"
 warn() {
 	((! GUI_FULL_MODE)) && printf '%s[WARN]%s  %s\n' "$C_YEL" "$C_RST" "$*"
 	log "[WARN]  $*"
 	gui_send LOG warn "$*"
 }
 
-# err() - Write error message to stderr and log (red color).
-# Indicates a problem that may prevent further execution.
-# Usage: err "message text"
 err() {
 	((++ERR_COUNT))
 	((! GUI_FULL_MODE)) && printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2
@@ -94,9 +82,7 @@ err() {
 	gui_send LOG error "$*"
 }
 
-# capture_error_context() - Log detailed error information including command, exit code, and stderr.
-# Stores structured error data for later analysis and automatic remediation.
-# Called by trap_err and soft-fail handlers to capture full error context.
+# Log a failed command with its exit code and the tail of its stderr.
 # Usage: capture_error_context <where> <cmd> <exit_code> [stderr_file]
 capture_error_context() {
 	local where="$1" cmd="$2" ec="$3" stderr_file="${4:-}" detail=""
@@ -110,9 +96,7 @@ source_line() {
 	printf '%s line %s' "${1#"$SCRIPT_DIR"/}" "$2"
 }
 
-# section() - Print formatted section header with visual divider and log entry.
-# Displays section number and title with colored borders for visual clarity.
-# All section headers are logged for audit trail with timestamps.
+# Section header: printed with the progress bar, sent to the window, logged.
 # Usage: section <number> <title...>
 section() {
 	abort_if_cancelled
@@ -133,11 +117,8 @@ section() {
 	log "==== Section $n: $* ===="
 }
 
-# run() - Execute shell command or simulate execution in --dry-run mode.
-# In dry-run mode, logs the command for preview without executing it.
-# All commands are logged to audit file regardless of execution.
-# Captures stderr from failed commands so a failure can say why.
-# Usage: run "command" "with" "args"
+# Run a command line (eval'd), or only log it under --dry-run. Stderr is captured so
+# a failure can say why.
 run() {
 	abort_if_cancelled
 	LAST_RUN_CMD="$*"
@@ -189,22 +170,14 @@ run() {
 	return "$rc"
 }
 
-# have_cmd() - Check if a command exists in PATH.
-# Returns 0 (success) if command is available, 1 (failure) otherwise.
-# Usage: have_cmd <command_name>
 have_cmd() {
 	command -v "$1" >/dev/null 2>&1
 }
 
-# pkg_upgrade() - Upgrade system packages using appropriate mechanism for platform.
-# On immutable systems (rpm-ostree), changes are staged for next reboot.
-# On mutable systems, updates are applied immediately via dnf.
-# Upgrade failures are treated as warnings, not fatal errors — transient repo
-# conflicts or network issues must not abort the remaining hardening sections.
-# dnf_repos_ready() - Check once that the repositories answer (bounded time). An
-# unreachable repository that drops packets makes every dnf call wait out its
-# timeouts and retries; without this check one such repository stalled a run for
-# well over half an hour. When it fails, package work is skipped with one follow-up.
+# Check once that the repositories answer (bounded time). An unreachable repository
+# that drops packets makes every dnf call wait out its timeouts and retries; without
+# this check one such repository stalled a run for well over half an hour. When it
+# fails, package work is skipped with one follow-up.
 _DNF_REPOS_CHECKED=0
 _DNF_REPOS_OK=1
 dnf_repos_ready() {
@@ -222,6 +195,9 @@ dnf_repos_ready() {
 	((_DNF_REPOS_OK))
 }
 
+# On rpm-ostree systems the upgrade is staged for the next boot. Failures are
+# warnings, not fatal: transient repository conflicts or network issues must not
+# abort the remaining sections.
 pkg_upgrade() {
 	local rc=0
 	if ((IS_OSTREE)); then
@@ -249,10 +225,9 @@ pkg_upgrade() {
 	return 0
 }
 
-# _load_ostree_staged_packages() - Populate _PKG_PENDING_CACHE from the live rpm-ostree
-# staged/pending layer (runs once per script execution).  Prevents "Package X is already
-# requested" errors when pkg_install is called after a prior run that layered packages
-# but the system has not yet been rebooted.
+# Fill _PKG_PENDING_CACHE from the staged/pending rpm-ostree layer (once per run), so
+# pkg_install does not re-request packages that a previous run layered before a reboot
+# ("Package X is already requested").
 _OSTREE_STAGED_LOADED=0
 _load_ostree_staged_packages() {
 	((_OSTREE_STAGED_LOADED)) && return 0
@@ -281,14 +256,9 @@ _load_ostree_staged_packages() {
 	)
 }
 
-# pkg_install() - Install packages via appropriate package manager (skips if already cached).
-# Automatically selects dnf for mutable systems or rpm-ostree for immutable.
-# Skips already-installed packages using cache to reduce redundant operations.
-# On rpm-ostree systems, also checks the live staged/pending layer so that packages
-# queued in a prior run (before reboot) are not re-requested, preventing the
-# "Package X is already requested" error.
-# Honors --dry-run in both mutable and immutable code paths.
-# Usage: pkg_install <package1> [package2] ...
+# dnf, or rpm-ostree on image-based systems. Skips packages already installed and, on
+# rpm-ostree, ones a previous run staged before a reboot (requesting them again fails
+# with "Package X is already requested"). Honors --dry-run.
 pkg_install() {
 	local pkgs=("$@") needed=() pkg
 	((${#pkgs[@]} == 0)) && return 0
@@ -386,8 +356,7 @@ pkg_install() {
 	fi
 }
 
-# install_dep_candidates() - Best-effort install of dependency package candidates.
-# Attempts each package and continues even if one candidate fails.
+# Best effort: tries each package and goes on when one fails.
 install_dep_candidates() {
 	local pkg attempted=0
 	((DRY_RUN)) && {
@@ -403,16 +372,11 @@ install_dep_candidates() {
 	return 1
 }
 
-# flatpak_install_or_update() - Idempotent Flatpak install/update (never aborts the script).
-# • Already installed and up-to-date  → skip (uses flatpak's own resolver, no download).
-# • Already installed, update available → flatpak update on origin remote (soft-fail).
-# • Not installed                       → flatpak install (soft-fail; queues
-#   an action item on failure so the user is notified without script abort).
-# Up-to-date detection uses `flatpak update --no-pull` (checks locally cached remote
-# metadata without any network I/O) instead of raw commit-hash comparison.  Commit hashes
-# from `flatpak info --show-commit` and `flatpak remote-info --show-commit` use different
-# SHA representations and never match even when the app is current, which caused a false
-# "update available" → no-op update loop on every run.
+# Install, or update when an update is available; never aborts the script (a failure
+# becomes a follow-up). Up-to-date detection uses `flatpak update --no-pull` (locally
+# cached metadata, no network) instead of comparing commit hashes: `flatpak info
+# --show-commit` and `flatpak remote-info --show-commit` use different representations
+# that never match, which caused a no-op update on every run.
 # Usage: flatpak_install_or_update <remote> <app-id>
 flatpak_install_or_update() {
 	local remote="$1" app_id="$2"
@@ -454,7 +418,7 @@ flatpak_install_or_update() {
 	fi
 }
 
-# ensure_command_dep() - Ensure command exists, attempting package install if missing.
+# Install a package providing <command> when it is missing.
 # Usage: ensure_command_dep <command> <reason> <pkg1> [pkg2 ...]
 ensure_command_dep() {
 	local cmd="$1" reason="$2"
@@ -483,9 +447,7 @@ ensure_command_dep() {
 	return 1
 }
 
-# download_file() - Download file from URL (with smart tool selection and error handling).
-# Tries curl first (preferred), falls back to wget. Returns 0 on success, 1 on failure.
-# Usage: download_file <url> <destination_path>
+# curl, falling back to wget. Usage: download_file <url> <destination>
 download_file() {
 	local url="$1" dest="$2"
 	local dest_dir="${dest%/*}"
@@ -512,9 +474,7 @@ download_file() {
 	return 1
 }
 
-# user_home() - Retrieve home directory for specified local user (cached for this session).
-# Caches results to avoid repeated /etc/passwd lookups.
-# Usage: user_home <username>
+# Home directory of a local user, cached for the run.
 declare -gA _USER_HOME_CACHE=() # Session cache for user home dirs
 user_home() {
 	local user="$1"
@@ -529,8 +489,8 @@ user_home() {
 	echo "$home"
 }
 
-# image_box_tool() - The pet-container tool to use on this system: distrobox on
-# Universal Blue images (they ship distrobox, not toolbox), toolbox elsewhere.
+# The pet-container tool to use on this system: distrobox on Universal Blue images
+# (they ship distrobox, not toolbox), toolbox elsewhere.
 image_box_tool() {
 	if [[ -r /usr/share/ublue-os/image-info.json ]] && cmd_exists distrobox; then
 		echo distrobox
@@ -541,7 +501,7 @@ image_box_tool() {
 	fi
 }
 
-# write_new_file() - Write stdin to <path> with <mode>, journaling it for --rollback.
+# Write stdin to <path> with <mode>, journaling it for --rollback.
 # Usage: write_new_file <path> <mode> <<'EOF' ... EOF
 write_new_file() {
 	local f="$1" mode="$2"
@@ -559,8 +519,8 @@ write_new_file() {
 	chmod "$mode" "$f" 2>/dev/null || true
 }
 
-# enable_timer() - daemon-reload and enable a timer, journaling the enable symlink
-# so --rollback removes it together with the unit files.
+# Run daemon-reload and enable a timer, journaling the enable symlink so --rollback
+# removes it together with the unit files.
 enable_timer() {
 	local timer="$1"
 	backup_file "/etc/systemd/system/timers.target.wants/$timer" || return 1
@@ -568,13 +528,11 @@ enable_timer() {
 	run "systemctl enable --now $timer"
 }
 
-# confirm() - Prompt user for yes/no confirmation (respects --yes flag).
-# Returns 0 (success) for 'y'/'yes' response, 1 (failure) for 'n'/'no' or default.
-# In --yes mode the answer is the default: yes, unless the caller passes "no" for
-# an option that current guidance does not recommend enabling automatically.
+# Yes/no question; returns 0 for yes. In --yes mode the answer is the default: yes,
+# unless the caller passes "no" for an option that current guidance does not recommend
+# enabling automatically. Every answer is remembered for the recovery file; with
+# --restore, a question answered before gets the same answer again.
 # Usage: confirm ["prompt text"] [yes|no]
-# Every answer is remembered for the recovery file; with --restore, a question
-# answered before gets the same answer again.
 confirm() {
 	local _q="${1:-Continue?}" _k
 	_k="$(_answer_key "$_q")"
@@ -623,12 +581,9 @@ _confirm_ask() {
 	[[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]
 }
 
-# backup_file() - Create backup of file in designated backup directory.
-# Creates directory structure if needed; uses mode 0700 for restricted access.
-# All backups are organized by timestamp in /root/harden-backups-YYYYMMDD-HHMMSS/
-# If the file does not exist yet, journal FILE_CREATE instead so that --rollback
-# removes the file this run is about to create.
-# Usage: backup_file <file_path>
+# Copy a file into this session's backup directory (/root/harden-backups-<session>,
+# mode 0700) before it changes. A file that does not exist yet is journaled as
+# FILE_CREATE instead, so --rollback removes the file this run creates.
 backup_file() {
 	local f="$1" dir what
 	# Never change what cannot be written or rolled back. Returning 1 makes the caller
@@ -689,9 +644,6 @@ tool_dir_end() {
 	done < <(find "$dir" -xdev -type f 2>/dev/null | sort)
 }
 
-# in_list() - Check if needle is present in comma-separated list.
-# Returns 0 (success) if found, 1 (failure) if not found.
-# Used for --skip and --only section filtering logic.
 # Usage: in_list <needle> <comma,separated,list>
 in_list() {
 	[[ -z "$2" ]] && return 1
@@ -700,9 +652,8 @@ in_list() {
 	return 1
 }
 
-# batch_sed() - Apply multiple sed patterns in a single pass (more efficient).
-# Reduces I/O overhead by batching replacements on same file.
-# Patterns are POSIX *extended* regular expressions (sed -E), so #? and \s+ work.
+# Apply several sed expressions to a file in one pass. Patterns are POSIX *extended*
+# regular expressions (sed -E), so #? and \s+ work.
 # Usage: batch_sed <file> <pattern1> <pattern2> ...
 batch_sed() {
 	local f="$1"
@@ -722,9 +673,9 @@ batch_sed() {
 	fi
 }
 
-# set_conf_key() - Set "key<sep>value" in a config file: replaces the first active or
-# commented-out occurrence of the key, or appends it when absent. Idempotent.
-# <sep> is " = " for key=value files, or whitespace (e.g. "   ") for login.defs.
+# Set "key<sep>value" in a config file: replaces the first active or commented-out
+# occurrence of the key, or appends it when absent. Idempotent. <sep> is " = " for
+# key=value files, or whitespace (e.g. "   ") for login.defs.
 # Usage: set_conf_key <file> <key> <value> [sep]
 set_conf_key() {
 	local f="$1" key="$2" value="$3" sep="${4:- = }" line new
@@ -761,9 +712,7 @@ set_conf_key() {
 	fi
 }
 
-# cmd_exists() - Fast check if command exists in PATH (cached for this session).
-# Uses have_cmd() with zero overhead after first check.
-# Usage: cmd_exists <command_name>
+# have_cmd, cached for the run.
 declare -gA _CMD_CACHE=() # Session cache for command existence
 cmd_exists() {
 	local cmd="$1"
@@ -779,9 +728,7 @@ cmd_exists() {
 	fi
 }
 
-# pkg_cached() - Check if package is already installed (cached for session).
-# Avoids repeated rpm -q calls for the same package.
-# Usage: pkg_cached <package_name>
+# Whether a package is installed, cached for the run (avoids repeated rpm -q).
 declare -gA _PKG_CACHE=()         # Session cache for package status
 declare -gA _PKG_PENDING_CACHE=() # rpm-ostree pending/staged layer packages (pre-loaded from live status + current-run requests)
 pkg_cached() {
@@ -802,9 +749,8 @@ pkg_cached() {
 	fi
 }
 
-# detect_fedora_release_type() - Classify Fedora release family from os-release metadata.
-# Handles all official Fedora variants, Atomic Desktop spins, and community remixes
-# (Bazzite, Aurora, Universal Blue). Sets IS_* flags for downstream feature-gating.
+# Classify the Fedora edition from os-release: official variants, Atomic desktops and
+# remixes (Bazzite, Aurora, Universal Blue). Sets the IS_* flags.
 detect_fedora_release_type() {
 	local release_blob
 	release_blob="${NAME:-} ${PRETTY_NAME:-} ${VARIANT:-} ${VARIANT_ID:-} ${CPE_NAME:-} ${PLATFORM_ID:-} ${ID_LIKE:-}"
@@ -848,9 +794,8 @@ detect_fedora_release_type() {
 	fi
 }
 
-# detect_desktop_envs() - Detect active/installed desktop environments for feature gating.
-# Covers KDE, GNOME, Sway, Hyprland, i3, XFCE, Cinnamon, MATE, Budgie, LXQt.
-# Uses both running-session hints (XDG_CURRENT_DESKTOP) and installed-package hints.
+# Running-session hints (XDG_CURRENT_DESKTOP) plus installed packages; sets HAS_* for
+# KDE, GNOME, Sway, Hyprland, i3, XFCE, Cinnamon, MATE, Budgie and LXQt.
 detect_desktop_envs() {
 	local detected=()
 	local xdg_blob="${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}"
@@ -973,11 +918,8 @@ detect_desktop_envs() {
 	DESKTOP_ENVS="${detected[*]:-}"
 }
 
-# section_compatible() - Check if a section is compatible with current system.
-# Evaluates release type, desktop presence, and platform capabilities to auto-skip safely.
-# Examples: Section 13 (KDE) skips if !HAS_KDE; Section 14 skips if !HAS_DESKTOP
-# Returns 0 (compatible) or 1 (incompatible/should skip).
-# Usage: section_compatible <section_number>
+# Whether a section applies to this system (release type, desktop, platform), e.g.
+# section 14 needs a desktop. Usage: section_compatible <section_number>
 section_compatible() {
 	local s="$1"
 	case "$s" in
@@ -1009,11 +951,7 @@ section_compatible() {
 	return 0
 }
 
-# should_run() - Determine whether a section should execute based on user options.
-# Checks --only, --skip, and system compatibility before allowing execution.
-# Provides early exit for filtered or incompatible sections to reduce overhead.
-# Returns 0 (should run) or 1 (should skip).
-# Usage: should_run <section_number>
+# --only, --skip and section_compatible decide. Usage: should_run <section_number>
 should_run() {
 	local s="$1"
 	# Check --only flag: if set, only run sections in the list.
@@ -1048,8 +986,8 @@ _track_units() {
 	done
 }
 
-# diagnose_failures() - After the sections: which services this run touched have
-# failed, and why, in their own words (their journal). Each becomes a follow-up.
+# After the sections: which services this run touched have failed, and why, in
+# their own words (their journal). Each becomes a follow-up.
 diagnose_failures() {
 	((DRY_RUN)) && return 0
 	local u reason n=0
@@ -1071,9 +1009,7 @@ diagnose_failures() {
 	fi
 }
 
-# trap_cleanup() - Emergency cleanup handler for EXIT/ERR traps.
-# Removes temporary files and performs resource cleanup on script failure.
-# Also writes the session report to sessions/ on every exit (normal or abort).
+# EXIT trap: remove temp files and write the session report (normal exit or abort).
 trap_cleanup() {
 	local rc=$?
 	[[ "$BASHPID" == "$$" ]] || return "$rc" # subshells never clean up for the run
@@ -1092,9 +1028,6 @@ trap_cleanup() {
 	return "$rc"
 }
 
-# trap_err() - Error handler for ERR trap.
-# Captures exit code + command context, logs with full detail, then exits.
-# Usage: Called automatically on error via trap.
 trap_err() {
 	# The failing command is at line BASH_LINENO[0] of file BASH_SOURCE[1].
 	local rc=$? line=${BASH_LINENO[0]:-?} file=${BASH_SOURCE[1]:-$0}

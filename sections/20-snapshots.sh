@@ -2,12 +2,12 @@
 # ============================================================================
 #  SECTION 20 — Home snapshots and copies
 # ============================================================================
-# sec_20_snapshots() - Protect the home folder against deleted or overwritten files,
-# with what the system already ships: Snapper where it is installed (Bazzite),
-# read-only Btrfs snapshots on other Btrfs systems, and hard-link incremental copies
-# (rsync) elsewhere — to a second drive when one is configured. How often follows how
-# actively the machine is used; nothing is taken when nothing changed. A home index
-# flags large replaceable folders; each is left out only with approval.
+# Protect the home folder against deleted or overwritten files, with what the system
+# already ships: Snapper where it is installed (Bazzite), read-only Btrfs snapshots
+# on other Btrfs systems, and hard-link incremental copies (rsync) elsewhere — to a
+# second drive when one is configured. How often follows how actively the machine is
+# used; nothing is taken when nothing changed. A home index flags large replaceable
+# folders; each is left out only with approval.
 sec_20_snapshots() {
 	should_run 20 || return 0
 	section 20 "Home snapshots and copies"

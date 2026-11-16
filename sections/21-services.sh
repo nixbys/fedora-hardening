@@ -2,8 +2,8 @@
 # ============================================================================
 #  SECTION 21 — Disable unnecessary services (interactive)
 # ============================================================================
-# sec_21_services() - Disable unnecessary services
-# Disables avahi, cups, bluetooth, modemmanager and similar auto-start services.
+# Asks before disabling avahi, cups, bluetooth, ModemManager and similar auto-start
+# services.
 sec_21_services() {
 	should_run 21 || return 0
 	section 21 "Disable unnecessary services (interactive)"

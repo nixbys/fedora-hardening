@@ -2,10 +2,9 @@
 # ============================================================================
 #  SECTION 14 — Firefox
 # ============================================================================
-# sec_14_firefox() - Harden Firefox Flatpak with arkenfox + extensions + telemetry opt-out + VPN check
-# Installs Firefox Flatpak with arkenfox profiles and security extensions (uBlock Origin,
-# LocalCDN, Multi-Account Containers). Enterprise policy also disables Firefox telemetry,
-# studies, and Pocket. Also detects active VPN and recommends one if absent.
+# Firefox Flatpak with arkenfox and three extensions (uBlock Origin, LocalCDN,
+# Multi-Account Containers); the enterprise policy also turns off telemetry, studies and
+# Pocket. Also checks for an active VPN and recommends one when there is none.
 sec_14_firefox() {
 	should_run 14 || return 0
 	section 14 "Firefox hardening (Flatpak preferred + arkenfox + privacy extensions)"

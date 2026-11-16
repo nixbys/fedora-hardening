@@ -2,8 +2,8 @@
 # ============================================================================
 #  SECTION 17 — OpenSCAP
 # ============================================================================
-# sec_17_openscap() - Install and run OpenSCAP compliance scanner
-# Installs OpenSCAP framework and runs initial compliance scan against security baseline.
+# A first compliance scan against the security baseline (on image-based systems, from a
+# container).
 sec_17_openscap() {
 	should_run 17 || return 0
 	section 17 "OpenSCAP compliance scanner"
@@ -15,8 +15,8 @@ sec_17_openscap() {
 	_oscap_report
 }
 
-# _oscap_in_container() - Image-based systems: scan the host read-only from a
-# throwaway Fedora container (oscap-chroot) instead of layering OpenSCAP.
+# Image-based systems: scan the host read-only from a throwaway Fedora container
+# (oscap-chroot) instead of layering OpenSCAP.
 _oscap_in_container() {
 	local release="${FEDORA_MAJOR:-0}"
 	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo 44)"
@@ -47,7 +47,7 @@ _oscap_in_container() {
 	fi
 }
 
-# _oscap_on_host() - Package-based systems: install OpenSCAP and scan. Returns 1 to skip.
+# Package-based systems: install OpenSCAP and scan. Returns 1 to skip.
 _oscap_on_host() {
 	pkg_install openscap-scanner scap-security-guide
 	# On rpm-ostree, packages are staged — oscap may not be available until reboot.
@@ -90,9 +90,9 @@ _oscap_on_host() {
 	fi
 }
 
-# scap_results() - Parse an XCCDF results file. Prints "<pass> <fail> <notchecked>",
-# or with "failing" the IDs of failed rules. Each result is a <rule-result idref=...>
-# element with a nested <result>fail</result>, not a result="..." attribute.
+# Parse an XCCDF results file. Prints "<pass> <fail> <notchecked>", or with "failing"
+# the IDs of failed rules. Each result is a <rule-result idref=...> element with a
+# nested <result>fail</result>, not a result="..." attribute.
 # Usage: scap_results <results.xml> [counts|failing]
 scap_results() {
 	awk -v want="${2:-counts}" '
@@ -111,7 +111,7 @@ scap_results() {
 	' "$1"
 }
 
-# _oscap_report() - Copy results to the user's results folder and summarise them.
+# Copy results to the user's results folder and summarise them.
 _oscap_report() {
 	if ((! DRY_RUN)); then
 		copy_to_user_results /root/scap-report.html "section-22-openscap-${REPORT_DATE}.html"

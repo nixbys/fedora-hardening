@@ -1,6 +1,5 @@
 # shellcheck shell=bash
 # ---------- Actionable-items display + remediation --------------------------
-# show_actionable_items() - Print the full prioritized actionable items list.
 show_actionable_items() {
 	if ((${#ACTIONABLE_ITEMS[@]} == 0)); then
 		ok "No actionable items — sections 12/16/17/18/24 appear clean."
@@ -25,8 +24,7 @@ show_actionable_items() {
 	fi
 }
 
-# remediate_item() - Attempt automated fix for one actionable item identified by tag.
-# Returns 0 if resolved, 1 if manual attention still required.
+# Try to fix one follow-up by tag. Returns 0 if resolved, 1 if it still needs the user.
 remediate_item() {
 	local tag="$1"
 	case "$tag" in
@@ -143,7 +141,7 @@ remediate_item() {
 	esac
 }
 
-# remediation_loop() - Iteratively resolve all actionable items after summary approval.
+# After the summary is approved, try to fix every follow-up.
 remediation_loop() {
 	((${#ACTIONABLE_ITEMS[@]} == 0)) && return 0
 	local round=1 max_rounds=5 prev_count=-1

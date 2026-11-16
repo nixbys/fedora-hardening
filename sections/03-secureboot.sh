@@ -2,8 +2,7 @@
 # ============================================================================
 #  SECTION 3 — Secure Boot verification
 # ============================================================================
-# sec_03_secureboot() - Verify Secure Boot is enabled
-# Confirms UEFI Secure Boot is active. GRUB password is manual task.
+# A GRUB password stays a manual task.
 sec_03_secureboot() {
 	should_run 3 || return 0
 	section 3 "Secure Boot verification"

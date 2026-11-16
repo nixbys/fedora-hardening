@@ -2,12 +2,9 @@
 # ============================================================================
 #  SECTION 18 — Container Security (Podman + Toolbox)
 # ============================================================================
-# sec_18_containers() - Rootless Podman + Toolbox containerized-mindset hardening.
-# Establishes a "containerized mindset" security posture where:
-#   • System-level administration runs natively (this script, system tools)
-#   • Development, daily work, and untrusted software run inside containers
-# Hardens image policy, runtime defaults, and registry resolution to reduce
-# the attack surface of containerised workloads.
+# A "containerized mindset": system administration runs natively; development, daily
+# work and untrusted software run in containers. Hardens image policy, runtime defaults
+# and registry resolution for them.
 sec_18_containers() {
 	should_run 18 || return 0
 	section 18 "Container security (Podman + Toolbox — containerized mindset)"
@@ -225,8 +222,8 @@ EOF
 	ok "Section 18 complete — rootless Podman hardened, image policy set, $box_tool ready."
 }
 
-# _tools_box_setup() - Image-based systems: keep build and audit tools out of the
-# image. Writes a distrobox manifest (distrobox) or prints the toolbox commands.
+# Image-based systems: keep build and audit tools out of the image. Writes a
+# distrobox manifest (distrobox) or prints the toolbox commands.
 _tools_box_setup() {
 	local box_tool="$1" run_user="${TARGET_USER:-${SUDO_USER:-}}"
 	local release="${FEDORA_MAJOR:-0}"

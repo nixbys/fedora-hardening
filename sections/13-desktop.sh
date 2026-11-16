@@ -2,7 +2,7 @@
 # ============================================================================
 #  SECTION 13 — Desktop environment privacy & screen-lock settings
 # ============================================================================
-# sec_13_desktop() - Apply security and privacy settings for every detected DE.
+# Apply security and privacy settings for every detected DE.
 #
 # Single entry-point that auto-dispatches to per-DE sub-handlers based on the
 # HAS_* flags set by detect_desktop_envs(). Multiple DEs can be active at once
@@ -406,7 +406,7 @@ I3EOF
 	fi
 }
 
-# user_session_run() - Run a shell snippet as <user> with a working D-Bus session.
+# Run a shell snippet as <user> with a working D-Bus session.
 # gsettings (dconf) and xfconf-query need the user's session bus. Plain `sudo -u`
 # from a root shell has none: gsettings then exits 0 but silently discards every
 # change. Use the user's live bus when they are logged in (the running session sees
@@ -428,7 +428,7 @@ user_session_run() {
 	fi
 }
 
-# verify_user_setting() - Report whether a desktop setting really persisted.
+# Report whether a desktop setting really persisted.
 # Usage: verify_user_setting <label> <expected> <read-command>
 verify_user_setting() {
 	local label="$1" expected="$2" read_cmd="$3" actual

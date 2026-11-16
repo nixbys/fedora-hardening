@@ -2,8 +2,6 @@
 # ============================================================================
 #  SECTION 12 — Fail2Ban
 # ============================================================================
-# sec_12_fail2ban() - Install and configure Fail2Ban IDS
-# Installs Fail2Ban for intrusion detection and auto-banning of brute-force attempts.
 sec_12_fail2ban() {
 	should_run 12 || return 0
 	section 12 "Fail2Ban"

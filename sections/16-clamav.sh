@@ -2,8 +2,8 @@
 # ============================================================================
 #  SECTION 16 — ClamAV
 # ============================================================================
-# sec_16_clamav() - ClamAV with automatic signature updates and a weekly scan of
-# /home (a timer, idle priority, no resident daemon). On-access scanning of /home
+# ClamAV with automatic signature updates and a weekly scan of /home (a timer,
+# idle priority, no resident daemon). On-access scanning of /home
 # (inteltechniques.com) is opt-in: it keeps clamd resident (about 1 GB of RAM) and
 # delays file access, so it is asked for, never turned on by --yes.
 sec_16_clamav() {
@@ -104,9 +104,9 @@ sec_16_clamav() {
 	fi
 }
 
-# _clamav_container() - Section 16 on image-based systems: a weekly scan of /home in
-# a throwaway container (Podman quadlet) instead of layering ClamAV into the image.
-# The signatures ship in the image, refreshed before each scan (Pull=newer). The
+# Section 16 on image-based systems: a weekly scan of /home in a throwaway
+# container (Podman quadlet) instead of layering ClamAV into the image. The
+# signatures ship in the image, refreshed before each scan (Pull=newer). The
 # container sees /home read-only, has no network and a read-only root, and keeps a
 # single capability: reading any file (DAC_READ_SEARCH). SELinux labelling is off
 # for it because relabelling /home for a container would change every file's label.

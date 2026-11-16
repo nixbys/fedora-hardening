@@ -2,10 +2,8 @@
 # ============================================================================
 #  SECTION 4 — Flatpak / Flathub
 # ============================================================================
-# sec_04_flatpak() - Configure Flatpak for app sandboxing
-# Installs Flatpak, adds Flathub, and offers Flatseal for permission management.
-# Optionally installs Firejail for sandboxing non-Flatpak applications
-# (inteltechniques.com recommendation); runs firecfg for desktop integration.
+# Flathub and Flatseal for permission management; optionally Firejail for applications
+# outside Flatpak (inteltechniques.com), with firecfg for desktop integration.
 sec_04_flatpak() {
 	should_run 4 || return 0
 	section 4 "Flatpak + Flathub"

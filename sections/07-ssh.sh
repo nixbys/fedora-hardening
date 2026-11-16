@@ -2,8 +2,7 @@
 # ============================================================================
 #  SECTION 7 — SSH hardening
 # ============================================================================
-# sec_07_ssh() - Configure SSH for key-based auth with hardened ciphers
-# Disables password auth, enables key-based auth, applies strong cipher suite.
+# Key-only authentication and a strong cipher suite.
 sec_07_ssh() {
 	should_run 7 || return 0
 	section 7 "SSH hardening"

@@ -2,11 +2,11 @@
 # ============================================================================
 #  SECTION 24 — AIDE file integrity
 # ============================================================================
-# sec_24_ids() - File integrity baseline with AIDE, checked weekly by a timer.
-# Runs last, so the baseline includes every change this run made. The baseline is
-# recorded in the background (a transient systemd unit): it takes minutes, and the
-# run does not need to wait for it. rkhunter is not used: its heuristics give false
-# alarms on Fedora after updates, and AIDE already covers file integrity.
+# File integrity baseline with AIDE, checked weekly by a timer. Runs last, so the
+# baseline includes every change this run made. The baseline is recorded in the
+# background (a transient systemd unit): it takes minutes, and the run does not
+# need to wait for it. rkhunter is not used: its heuristics give false alarms on
+# Fedora after updates, and AIDE already covers file integrity.
 sec_24_ids() {
 	should_run 24 || return 0
 	if ((IS_OSTREE)); then
@@ -63,8 +63,8 @@ UNIT
 		"After package updates, record a new AIDE baseline: sudo sh -c 'aide --init && mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz'"
 }
 
-# start_aide_baseline() - Record the AIDE baseline last, in the background, so it
-# includes every file this run wrote (the recovery file included).
+# Record the AIDE baseline last, in the background, so it includes every file this
+# run wrote (the recovery file included).
 start_aide_baseline() {
 	((AIDE_BASELINE_PENDING)) || return 0
 	# The database is moved into place only when init succeeds.
@@ -82,11 +82,11 @@ start_aide_baseline() {
 	fi
 }
 
-# _ostree_integrity() - Section 24 on image-based systems. /usr comes from the image
-# and is read-only, so AIDE would mostly re-check what the image
-# already guarantees. What matters is that the booted image is signature-verified
-# and what changed in /etc, the only mutable system configuration. Uses only tools
-# already in the image (rpm-ostree, ostree); layers nothing.
+# Section 24 on image-based systems. /usr comes from the image and is read-only,
+# so AIDE would mostly re-check what the image already guarantees. What matters is
+# that the booted image is signature-verified and what changed in /etc, the only
+# mutable system configuration. Uses only tools already in the image (rpm-ostree,
+# ostree); layers nothing.
 _ostree_integrity() {
 	section 24 "File integrity (image signature + /etc changes)"
 	local booted
@@ -158,8 +158,8 @@ EOF
 		"Weekly /etc change report: journalctl -t fedora-harden-etc. After intended changes, accept them: sudo sh -c 'ostree admin config-diff | sort > /var/lib/fedora-harden/etc-baseline.txt'"
 }
 
-# record_etc_baseline() - Record the /etc baseline once every section has run, so
-# the weekly check reports only changes made after hardening.
+# Record the /etc baseline once every section has run, so the weekly check reports
+# only changes made after hardening.
 record_etc_baseline() {
 	((ETC_BASELINE_PENDING)) || return 0
 	local baseline="/var/lib/fedora-harden/etc-baseline.txt"
