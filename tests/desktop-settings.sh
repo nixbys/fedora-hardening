@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/desktop-settings.sh - Section 15 end-to-end check (runs INSIDE a Fedora 44 container).
+# tests/desktop-settings.sh - Section 13 end-to-end check (runs INSIDE a Fedora 44 container).
 #
 # Verifies that GNOME (gsettings/dconf) and XFCE (xfconf) settings written by
 # fedora-harden.sh really persist for the target user. Plain `sudo -u user gsettings`
@@ -22,8 +22,8 @@ id u1 >/dev/null 2>&1 || useradd -m u1
 
 export XDG_CURRENT_DESKTOP="GNOME:XFCE" DESKTOP_SESSION=gnome
 rc=0
-/root/fedora-harden.sh --yes --only 15 --user u1 >/tmp/section15.log 2>&1 || rc=$?
-grep -E '^\[(OK|WARN|FAIL)' /tmp/section15.log | grep -iE 'gnome|xfce|section 15'
+/root/fedora-harden.sh --yes --only 13 --user u1 >/tmp/section15.log 2>&1 || rc=$?
+grep -E '^\[(OK|WARN|FAIL)' /tmp/section15.log | grep -iE 'gnome|xfce|section 13'
 
 fail=0
 expect() { # expect <description> <expected> <command run as u1>

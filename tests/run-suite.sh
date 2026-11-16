@@ -21,7 +21,7 @@
 #             that dry-run left the container filesystem untouched
 #   full    - systemd container: dry-run no-change check, REAL run, verification of
 #             applied hardening, idempotent re-run, --list-sessions, --rollback all,
-#             journal logging, --report/--resume, and section 17 against a real
+#             journal logging, --report/--resume, and section 15 against a real
 #             WireGuard peer (tests/wireguard-test.sh: kill switch, DNS, rollback)
 #   gui     - --gui on a virtual display: no hang, progress window closed,
 #             one Material-dark end-of-run window, Cancel exits 130
@@ -341,7 +341,7 @@ tier_static() {
         record SKIP "static: pinned arkenfox checksum" "curl not installed"
     fi
 
-    # Section 22 summary: real XCCDF results nest <result> inside <rule-result>; the
+    # Section 17 summary: real XCCDF results nest <result> inside <rule-result>; the
     # old parser looked for a result="..." attribute and always reported 0 / 0.
     check "static: OpenSCAP results parser reads real oscap output" bash -c '
         source <(sed -n "/^scap_results() {/,/^}/p" "$1")
@@ -349,7 +349,7 @@ tier_static() {
             [[ "$(scap_results "$2" failing)" == xccdf_org.ssgproject.content_rule_aide_build_database ]]' \
         _ "$SCRIPT" "$ROOT/tests/fixtures/scap-results-sample.xml"
 
-    # Section 24 installs a helper embedded in the script; lint it like the rest.
+    # Section 19 installs a helper embedded in the script; lint it like the rest.
     if need_tool shellcheck "static: embedded routine helper"; then
         check "static: embedded routine helper passes shellcheck" bash -c '
             sed -n "/<<'"'"'ROUTINE_EOF'"'"'/,/^ROUTINE_EOF\$/p" "$1" | sed "1d;\$d" >"$2" &&
@@ -409,16 +409,16 @@ tier_quick() {
     # Running from a read-only location (no writable sessions/ dir) must still exit 0.
     expect_rc "quick: dry-run from a read-only directory exits 0" 0 \
         podman run --rm -v "$SCRIPT:/opt/ro/fedora-harden.sh:ro,z" --read-only-tmpfs \
-        --entrypoint /opt/ro/fedora-harden.sh "$IMG_QUICK" --yes --dry-run --only 4
+        --entrypoint /opt/ro/fedora-harden.sh "$IMG_QUICK" --yes --dry-run --only 5
     # --only filtering
     log="$ARTIFACTS/quick_only.log"
     rc=0
-    quick_run --yes --dry-run --only 5,10 >"$log" 2>&1 || rc=$?
-    if ((rc == 0)) && grep -q 'Section 5:' "$log" && grep -q 'Section 10:' "$log" &&
+    quick_run --yes --dry-run --only 6,9 >"$log" 2>&1 || rc=$?
+    if ((rc == 0)) && grep -q 'Section 6:' "$log" && grep -q 'Section 9:' "$log" &&
         ! grep -qE 'Section (2|7|20):' "$log"; then
-        record PASS "quick: --only 5,10 runs exactly those sections"
+        record PASS "quick: --only 6,9 runs exactly those sections"
     else
-        record FAIL "quick: --only 5,10 runs exactly those sections" "exit $rc (see $log)"
+        record FAIL "quick: --only 6,9 runs exactly those sections" "exit $rc (see $log)"
     fi
 
     # A swap file whose mount is not visible (CI runners, containers) must be
@@ -426,25 +426,25 @@ tier_quick() {
     local swaps="$ARTIFACTS/fake-proc-swaps" log="$ARTIFACTS/quick_swap_report.log" rc=0
     printf 'Filename\tType\tSize\tUsed\tPriority\n/mnt/swapfile file 4194300 0 -2\n' >"$swaps"
     podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" -v "$swaps:/proc/swaps:ro,z" --entrypoint /root/fedora-harden.sh \
-        "$IMG_QUICK" --dry-run --yes --only 20 >"$log" 2>&1 || rc=$?
+        "$IMG_QUICK" --dry-run --yes --only 22 >"$log" 2>&1 || rc=$?
     if ((rc == 0)) && grep -q "Unencrypted swap in use: /mnt/swapfile" "$log"; then
-        record PASS "quick: unencrypted swap file is reported without aborting (section 20)"
+        record PASS "quick: unencrypted swap file is reported without aborting (section 22)"
     else
-        record FAIL "quick: unencrypted swap file is reported without aborting (section 20)" "exit $rc (see $log)"
+        record FAIL "quick: unencrypted swap file is reported without aborting (section 22)" "exit $rc (see $log)"
     fi
 
     # Back-to-back runs must get separate sessions: the session ID has one-second
     # resolution, and a shared one truncated the previous run's rollback journal.
     check "quick: back-to-back runs get separate sessions" \
         podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" --entrypoint /bin/bash "$IMG_QUICK" -c '
-            /root/fedora-harden.sh --yes --dry-run --only 19 >/dev/null 2>&1
-            /root/fedora-harden.sh --yes --dry-run --only 19 >/dev/null 2>&1
+            /root/fedora-harden.sh --yes --dry-run --only 21 >/dev/null 2>&1
+            /root/fedora-harden.sh --yes --dry-run --only 21 >/dev/null 2>&1
             logs=(/var/log/fedora-harden/harden-????????-??????.log)
             echo "${#logs[@]} session logs: ${logs[*]}"
             ((${#logs[@]} == 2))'
 
     # Desktop settings must really persist for the user (gsettings/xfconf need a D-Bus session)
-    check "quick: GNOME + XFCE settings persist for the user (section 15)" \
+    check "quick: GNOME + XFCE settings persist for the user (section 13)" \
         podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" \
         -v "$ROOT/tests/desktop-settings.sh:/root/desktop-settings.sh:ro,z" \
         --entrypoint /root/desktop-settings.sh "$IMG_QUICK"
@@ -670,12 +670,12 @@ tier_full() {
         record FAIL "full: --resume shows the last session's open follow-ups" "exit $rc (see $log)"
     fi
 
-    # --- section 24: routine ------------------------------------------------------
+    # --- section 19: routine ------------------------------------------------------
     log="$ARTIFACTS/full_routine.log"
     rc=0
-    fx /root/fedora-harden.sh --yes --only 24 --profile everyday,dev >"$log" 2>&1 || rc=$?
-    check "full: section 24 runs cleanly (exit $rc)" bash -c '[[ $1 == 0 ]] && ! grep -q "^\[FAIL\]" "$2"' _ "$rc" "$log"
-    check "full: section 24 saves the profile" fx grep -qx 'USE_CASES="everyday dev"' /etc/fedora-harden/profile
+    fx /root/fedora-harden.sh --yes --only 19 --profile everyday,dev >"$log" 2>&1 || rc=$?
+    check "full: section 19 runs cleanly (exit $rc)" bash -c '[[ $1 == 0 ]] && ! grep -q "^\[FAIL\]" "$2"' _ "$rc" "$log"
+    check "full: section 19 saves the profile" fx grep -qx 'USE_CASES="everyday dev"' /etc/fedora-harden/profile
     for t in cleanup diskspace drift summary devclean; do
         check "full: routine timer fedora-harden-$t is enabled" fx systemctl is-enabled --quiet "fedora-harden-$t.timer"
     done
@@ -689,12 +689,12 @@ tier_full() {
         grep -q "Done this week" /var/lib/fedora-harden/summary-*.txt && grep -q "Needs you" /var/lib/fedora-harden/summary-*.txt'
     check "full: free-space check runs" fx /usr/local/libexec/fedora-harden-routine diskspace
 
-    # --- section 25: home copies (no Btrfs in this image: the rsync backend) -------
+    # --- section 20: home copies (no Btrfs in this image: the rsync backend) -------
     local H=/usr/local/libexec/fedora-harden-routine C=/var/lib/fedora-harden/home-copies
     log="$ARTIFACTS/full_snapshots.log"
     rc=0
-    fx /root/fedora-harden.sh --yes --only 25 >"$log" 2>&1 || rc=$?
-    check "full: section 25 runs cleanly (exit $rc)" bash -c '[[ $1 == 0 ]] && ! grep -q "^\[FAIL\]" "$2"' _ "$rc" "$log"
+    fx /root/fedora-harden.sh --yes --only 20 >"$log" 2>&1 || rc=$?
+    check "full: section 20 runs cleanly (exit $rc)" bash -c '[[ $1 == 0 ]] && ! grep -q "^\[FAIL\]" "$2"' _ "$rc" "$log"
     check "full: without Btrfs, home copies use rsync on the same disk" \
         fx bash -c 'grep -qx BACKEND=rsync /etc/fedora-harden/snapshots && grep -qx TARGET=/var/lib/fedora-harden/home-copies /etc/fedora-harden/snapshots'
     check "full: snapshot and index timers are enabled" \
@@ -756,7 +756,7 @@ tier_full() {
     fx journalctl --no-pager -b >"$ARTIFACTS/full_journal.log" 2>&1 || true
     fx systemctl --failed --no-pager >"$ARTIFACTS/full_failed_units.txt" 2>&1 || true
 
-    # --- section 17: WireGuard with a real peer, kill switch, DNS, rollback ---------
+    # --- section 15: WireGuard with a real peer, kill switch, DNS, rollback ---------
     local wg_out="$ARTIFACTS/wireguard" line
     mkdir -p "$wg_out"
     "$ROOT/tests/wireguard-test.sh" "$TARGET_FEDORA" "$wg_out" >"$wg_out/results.txt" 2>&1 || true
