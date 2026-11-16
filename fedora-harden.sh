@@ -3090,6 +3090,42 @@ _apply_rollback_journal() {
 		done
 		rb_pkgs=("${kept[@]}")
 	fi
+	# Never remove what something outside this list still needs: a package the user
+	# installed later can depend on one this run pulled in, and dnf would remove the
+	# user's package with it. rpm's own test names every such requirement; keep its
+	# provider and test again until the rest can go.
+	if ((${#rb_pkgs[@]})) && ((!DRY_RUN)); then
+		local -a present=()
+		for pname in "${rb_pkgs[@]}"; do
+			rpm -q "$pname" >/dev/null 2>&1 && present+=("$pname")
+		done
+		rb_pkgs=("${present[@]}")
+		local _try cap prov test_out changed
+		for ((_try = 0; _try < 10 && ${#rb_pkgs[@]} > 0; _try++)); do
+			test_out="$(rpm -e --test "${rb_pkgs[@]}" 2>&1)" && break
+			changed=0
+			local -A still_needed=()
+			while IFS= read -r cap; do
+				[[ -n "$cap" ]] || continue
+				while IFS= read -r prov; do
+					[[ -n "$prov" ]] && still_needed[$prov]=1
+				done < <(rpm -q --whatprovides --qf '%{NAME}.%{ARCH}\n' "$cap" 2>/dev/null)
+			done < <(sed -n 's/^[[:space:]]*\(.*\) is needed by (installed) .*/\1/p' <<<"$test_out")
+			kept=()
+			for pname in "${rb_pkgs[@]}"; do
+				if [[ -n "${still_needed[$pname]:-}" ]]; then
+					info "Keeping $pname: a package installed outside this run still needs it."
+					_rjl "  [KEEP] PKG_REMOVE  $pname (still needed)"
+					changed=1
+				else
+					kept+=("$pname")
+				fi
+			done
+			unset still_needed
+			rb_pkgs=("${kept[@]}")
+			((changed)) || break
+		done
+	fi
 	if ((${#rb_pkgs[@]})); then
 		if ((DRY_RUN)); then
 			info "Would run: dnf remove -y ${rb_pkgs[*]}"
