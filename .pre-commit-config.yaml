@@ -19,6 +19,16 @@ repos:
         entry: shellcheck --severity=warning
         language: system
         types: [shell]
+        exclude: '^(lib|sections)/'
+
+      # lib/ and sections/ are parts of fedora-harden.sh: check them through it, so
+      # globals and functions defined in one part are known in the others.
+      - id: shellcheck-parts
+        name: shellcheck fedora-harden.sh with lib/ and sections/ (Fedora RPM)
+        entry: shellcheck -x -a --severity=warning fedora-harden.sh
+        language: system
+        files: '^(fedora-harden\.sh|(lib|sections)/.*\.sh)$'
+        pass_filenames: false
 
       - id: shfmt
         name: shfmt (Fedora RPM, style from .editorconfig)

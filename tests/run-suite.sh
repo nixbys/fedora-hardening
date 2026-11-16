@@ -52,7 +52,9 @@
 set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
-SCRIPT="$ROOT/fedora-harden.sh"
+# The project is mounted in containers at a directory named like the repository:
+# the script names the Downloads/<project> report folder after its directory.
+FH_DIR=/opt/fedora-hardening
 TARGET_FEDORA="${TARGET_FEDORA:-45}"
 NATIVE=0
 TIERS=()
@@ -288,18 +290,27 @@ tier_static() {
     tier_header "static (platform: $platform)"
     on_target_platform || record SKIP "static: platform is Fedora $TARGET_FEDORA" "running natively on $platform (--native)"
 
-    local scripts=("$ROOT"/*.sh "$ROOT"/tests/*.sh)
-    local rel=("${scripts[@]#"$ROOT"/}")
+    # The script is fedora-harden.sh plus the parts it loads from lib/ and sections/,
+    # and the routine helper it installs from libexec/. ShellCheck checks the parts
+    # through fedora-harden.sh (-x follows its source lines, -a reports their
+    # findings), so they are analysed with the globals and functions they share.
+    local parts=("$ROOT"/lib/*.sh "$ROOT"/sections/*.sh)
+    local scripts=("$ROOT"/*.sh "$ROOT"/tests/*.sh "$ROOT/libexec/fedora-harden-routine")
+    local all=("${scripts[@]}" "${parts[@]}")
+    local rel=("${all[@]#"$ROOT"/}")
 
-    check "static: bash -n (all scripts)" bash -c 'for f; do bash -n "$f" || exit 1; done' _ "${scripts[@]}"
+    check "static: bash -n (all scripts)" bash -c 'for f; do bash -n "$f" || exit 1; done' _ "${all[@]}"
+    check "static: fedora-harden.sh loads every file in lib/ and sections/" bash -c '
+        cd "$1" && diff <(printf "%s\n" lib/*.sh sections/*.sh | sort) \
+            <(sed -n "s|^source \"\$SCRIPT_DIR/\(.*\)\"\$|\1|p" fedora-harden.sh | sort)' _ "$ROOT"
 
     if need_tool shellcheck "static: shellcheck"; then
-        check "static: shellcheck --severity=warning" shellcheck --severity=warning "${scripts[@]}"
+        check "static: shellcheck --severity=warning" shellcheck -x -a --severity=warning "${scripts[@]}"
         check "static: shellcheck strict (.shellcheckrc, all checks)" \
-            shellcheck --rcfile "$ROOT/.shellcheckrc" "${scripts[@]}"
+            shellcheck -x -a --rcfile "$ROOT/.shellcheckrc" "${scripts[@]}"
     fi
 
-    # Style comes from .editorconfig (tabs for the main script, 4 spaces elsewhere).
+    # Style comes from .editorconfig (tabs for the script and its parts, 4 spaces elsewhere).
     if need_tool shfmt "static: shfmt"; then
         check "static: shfmt -d (Fedora $TARGET_FEDORA shfmt, .editorconfig style)" \
             bash -c 'cd "$1" && shift && shfmt -d "$@"' _ "$ROOT" "${rel[@]}"
@@ -313,10 +324,12 @@ tier_static() {
         check "static: hadolint Dockerfile.test" hadolint "$ROOT/Dockerfile.test"
     fi
 
-    check "static: python compiles" python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' \
-        "$ROOT/mcp_server_fedora_harden.py" "$ROOT/tests/mcp_smoke.py"
+    # libexec/fedora-harden-gui.py is the --gui window app.
+    local pys=("$ROOT/mcp_server_fedora_harden.py" "$ROOT/tests/mcp_smoke.py" "$ROOT/tests/check-references.py"
+        "$ROOT/libexec/fedora-harden-gui.py")
+    check "static: python compiles" python3 -c 'import ast,sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' "${pys[@]}"
     if need_tool ruff "static: ruff"; then
-        check "static: ruff check" ruff check --no-cache "$ROOT/mcp_server_fedora_harden.py" "$ROOT/tests/mcp_smoke.py" "$ROOT/tests/check-references.py"
+        check "static: ruff check" ruff check --no-cache "${pys[@]}"
     fi
 
     if python3 -c 'import mcp' 2>/dev/null; then
@@ -328,8 +341,8 @@ tier_static() {
 
     # The pinned arkenfox release must still match its checksum (catches re-tagging).
     local ark_ver ark_sum
-    ark_ver="$(sed -n 's/^ARKENFOX_VERSION="\(.*\)"$/\1/p' "$SCRIPT")"
-    ark_sum="$(sed -n 's/^ARKENFOX_SHA256="\(.*\)"$/\1/p' "$SCRIPT")"
+    ark_ver="$(sed -n 's/^ARKENFOX_VERSION="\(.*\)"$/\1/p' "$ROOT/lib/01-globals.sh")"
+    ark_sum="$(sed -n 's/^ARKENFOX_SHA256="\(.*\)"$/\1/p' "$ROOT/lib/01-globals.sh")"
     if have curl; then
         check "static: pinned arkenfox $ark_ver matches its checksum" bash -c \
             'curl -fsSL "https://raw.githubusercontent.com/arkenfox/user.js/$1/user.js" | sha256sum | grep -q "^$2 "' _ "$ark_ver" "$ark_sum"
@@ -343,34 +356,20 @@ tier_static() {
         source <(sed -n "/^scap_results() {/,/^}/p" "$1")
         [[ "$(scap_results "$2")" == "1 1 0" ]] &&
             [[ "$(scap_results "$2" failing)" == xccdf_org.ssgproject.content_rule_aide_build_database ]]' \
-        _ "$SCRIPT" "$ROOT/tests/fixtures/scap-results-sample.xml"
-
-    # Section 19 installs a helper embedded in the script; lint it like the rest.
-    if need_tool shellcheck "static: embedded routine helper"; then
-        check "static: embedded routine helper passes shellcheck" bash -c '
-            sed -n "/<<'"'"'ROUTINE_EOF'"'"'/,/^ROUTINE_EOF\$/p" "$1" | sed "1d;\$d" >"$2" &&
-            [[ -s "$2" ]] && shellcheck -s bash "$2"' _ "$SCRIPT" "$ARTIFACTS/fedora-harden-routine"
-    fi
-    # --gui runs a window app embedded in the script; compile and lint it too.
-    check "static: embedded --gui window app compiles" bash -c '
-        sed -n "/<<'"'"'GUIAPP_EOF'"'"'/,/^GUIAPP_EOF\$/p" "$1" | sed "1d;\$d" >"$2" &&
-        [[ -s "$2" ]] && python3 -m py_compile "$2"' _ "$SCRIPT" "$ARTIFACTS/fedora-harden-gui.py"
-    if need_tool ruff "static: embedded --gui window app"; then
-        check "static: embedded --gui window app passes ruff" ruff check --no-cache "$ARTIFACTS/fedora-harden-gui.py"
-    fi
+        _ "$ROOT/sections/17-openscap.sh" "$ROOT/tests/fixtures/scap-results-sample.xml"
 
     # Regression guard: under `set -e` a post-increment of a zero counter inside (( ))
     # evaluates to 0, returns status 1 and aborts the script.
     check "static: no set -e unsafe post-increments" \
-        bash -c '! grep -nE "\(\([A-Za-z_][A-Za-z0-9_]*(\+\+|--)\)\)" "$@"' _ "${scripts[@]}"
+        bash -c '! grep -nE "\(\([A-Za-z_][A-Za-z0-9_]*(\+\+|--)\)\)" "$@"' _ "${all[@]}"
 }
 
 # ---------------------------------------------------------------------------
 # Tier: quick (no systemd)
 # ---------------------------------------------------------------------------
 quick_run() { # quick_run <args...> — run the script in a throwaway no-systemd container
-    podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" \
-        --entrypoint /root/fedora-harden.sh "$IMG_QUICK" "$@" </dev/null
+    podman run --rm -v "$ROOT:$FH_DIR:ro,z" \
+        --entrypoint "$FH_DIR/fedora-harden.sh" "$IMG_QUICK" "$@" </dev/null
 }
 
 tier_quick() {
@@ -392,8 +391,8 @@ tier_quick() {
     expect_rc "quick: --only without value exits 2" 2 quick_run --only
     expect_rc "quick: --user without value exits 2" 2 quick_run --user
     check "quick: --score prints the protection scorecard and exits 0" \
-        bash -c 'quick_out="$(podman run --rm -v "$1:/root/fedora-harden.sh:ro,z" --entrypoint /root/fedora-harden.sh "$2" --score </dev/null 2>&1)" &&
-            grep -q "Protection now" <<<"$quick_out" && grep -q "SELinux" <<<"$quick_out"' _ "$SCRIPT" "$IMG_QUICK"
+        bash -c 'quick_out="$(podman run --rm -v "$1:/opt/fedora-hardening:ro,z" --entrypoint /opt/fedora-hardening/fedora-harden.sh "$2" --score </dev/null 2>&1)" &&
+            grep -q "Protection now" <<<"$quick_out" && grep -q "SELinux" <<<"$quick_out"' _ "$ROOT" "$IMG_QUICK"
     expect_rc "quick: --profile accepts the private use case" 0 quick_run --dry-run --yes --only 19 --profile private,dev
     expect_rc "quick: --recovery-backup needs on or off" 2 quick_run --recovery-backup maybe
     expect_rc "quick: --restore of a missing file exits 2" 2 quick_run --restore /nonexistent
@@ -401,8 +400,8 @@ tier_quick() {
 
     # Non-root must be refused before anything happens.
     local log="$ARTIFACTS/quick_nonroot.log" rc=0
-    podman run --rm --user testuser -v "$SCRIPT:/opt/fedora-harden.sh:ro,z" \
-        --entrypoint /opt/fedora-harden.sh "$IMG_QUICK" --yes --dry-run </dev/null >"$log" 2>&1 || rc=$?
+    podman run --rm --user testuser -v "$ROOT:$FH_DIR:ro,z" \
+        --entrypoint "$FH_DIR/fedora-harden.sh" "$IMG_QUICK" --yes --dry-run </dev/null >"$log" 2>&1 || rc=$?
     if ((rc != 0)) && grep -q 'must be run as root' "$log"; then
         record PASS "quick: non-root is refused"
     else
@@ -411,8 +410,8 @@ tier_quick() {
 
     # Running from a read-only location (no writable sessions/ dir) must still exit 0.
     expect_rc "quick: dry-run from a read-only directory exits 0" 0 \
-        podman run --rm -v "$SCRIPT:/opt/ro/fedora-harden.sh:ro,z" --read-only-tmpfs \
-        --entrypoint /opt/ro/fedora-harden.sh "$IMG_QUICK" --yes --dry-run --only 5
+        podman run --rm -v "$ROOT:/opt/ro/fedora-hardening:ro,z" --read-only-tmpfs \
+        --entrypoint /opt/ro/fedora-hardening/fedora-harden.sh "$IMG_QUICK" --yes --dry-run --only 5
     # --only filtering
     log="$ARTIFACTS/quick_only.log"
     rc=0
@@ -428,7 +427,7 @@ tier_quick() {
     # reported, not abort the run: findmnt fails for it under the ERR trap.
     local swaps="$ARTIFACTS/fake-proc-swaps" log="$ARTIFACTS/quick_swap_report.log" rc=0
     printf 'Filename\tType\tSize\tUsed\tPriority\n/mnt/swapfile file 4194300 0 -2\n' >"$swaps"
-    podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" -v "$swaps:/proc/swaps:ro,z" --entrypoint /root/fedora-harden.sh \
+    podman run --rm -v "$ROOT:$FH_DIR:ro,z" -v "$swaps:/proc/swaps:ro,z" --entrypoint "$FH_DIR/fedora-harden.sh" \
         "$IMG_QUICK" --dry-run --yes --only 22 >"$log" 2>&1 || rc=$?
     if ((rc == 0)) && grep -q "Unencrypted swap in use: /mnt/swapfile" "$log"; then
         record PASS "quick: unencrypted swap file is reported without aborting (section 22)"
@@ -439,16 +438,16 @@ tier_quick() {
     # Back-to-back runs must get separate sessions: the session ID has one-second
     # resolution, and a shared one truncated the previous run's rollback journal.
     check "quick: back-to-back runs get separate sessions" \
-        podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" --entrypoint /bin/bash "$IMG_QUICK" -c '
-            /root/fedora-harden.sh --yes --dry-run --only 21 >/dev/null 2>&1
-            /root/fedora-harden.sh --yes --dry-run --only 21 >/dev/null 2>&1
+        podman run --rm -v "$ROOT:$FH_DIR:ro,z" --entrypoint /bin/bash "$IMG_QUICK" -c '
+            /opt/fedora-hardening/fedora-harden.sh --yes --dry-run --only 21 >/dev/null 2>&1
+            /opt/fedora-hardening/fedora-harden.sh --yes --dry-run --only 21 >/dev/null 2>&1
             logs=(/var/log/fedora-harden/harden-????????-??????.log)
             echo "${#logs[@]} session logs: ${logs[*]}"
             ((${#logs[@]} == 2))'
 
     # Desktop settings must really persist for the user (gsettings/xfconf need a D-Bus session)
     check "quick: GNOME + XFCE settings persist for the user (section 13)" \
-        podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" \
+        podman run --rm -v "$ROOT:$FH_DIR:ro,z" \
         -v "$ROOT/tests/desktop-settings.sh:/root/desktop-settings.sh:ro,z" \
         --entrypoint /root/desktop-settings.sh "$IMG_QUICK"
 
@@ -457,8 +456,8 @@ tier_quick() {
     CONTAINERS+=("$name")
     log="$ARTIFACTS/quick_dryrun.log"
     rc=0
-    podman run --name "$name" -v "$SCRIPT:/root/fedora-harden.sh:ro,z" \
-        --entrypoint /root/fedora-harden.sh "$IMG_QUICK" --yes --dry-run </dev/null >"$log" 2>&1 || rc=$?
+    podman run --name "$name" -v "$ROOT:$FH_DIR:ro,z" \
+        --entrypoint "$FH_DIR/fedora-harden.sh" "$IMG_QUICK" --yes --dry-run </dev/null >"$log" 2>&1 || rc=$?
     if ((rc == 0)); then
         record PASS "quick: full --dry-run exits 0"
     else
@@ -521,7 +520,7 @@ tier_full() {
     # NET_ADMIN: firewalld needs nftables in the container netns (no host effect when rootless)
     podman run -d --systemd=always --cap-add NET_ADMIN,NET_RAW --name "$FULL_CT" --hostname fedora-harden-test \
         --memory "$FULL_MEMORY" --memory-swap "$FULL_MEMORY" \
-        -v "$SCRIPT:/root/fedora-harden.sh:ro,z" \
+        -v "$ROOT:$FH_DIR:ro,z" \
         -v "$ARTIFACTS/full-logs:/var/log/fedora-harden:z" \
         -v "$ARTIFACTS/full-sessions:/var/lib/fedora-harden/sessions:z" \
         "$IMG_FULL" >/dev/null
@@ -541,7 +540,7 @@ tier_full() {
 
     # --- dry-run under systemd changes nothing in /etc -----------------------
     etc_snapshot "$ARTIFACTS/etc.0"
-    expect_rc "full: --dry-run exits 0" 0 fx /root/fedora-harden.sh --yes --dry-run
+    expect_rc "full: --dry-run exits 0" 0 fx "$FH_DIR/fedora-harden.sh" --yes --dry-run
     etc_snapshot "$ARTIFACTS/etc.dry"
     local changed
     changed="$(changed_files "$ARTIFACTS/etc.0" "$ARTIFACTS/etc.dry")"
@@ -561,7 +560,7 @@ tier_full() {
         su - testuser -c "ssh-keygen -q -t ed25519 -N \"\" -f ~/.ssh/id_ed25519" &&
         install -m 600 -o testuser -g testuser /home/testuser/.ssh/id_ed25519.pub /home/testuser/.ssh/authorized_keys'
     local log="$ARTIFACTS/full_real1.log" rc=0
-    fx /root/fedora-harden.sh --yes --user testuser >"$log" 2>&1 || rc=$?
+    fx "$FH_DIR/fedora-harden.sh" --yes --user testuser >"$log" 2>&1 || rc=$?
     if ((rc == 0)); then
         record PASS "full: real run exits 0"
     else
@@ -644,7 +643,7 @@ tier_full() {
     # --- idempotency ------------------------------------------------------------
     log="$ARTIFACTS/full_real2.log"
     rc=0
-    fx /root/fedora-harden.sh --yes --user testuser >"$log" 2>&1 || rc=$?
+    fx "$FH_DIR/fedora-harden.sh" --yes --user testuser >"$log" 2>&1 || rc=$?
     if ((rc == 0)); then
         record PASS "full: second run exits 0"
     else
@@ -662,12 +661,12 @@ tier_full() {
 
     # --- report and resume --------------------------------------------------------
     check "full: --report writes one HTML page with changes, follow-ups and live checks" \
-        fx bash -c '/root/fedora-harden.sh --report /tmp/report.html >/dev/null 2>&1 &&
+        fx bash -c '/opt/fedora-hardening/fedora-harden.sh --report /tmp/report.html >/dev/null 2>&1 &&
             grep -q "<h2>Changes</h2>" /tmp/report.html && grep -q "<h2>Open follow-ups</h2>" /tmp/report.html &&
             grep -q "FILE_BACKUP" /tmp/report.html'
     log="$ARTIFACTS/full_resume.log"
     rc=0
-    fx /root/fedora-harden.sh --resume >"$log" 2>&1 || rc=$?
+    fx "$FH_DIR/fedora-harden.sh" --resume >"$log" 2>&1 || rc=$?
     if ((rc == 0)) && grep -q "Open follow-ups from session" "$log"; then
         record PASS "full: --resume shows the last session's open follow-ups"
     else
@@ -677,7 +676,7 @@ tier_full() {
     # --- section 19: routine ------------------------------------------------------
     log="$ARTIFACTS/full_routine.log"
     rc=0
-    fx /root/fedora-harden.sh --yes --only 19 --profile everyday,dev >"$log" 2>&1 || rc=$?
+    fx "$FH_DIR/fedora-harden.sh" --yes --only 19 --profile everyday,dev >"$log" 2>&1 || rc=$?
     check "full: section 19 runs cleanly (exit $rc)" bash -c '[[ $1 == 0 ]] && ! grep -q "^\[FAIL\]" "$2"' _ "$rc" "$log"
     check "full: section 19 saves the profile" fx grep -qx 'USE_CASES="everyday dev"' /etc/fedora-harden/profile
     check "full: the profile is root-only (0600)" fx bash -c '[[ $(stat -c %a /etc/fedora-harden/profile) == 600 ]]'
@@ -686,12 +685,12 @@ tier_full() {
             grep -qx "USE_CASES=\"everyday dev\"" "$f" && grep -qE "^SECTIONS=\".*\b19\b" "$f" &&
             grep -qE "^ANSWER_[0-9a-f]{12}=(yes|no)$" "$f"'
     check "full: --report names the recovery file but not its contents" fx bash -c '
-        /root/fedora-harden.sh --report /tmp/r1.html >/dev/null 2>&1 && grep -q "<h2>Recovery file</h2>" /tmp/r1.html &&
+        /opt/fedora-hardening/fedora-harden.sh --report /tmp/r1.html >/dev/null 2>&1 && grep -q "<h2>Recovery file</h2>" /tmp/r1.html &&
             ! grep -q "USE_CASES" /tmp/r1.html'
     check "full: --report --include-setup adds the recovery file's contents" fx bash -c '
-        /root/fedora-harden.sh --report /tmp/r2.html --include-setup >/dev/null 2>&1 && grep -q "USE_CASES" /tmp/r2.html'
+        /opt/fedora-hardening/fedora-harden.sh --report /tmp/r2.html --include-setup >/dev/null 2>&1 && grep -q "USE_CASES" /tmp/r2.html'
     check "full: --restore replays the recovery file without questions (dry run)" fx bash -c '
-        /root/fedora-harden.sh --dry-run --restore /etc/fedora-harden/machine.conf </dev/null >/tmp/restore.log 2>&1 &&
+        /opt/fedora-hardening/fedora-harden.sh --dry-run --restore /etc/fedora-harden/machine.conf </dev/null >/tmp/restore.log 2>&1 &&
             grep -q "Restoring from /etc/fedora-harden/machine.conf" /tmp/restore.log &&
             grep -q "Answer from the recovery file" /tmp/restore.log'
     for t in cleanup diskspace drift summary devclean; do
@@ -711,7 +710,7 @@ tier_full() {
     local H=/usr/local/libexec/fedora-harden-routine C=/var/lib/fedora-harden/home-copies
     log="$ARTIFACTS/full_snapshots.log"
     rc=0
-    fx /root/fedora-harden.sh --yes --only 20 >"$log" 2>&1 || rc=$?
+    fx "$FH_DIR/fedora-harden.sh" --yes --only 20 >"$log" 2>&1 || rc=$?
     check "full: section 20 runs cleanly (exit $rc)" bash -c '[[ $1 == 0 ]] && ! grep -q "^\[FAIL\]" "$2"' _ "$rc" "$log"
     check "full: without Btrfs, home copies use rsync on the same disk" \
         fx bash -c 'grep -qx BACKEND=rsync /etc/fedora-harden/snapshots && grep -qx TARGET=/var/lib/fedora-harden/home-copies /etc/fedora-harden/snapshots'
@@ -738,7 +737,7 @@ tier_full() {
     local sessions_before sessions_after
     sessions_before="$(fx bash -c 'ls -d /root/harden-backups-* /var/lib/fedora-harden/sessions/session-*.txt 2>/dev/null | wc -l')"
     rc=0
-    fx /root/fedora-harden.sh --score >"$log" 2>&1 || rc=$?
+    fx "$FH_DIR/fedora-harden.sh" --score >"$log" 2>&1 || rc=$?
     sessions_after="$(fx bash -c 'ls -d /root/harden-backups-* /var/lib/fedora-harden/sessions/session-*.txt 2>/dev/null | wc -l')"
     if ((rc == 0)) && grep -qE '\[ OK \].*Firewall' "$log" && grep -qE '\[ OK \].*SELinux|\[ NO \].*SELinux' "$log" &&
         [[ "$sessions_before" == "$sessions_after" ]]; then
@@ -751,7 +750,7 @@ tier_full() {
     # --- section 21: a running network service gets a sandbox drop-in ----------------
     log="$ARTIFACTS/full_sandbox.log"
     fx bash -c 'dnf -y -q install avahi >/dev/null 2>&1 && systemctl start avahi-daemon' >/dev/null 2>&1 || true
-    fx bash -c 'yes n | /root/fedora-harden.sh --only 21 --user testuser' >"$log" 2>&1 || true
+    fx bash -c 'yes n | /opt/fedora-hardening/fedora-harden.sh --only 21 --user testuser' >"$log" 2>&1 || true
     check "full: avahi-daemon runs with the sandbox drop-in (section 21)" \
         fx bash -c 'test -s /etc/systemd/system/avahi-daemon.service.d/50-fedora-harden-sandbox.conf &&
             systemctl is-active --quiet avahi-daemon && systemctl show -p ProtectHome avahi-daemon | grep -q =yes'
@@ -759,7 +758,7 @@ tier_full() {
     # --- sessions + rollback ------------------------------------------------------
     log="$ARTIFACTS/full_list_sessions.log"
     rc=0
-    fx /root/fedora-harden.sh --list-sessions >"$log" 2>&1 || rc=$?
+    fx "$FH_DIR/fedora-harden.sh" --list-sessions >"$log" 2>&1 || rc=$?
     if ((rc == 0)) && (($(grep -cE 'session|Session' "$log") >= 2)); then
         record PASS "full: --list-sessions exits 0 and lists sessions"
     else
@@ -772,7 +771,7 @@ tier_full() {
     rc=0
     fx bash -c 'd=/root/harden-backups-20000101-000000; mkdir -p "$d" &&
         printf "2000-01-01 00:00:00|PKG_INSTALL|libacl.x86_64\n" >"$d/.rollback-journal"'
-    fx /root/fedora-harden.sh --yes --rollback 20000101-000000 >"$log" 2>&1 || rc=$?
+    fx "$FH_DIR/fedora-harden.sh" --yes --rollback 20000101-000000 >"$log" 2>&1 || rc=$?
     if fx rpm -q libacl coreutils sed >/dev/null && grep -q 'Keeping libacl' "$log"; then
         record PASS "full: rollback keeps a package that installed software still needs"
     else
@@ -781,7 +780,7 @@ tier_full() {
 
     log="$ARTIFACTS/full_rollback_all.log"
     rc=0
-    fx /root/fedora-harden.sh --yes --rollback all >"$log" 2>&1 || rc=$?
+    fx "$FH_DIR/fedora-harden.sh" --yes --rollback all >"$log" 2>&1 || rc=$?
     if ((rc == 0)); then
         record PASS "full: --rollback all exits 0"
     else
@@ -847,7 +846,7 @@ tier_gui() {
     record PASS "gui: build image"
     mkdir -p "$ARTIFACTS/gui"
     local log="$ARTIFACTS/gui/gui-test.out" line
-    podman run --rm -v "$SCRIPT:/root/fedora-harden.sh:ro,z" \
+    podman run --rm -v "$ROOT:$FH_DIR:ro,z" \
         -v "$ROOT/tests/gui-test.sh:/root/gui-test.sh:ro,z" -v "$ARTIFACTS/gui:/out:z" \
         --entrypoint /root/gui-test.sh "$IMG_GUI" >"$log" 2>&1 || true
     # One suite result per check reported by the in-container test

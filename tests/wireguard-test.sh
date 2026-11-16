@@ -71,7 +71,7 @@ pe bash -c 'python3 -m http.server 8080 --bind 0.0.0.0 >/dev/null 2>&1 &'
 # Privileged: in a rootless container systemd can then start firewalld and
 # systemd-resolved with their usual sandboxing, as on a booted host.
 podman run -d --name "$CLIENT" --network "$NET" --systemd=always --privileged --security-opt apparmor=unconfined \
-    --memory 3g -v "$ROOT/fedora-harden.sh:/opt/fh/fedora-harden.sh:ro,z" "$IMG_FULL" >/dev/null
+    --memory 3g -v "$ROOT:/opt/fedora-hardening:ro,z" "$IMG_FULL" >/dev/null
 for _ in $(seq 1 60); do
     s="$(ce systemctl is-system-running 2>/dev/null || true)"
     [[ "$s" == running || "$s" == degraded ]] && break
@@ -99,17 +99,17 @@ NFT_OK=1 NFT_WHY=""
 ce bash -c "sed 's|AllowedIPs = .*|AllowedIPs = 10.99.0.0/24|' /root/provider.conf >/root/split.conf
     grep -v '^PublicKey' /root/provider.conf >/root/broken.conf"
 rc=0
-ce /opt/fh/fedora-harden.sh --yes --only 15 --wireguard-config /root/split.conf >"$OUT/split.log" 2>&1 || rc=$?
+ce /opt/fedora-hardening/fedora-harden.sh --yes --only 15 --wireguard-config /root/split.conf >"$OUT/split.log" 2>&1 || rc=$?
 check "split-tunnel config is refused, nothing installed (exit $rc)" \
     bash -c '[[ $1 == 0 ]] && grep -q "split tunnel\|routes only part" "$2" && ! podman exec "$3" test -e /etc/wireguard/wg0.conf' _ "$rc" "$OUT/split.log" "$CLIENT"
 rc=0
-ce /opt/fh/fedora-harden.sh --yes --only 15 --wireguard-config /root/broken.conf >"$OUT/broken.log" 2>&1 || rc=$?
+ce /opt/fedora-hardening/fedora-harden.sh --yes --only 15 --wireguard-config /root/broken.conf >"$OUT/broken.log" 2>&1 || rc=$?
 check "config without PublicKey is refused (exit $rc)" \
     bash -c '[[ $1 == 0 ]] && grep -q "has no PublicKey" "$2"' _ "$rc" "$OUT/broken.log"
 
 # ── Install the tunnel (sections 6 and 15) ──────────────────────────────────────
 rc=0
-ce /opt/fh/fedora-harden.sh --yes --only 6,15 --wireguard-config /root/provider.conf >"$OUT/run.log" 2>&1 || rc=$?
+ce /opt/fedora-hardening/fedora-harden.sh --yes --only 6,15 --wireguard-config /root/provider.conf >"$OUT/run.log" 2>&1 || rc=$?
 check "run exits 0 (got $rc)" test "$rc" -eq 0
 check "no [FAIL] lines in the run" bash -c '! grep -q "^\[FAIL\]" "$1"' _ "$OUT/run.log"
 ce journalctl -u wg-quick@wg0 -b --no-pager >"$OUT/wg-quick.journal" 2>&1
@@ -139,7 +139,7 @@ tunnel_check "tunnel back up: traffic flows again" reach 10.99.0.1 8080
 
 # ── Rollback ─────────────────────────────────────────────────────────────────────
 rc=0
-ce /opt/fh/fedora-harden.sh --yes --rollback all >"$OUT/rollback.log" 2>&1 || rc=$?
+ce /opt/fedora-hardening/fedora-harden.sh --yes --rollback all >"$OUT/rollback.log" 2>&1 || rc=$?
 check "--rollback all exits 0 (got $rc)" test "$rc" -eq 0
 check "rollback stops the tunnel" bash -c '! podman exec "$1" ip link show wg0 >/dev/null 2>&1' _ "$CLIENT"
 check "rollback removes the tunnel config" bash -c '! podman exec "$1" test -e /etc/wireguard/wg0.conf' _ "$CLIENT"
