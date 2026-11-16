@@ -188,16 +188,16 @@ if ((IS_OSTREE)); then
         systemctl is-enabled --quiet fedora-harden-clamscan.timer
     check CLAM-2 "the scan container is read-only and offline" "ReadOnly=true, Network=none in $clam_q" \
         bash -c "grep -qx ReadOnly=true '$clam_q' && grep -qx Network=none '$clam_q'"
-elif systemctl is-enabled --quiet clamav-clamonacc 2>/dev/null; then
-    # On-access scanning was chosen.
-    check CLAM-1 "ClamAV scanner daemon is running" "clamd@scan active" systemctl is-active --quiet clamd@scan
-    check CLAM-2 "on-access scanning of /home is running" "clamav-clamonacc active" \
-        systemctl is-active --quiet clamav-clamonacc
-else
+elif ! grep -qs '^OnAccessIncludePath' /etc/clamd.d/scan.conf; then
+    # On-access scanning not chosen (the default): a weekly scan of /home.
     check CLAM-1 "weekly ClamAV scan of /home is scheduled" "fedora-harden-clamscan.timer enabled" \
         systemctl is-enabled --quiet fedora-harden-clamscan.timer
     check CLAM-2 "ClamAV signatures update automatically" "clamav-freshclam enabled" \
         systemctl is-enabled --quiet clamav-freshclam
+else
+    check CLAM-1 "ClamAV scanner daemon is running" "clamd@scan active" systemctl is-active --quiet clamd@scan
+    check CLAM-2 "on-access scanning of /home is running" "clamav-clamonacc active" \
+        systemctl is-active --quiet clamav-clamonacc
 fi
 
 # --- File integrity (12) ------------------------------------------------------------
