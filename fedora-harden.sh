@@ -433,7 +433,7 @@ setup_ui_mode() {
 		warn "--gui needs a graphical session (no DISPLAY or WAYLAND_DISPLAY) — using the terminal."
 		return 0
 	fi
-	if ! gui_deps_ok && ((!IS_OSTREE)) && ((EUID == 0)); then
+	if ! gui_deps_ok && ((! IS_OSTREE)) && ((EUID == 0)); then
 		install_dep_candidates python3-gobject 2>/dev/null || true
 		install_dep_candidates gobject-introspection 2>/dev/null || true
 		install_dep_candidates gtk4 2>/dev/null || true
@@ -1412,7 +1412,7 @@ gui_final_summary() {
 # The window stays open for reading; the script does not wait for it.
 gui_finish() {
 	local rc="$1" msg
-	((GUI_FULL_MODE && !GUI_ENDED)) || return 0
+	((GUI_FULL_MODE && ! GUI_ENDED)) || return 0
 	GUI_ENDED=1
 	case "$rc" in
 	0) msg="Finished. A reboot is recommended to apply kernel, sysctl and PAM changes." ;;
@@ -1455,7 +1455,7 @@ gui_read_line() {
 # Returns 1 when there is no answer (window gone or the user stopped the run).
 gui_ask() {
 	local -n _answer="$4"
-	[[ -n "$GUI_RX_FD" ]] && ((!GUI_CANCEL_REQUESTED)) || return 1
+	[[ -n "$GUI_RX_FD" ]] && ((! GUI_CANCEL_REQUESTED)) || return 1
 	# The id must be unique in subshells too (prompt_input runs inside $(...)).
 	local id="$BASHPID-$RANDOM" line
 	gui_send ASK "$id" "$1" "$2" "$(gui_text "$3")"
@@ -1584,7 +1584,7 @@ log_stream() {
 # Used for status updates and intermediate steps.
 # Usage: info "message text"
 info() {
-	((!GUI_FULL_MODE)) && printf '%s[INFO]%s  %s\n' "$C_BLU" "$C_RST" "$*"
+	((! GUI_FULL_MODE)) && printf '%s[INFO]%s  %s\n' "$C_BLU" "$C_RST" "$*"
 	log "[INFO]  $*"
 	gui_send LOG info "$*"
 }
@@ -1593,7 +1593,7 @@ info() {
 # Indicates successful completion of a task or verification.
 # Usage: ok "message text"
 ok() {
-	((!GUI_FULL_MODE)) && printf '%s[ OK ]%s  %s\n' "$C_GRN" "$C_RST" "$*"
+	((! GUI_FULL_MODE)) && printf '%s[ OK ]%s  %s\n' "$C_GRN" "$C_RST" "$*"
 	log "[OK]    $*"
 	gui_send LOG ok "$*"
 }
@@ -1602,7 +1602,7 @@ ok() {
 # Alerts about non-critical issues, skipped steps, or prerequisites.
 # Usage: warn "message text"
 warn() {
-	((!GUI_FULL_MODE)) && printf '%s[WARN]%s  %s\n' "$C_YEL" "$C_RST" "$*"
+	((! GUI_FULL_MODE)) && printf '%s[WARN]%s  %s\n' "$C_YEL" "$C_RST" "$*"
 	log "[WARN]  $*"
 	gui_send LOG warn "$*"
 }
@@ -1612,7 +1612,7 @@ warn() {
 # Usage: err "message text"
 err() {
 	((++ERR_COUNT))
-	((!GUI_FULL_MODE)) && printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2
+	((! GUI_FULL_MODE)) && printf '%s[FAIL]%s  %s\n' "$C_RED" "$C_RST" "$*" >&2
 	log "[ERROR] $*"
 	gui_send LOG error "$*"
 }
@@ -1640,7 +1640,7 @@ section() {
 	local pct=$((UI_SECTION_DONE * 100 / UI_SECTION_TOTAL))
 	local pb
 	pb="$(progress_bar "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" 28)"
-	if ((!GUI_FULL_MODE)); then
+	if ((! GUI_FULL_MODE)); then
 		printf '\n%s══════════════════════════════════════════════════════════════%s\n' "$C_CYN" "$C_RST"
 		printf '%s Section %s: %s%s\n' "$C_BLD" "$n" "$*" "$C_RST"
 		printf '%s Progress:%s %s %d/%d (%d%%)\n' "$C_BLU" "$C_RST" "$pb" "$UI_SECTION_DONE" "$UI_SECTION_TOTAL" "$pct"
@@ -1659,7 +1659,7 @@ run() {
 	abort_if_cancelled
 	LAST_RUN_CMD="$*"
 	if ((DRY_RUN)); then
-		((!GUI_FULL_MODE)) && printf '%s[DRY ]%s  %s\n' "$C_YEL" "$C_RST" "$*"
+		((! GUI_FULL_MODE)) && printf '%s[DRY ]%s  %s\n' "$C_YEL" "$C_RST" "$*"
 		gui_send LOG dry "$*"
 		log "[DRY]   $*"
 		return 0
@@ -1726,7 +1726,7 @@ _DNF_REPOS_CHECKED=0
 _DNF_REPOS_OK=1
 dnf_repos_ready() {
 	((DRY_RUN)) && return 0
-	if ((!_DNF_REPOS_CHECKED)); then
+	if ((! _DNF_REPOS_CHECKED)); then
 		_DNF_REPOS_CHECKED=1
 		info "Checking that the package repositories answer (dnf makecache)..."
 		if ! timeout "${DNF_CHECK_TIMEOUT:-600}" dnf makecache -q >/dev/null 2>"${ERROR_CAPTURE_FILE:-/dev/null}"; then
@@ -2150,7 +2150,7 @@ backup_file() {
 	local f="$1" dir what
 	# Never change what cannot be written or rolled back. Returning 1 makes the caller
 	# skip the change (sections: `backup_file X || return 0`); the run goes on.
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		dir="$(dirname -- "$f")"
 		if [[ -e "$f" && ! -w "$f" ]] || [[ ! -e "$f" && -d "$dir" && ! -w "$dir" ]]; then
 			warn "Leaving $f unchanged: it is not writable (read-only filesystem or immutable file)."
@@ -2480,7 +2480,7 @@ detect_desktop_envs() {
 		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
 	}
 	# Bazzite ships both KDE and GNOME editions — honour running session above; default to KDE
-	if ((IS_BAZZITE)) && ((!HAS_KDE && !HAS_GNOME)); then
+	if ((IS_BAZZITE)) && ((! HAS_KDE && ! HAS_GNOME)); then
 		HAS_KDE=1
 		[[ ",${detected[*]}," == *",kde,"* ]] || detected+=("kde")
 	fi
@@ -2500,25 +2500,25 @@ section_compatible() {
 	case "$s" in
 	13)
 		# Section 13 requires at least one desktop environment to be installed.
-		if ((!HAS_DESKTOP)); then
+		if ((! HAS_DESKTOP)); then
 			info "Skipping section 13: no desktop environment detected on this host."
 			return 1
 		fi
 		;;
 	14)
 		# Section 14 is desktop-focused and should run if any desktop environment is installed.
-		if ((!HAS_DESKTOP)); then
+		if ((! HAS_DESKTOP)); then
 			info "Skipping section 14: no desktop environment detected on this host."
 			return 1
 		fi
 		;;
 	23)
 		# Section 23 can interfere with remote access if USB input devices are not whitelisted.
-		if ((IS_SERVER)) && ((!ASSUME_YES)); then
+		if ((IS_SERVER)) && ((! ASSUME_YES)); then
 			warn "Section 23 (USBGuard) can disrupt remote-only server access if input devices are blocked."
 		fi
 		# Sway/Hyprland/i3 users: input-device whitelists in compositors must allow USB keyboards/mice.
-		if ((HAS_SWAY || HAS_HYPRLAND || HAS_I3)) && ((!ASSUME_YES)); then
+		if ((HAS_SWAY || HAS_HYPRLAND || HAS_I3)) && ((! ASSUME_YES)); then
 			warn "Section 23 (USBGuard): tiling WM users should whitelist USB input devices in their compositor config."
 		fi
 		;;
@@ -3053,7 +3053,7 @@ _apply_rollback_journal() {
 				info "Would remove kernel options: $detail"
 			elif { ((IS_OSTREE)) && read -ra _rb_kargs <<<"$detail" &&
 				rpm-ostree kargs "${_rb_kargs[@]/#/--delete-if-present=}" >/dev/null 2>&1; } ||
-				{ ((!IS_OSTREE)) && grubby --update-kernel=ALL --remove-args="$detail" 2>/dev/null; }; then
+				{ ((! IS_OSTREE)) && grubby --update-kernel=ALL --remove-args="$detail" 2>/dev/null; }; then
 				ok "Removed kernel options: $detail (after a reboot)"
 				_rjl "  [OK]   KERNEL_ARGS  $detail"
 				((++_RBJ_RESTORED))
@@ -3209,7 +3209,7 @@ _apply_rollback_journal() {
 	# installed later can depend on one this run pulled in, and dnf would remove the
 	# user's package with it. rpm's own test names every such requirement; keep its
 	# provider and test again until the rest can go.
-	if ((${#rb_pkgs[@]})) && ((!DRY_RUN)); then
+	if ((${#rb_pkgs[@]})) && ((! DRY_RUN)); then
 		local -a present=()
 		for pname in "${rb_pkgs[@]}"; do
 			rpm -q "$pname" >/dev/null 2>&1 && present+=("$pname")
@@ -3331,7 +3331,7 @@ _restore_backup_dir_files() {
 		fi
 	done < <(find "$backup_dir" -type f ! -name '.rollback-journal' 2>/dev/null | sort)
 
-	if ((!found_any)); then
+	if ((! found_any)); then
 		warn "No backup files found in: $backup_dir"
 		_rbfl "  [INFO] No files found in backup dir: $backup_dir"
 	fi
@@ -4201,7 +4201,7 @@ preflight() {
 	info "Log:         $LOG_WHERE"
 	info "Backup dir:  $BACKUP_DIR"
 	# Without a writable journal nothing this run changes could be rolled back.
-	if ((!REPORT_MODE && !SCORE_MODE)) && ! init_rollback_journal; then # --report/--score only read
+	if ((! REPORT_MODE && ! SCORE_MODE)) && ! init_rollback_journal; then # --report/--score only read
 		err "Cannot write the backup folder $BACKUP_DIR (read-only, full, or missing — on image-based systems /root is /var/roothome). Nothing was changed."
 		PRECHECK_FAILED=1
 		return 0
@@ -4379,7 +4379,7 @@ _ostree_auto_updates() {
 	}
 
 	backup_file "$ro_conf" || return 0
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		# Update existing policy or add new [Daemon] section (batch single sed pass)
 		if grep -qE '^\s*AutomaticUpdatePolicy\s*=' "$ro_conf"; then
 			sed -i -E 's|^\s*AutomaticUpdatePolicy\s*=.*|AutomaticUpdatePolicy=stage|' "$ro_conf" 2>/dev/null || true
@@ -4482,7 +4482,7 @@ sec_02_dnf_automatic() {
 	# the equivalent is masking the rpm-ostree-countme timer.
 	local dnf_conf="/etc/dnf/dnf.conf"
 	if ((IS_OSTREE)); then
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			# The mask is a symlink in /etc; journaled so --rollback unmasks it.
 			backup_file /etc/systemd/system/rpm-ostree-countme.timer || return 0
 			if systemctl mask rpm-ostree-countme.timer 2>/dev/null; then
@@ -4494,7 +4494,7 @@ sec_02_dnf_automatic() {
 			info "Would mask rpm-ostree-countme.timer"
 		fi
 	elif [[ -f "$dnf_conf" ]]; then
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			backup_file "$dnf_conf" || return 0
 			if grep -qE '^\s*countme\s*=' "$dnf_conf" 2>/dev/null; then
 				sed -i 's|^\s*countme\s*=.*|countme=false|' "$dnf_conf" 2>/dev/null || true
@@ -5013,7 +5013,7 @@ ${allow_users_line}"
 	fi
 	ok "sshd -t: configuration valid."
 
-	if ((!changed)); then
+	if ((! changed)); then
 		info "sshd configuration unchanged — no restart needed."
 	elif systemctl is-active --quiet sshd 2>/dev/null; then
 		if ! run "systemctl restart sshd"; then
@@ -5048,7 +5048,7 @@ sec_08_pam() {
 	for kv in "${pq_settings[@]}"; do
 		set_conf_key "$pq" "${kv%%=*}" "${kv#*=}" || true
 	done
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		if grep -qE '^minlen = 15$' "$pq" && grep -qE '^minclass = 0$' "$pq"; then
 			ok "Applied pwquality policy in $pq (at least 15 characters, no composition rules)"
 		else
@@ -5063,7 +5063,7 @@ sec_08_pam() {
 		backup_file "$fl" || return 0
 		set_conf_key "$fl" deny 5 || true
 		set_conf_key "$fl" unlock_time 900 || true
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			# even_deny_root is a bare flag; uncomment it or append it
 			if ! grep -qE '^[[:space:]]*even_deny_root[[:space:]]*$' "$fl"; then
 				if grep -qE '^[[:space:]]*#[[:space:]]*even_deny_root[[:space:]]*$' "$fl"; then
@@ -5100,7 +5100,7 @@ sec_09_sysctl() {
 	else
 		install -d -m 755 /etc/sysctl.d 2>/dev/null || true
 		backup_file "$f" || return 0
-		if ! cat 2>/dev/null >"$f" <<'EOF'; then
+		if ! cat 2>/dev/null >"$f" <<'EOF'
 # /etc/sysctl.d/99-hardening.conf
 # Installed by fedora-harden.sh
 
@@ -5184,6 +5184,7 @@ net.ipv6.conf.default.use_tempaddr = 2
 # Disable TCP timestamps to reduce remote clock-skew fingerprinting
 net.ipv4.tcp_timestamps = 0
 EOF
+		then
 			err "Failed to write sysctl configuration"
 			add_action_item 9 HIGH "SYSCTL_WRITE_FAILED" "Could not write $f — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 9"
 			return 0
@@ -5245,7 +5246,7 @@ sec_10_auditd() {
 	pkg_install audit audit-libs
 	# Without the audit tools there is nothing to load the rules into; say so plainly
 	# instead of failing later with a misleading "check the rules" message.
-	if ((!DRY_RUN)) && ! cmd_exists augenrules; then
+	if ((! DRY_RUN)) && ! cmd_exists augenrules; then
 		warn "The audit package is not installed (and could not be installed) — skipping audit rules."
 		add_action_item 10 HIGH "AUDIT_NOT_INSTALLED" \
 			"Install the audit tools, then re-run section 10: sudo dnf install audit && sudo ./fedora-harden.sh --only 10"
@@ -5262,7 +5263,7 @@ sec_10_auditd() {
 		info "Would write $rules"
 	else
 		backup_file "$rules" || return 0
-		if ! cat 2>/dev/null >"$rules" <<'EOF'; then
+		if ! cat 2>/dev/null >"$rules" <<'EOF'
 -D
 -b 8192
 -f 1
@@ -5322,6 +5323,7 @@ sec_10_auditd() {
 # Uncomment to lock the ruleset at boot (requires reboot to change):
 # -e 2
 EOF
+		then
 			warn "Failed to write $rules (filesystem may be read-only)"
 			add_action_item 10 HIGH "AUDIT_RULES_WRITE_FAILED" "Could not write $rules — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 10"
 			return 0
@@ -5473,9 +5475,9 @@ sec_11_dot() {
 	local mdns="MulticastDNS=no"
 	grep -qE '^USE_CASES=.*(gaming|creative)' /etc/fedora-harden/profile 2>/dev/null &&
 		mdns="# MulticastDNS: default (kept for casting and LAN discovery)"
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		install -d -m 755 "$dropin_dir" 2>/dev/null || true
-		if ! cat 2>/dev/null >"$dropin" <<EOF; then
+		if ! cat 2>/dev/null >"$dropin" <<EOF
 [Resolve]
 DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 2620:fe::fe#dns.quad9.net 2620:fe::9#dns.quad9.net
 FallbackDNS=149.112.112.112#dns.quad9.net
@@ -5484,6 +5486,7 @@ DNSSEC=allow-downgrade
 LLMNR=no
 $mdns
 EOF
+		then
 			err "Failed to write DNS-over-TLS configuration"
 			add_action_item 11 HIGH "DOT_WRITE_FAILED" "Could not write $dropin — check the filesystem, then re-run: sudo ./fedora-harden.sh --only 11"
 			return 0
@@ -5494,7 +5497,7 @@ EOF
 		info "  • Mullvad DNS  — 194.242.2.2 / dns.mullvad.net  (Sweden, no-log, DoT+DoH)"
 		info "  • AdGuard DNS  — 94.140.14.14 / dns.adguard-dns.com (anonymized, DoT+DoH+DoQ)"
 	fi
-	if ! systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 && ((!DRY_RUN)); then
+	if ! systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 && ((! DRY_RUN)); then
 		warn "systemd-resolved is not installed — DNS-over-TLS is NOT active."
 		add_action_item 11 HIGH "RESOLVED_MISSING" \
 			"Install and enable systemd-resolved for DNS-over-TLS: sudo dnf install -y systemd-resolved && sudo systemctl enable --now systemd-resolved"
@@ -5508,7 +5511,7 @@ EOF
 	resolv_target="$(readlink -f /etc/resolv.conf 2>/dev/null || true)"
 	if [[ "$resolv_target" == /run/systemd/resolve/stub-resolv.conf || "$resolv_target" == /run/systemd/resolve/resolv.conf ]]; then
 		ok "/etc/resolv.conf uses systemd-resolved — DNS-over-TLS applies to all lookups."
-	elif ((!DRY_RUN)); then
+	elif ((! DRY_RUN)); then
 		warn "/etc/resolv.conf does not point to systemd-resolved (${resolv_target:-missing}) — applications bypass DNS-over-TLS."
 		add_action_item 11 HIGH "RESOLV_CONF_NOT_RESOLVED" \
 			"Route DNS through systemd-resolved: sudo ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf && sudo systemctl restart NetworkManager"
@@ -5523,7 +5526,7 @@ EOF
 	else
 		install -d -m 755 /etc/NetworkManager/conf.d 2>/dev/null || true
 		backup_file "$nm_mac" || return 0
-		if ! cat 2>/dev/null >"$nm_mac" <<'EOF'; then
+		if ! cat 2>/dev/null >"$nm_mac" <<'EOF'
 [device]
 wifi.scan-rand-mac-address=yes
 
@@ -5531,6 +5534,7 @@ wifi.scan-rand-mac-address=yes
 ethernet.cloned-mac-address=stable
 wifi.cloned-mac-address=random
 EOF
+		then
 			warn "Failed to write $nm_mac"
 		else
 			chmod 644 "$nm_mac" 2>/dev/null || true
@@ -5664,7 +5668,7 @@ sec_12_fail2ban() {
 
 		if [[ ! -f "$jl" ]]; then
 			backup_file "$jl" || return 0
-			if ! cat 2>/dev/null >"$jl" <<'EOF'; then
+			if ! cat 2>/dev/null >"$jl" <<'EOF'
 [DEFAULT]
 bantime  = 3600
 findtime = 600
@@ -5677,6 +5681,7 @@ port    = ssh
 logpath = %(sshd_log)s
 backend = systemd
 EOF
+			then
 				warn "Could not write $jl; skipping Fail2Ban activation for now."
 				add_action_item 12 HIGH "FAIL2BAN_JAIL_WRITE_FAILED" \
 					"Failed to write $jl. Fix filesystem/permissions and re-run section 12."
@@ -5704,7 +5709,7 @@ EOF
 	fi
 
 	# Post-enable status check and report
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		local f2b_active=0 f2b_status=""
 		systemctl is-active --quiet fail2ban 2>/dev/null && f2b_active=1 || true
 		if ((f2b_active)); then
@@ -5761,7 +5766,7 @@ sec_13_desktop() {
 	should_run 13 || return 0
 	section 13 "Desktop environment settings (all detected DEs)"
 
-	if ((!HAS_DESKTOP)); then
+	if ((! HAS_DESKTOP)); then
 		info "No desktop environment detected — skipping section 13."
 		return 0
 	fi
@@ -5822,7 +5827,7 @@ sec_13_desktop() {
 	# ── GNOME (Silverblue, Onyx, Workstation GNOME) ──────────────────────────
 	if ((HAS_GNOME)); then
 		info "--- GNOME settings ---"
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (GNOME privacy)"
 			user_session_run "$TARGET_USER" '
 				gsettings set org.gnome.desktop.session idle-delay 300
@@ -5848,7 +5853,7 @@ sec_13_desktop() {
 	# ── Budgie (GNOME gsettings backend) ─────────────────────────────────────
 	if ((HAS_BUDGIE)); then
 		info "--- Budgie settings ---"
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (Budgie/GNOME privacy)"
 			user_session_run "$TARGET_USER" '
 				gsettings set org.gnome.desktop.session idle-delay 300
@@ -5884,7 +5889,7 @@ sec_13_desktop() {
 	# ── Cinnamon ──────────────────────────────────────────────────────────────
 	if ((HAS_CINNAMON)); then
 		info "--- Cinnamon settings ---"
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (Cinnamon privacy)"
 			user_session_run "$TARGET_USER" '
 				gsettings set org.cinnamon.desktop.screensaver lock-enabled true
@@ -5907,7 +5912,7 @@ sec_13_desktop() {
 	# ── MATE ──────────────────────────────────────────────────────────────────
 	if ((HAS_MATE)); then
 		info "--- MATE settings ---"
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			log "[RUN]   sudo -u '$TARGET_USER' gsettings batch (MATE privacy)"
 			user_session_run "$TARGET_USER" '
 				gsettings set org.mate.screensaver lock-enabled true 2>/dev/null || true
@@ -5933,7 +5938,7 @@ sec_13_desktop() {
 			add_action_item 13 MEDIUM "XFCE_SCREENSAVER_MANUAL" \
 				"Manually enable screensaver lock in XFCE Settings → Screensaver (lock after 5 min idle)"
 		else
-			if ((!DRY_RUN)); then
+			if ((! DRY_RUN)); then
 				log "[RUN]   sudo -u '$TARGET_USER' xfconf-query batch (XFCE screensaver/power)"
 				# -n creates the property if it does not exist yet; -t gives its type.
 				user_session_run "$TARGET_USER" '
@@ -5970,7 +5975,7 @@ sec_13_desktop() {
 		local swaylock_cfg="${user_home}/.config/swaylock/config"
 		local swayidle_cfg="${user_home}/.config/swayidle/config"
 
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/swaylock' '${user_home}/.config/swayidle'"
 			if [[ ! -f "$swaylock_cfg" ]]; then
 				backup_file "${swaylock_cfg}" || return 0
@@ -6020,7 +6025,7 @@ SWAYEOF
 		}
 
 		local hypridle_cfg="${user_home}/.config/hypr/hypridle.conf"
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/hypr'"
 			if [[ ! -f "$hypridle_cfg" ]]; then
 				backup_file "${hypridle_cfg}" || return 0
@@ -6070,7 +6075,7 @@ HYPREOF
 		local i3_cfg_d="${user_home}/.config/i3/config.d"
 		local i3_lock_frag="${i3_cfg_d}/99-autolock.conf"
 
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			run "mkdir -p '${i3_cfg_d}'"
 			if [[ ! -f "$i3_lock_frag" ]]; then
 				backup_file "${i3_lock_frag}" || return 0
@@ -6101,7 +6106,7 @@ I3EOF
 		local ss_cfg="${user_home}/.config/lxqt/lxqt-screensaver.conf"
 		local pm_cfg="${user_home}/.config/lxqt/lxqt-powermanagement.conf"
 
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			run "mkdir -p '${user_home}/.config/lxqt'"
 			if [[ ! -f "$ss_cfg" ]]; then
 				backup_file "$ss_cfg" || return 0
@@ -6272,7 +6277,7 @@ ARKOVERRIDES
 		install -d -m 0700 -o "$ff_user" -g "$ff_user" "$policy_dir" 2>/dev/null || true
 		local tmp_policy="/tmp/firefox-policies-$$-$RANDOM-$SECONDS.json"
 		register_tmp "$tmp_policy"
-		if ! cat 2>/dev/null >"$tmp_policy" <<'EOF'; then
+		if ! cat 2>/dev/null >"$tmp_policy" <<'EOF'
 {
   "policies": {
     "DisableTelemetry": true,
@@ -6295,6 +6300,7 @@ ARKOVERRIDES
   }
 }
 EOF
+		then
 			warn "Failed to write Firefox policy JSON"
 			rm -f "$tmp_policy" 2>/dev/null || true
 			return 1
@@ -6356,7 +6362,7 @@ EOF
 		ok "VPN detected ($vpn_source) — no action needed."
 	else
 		warn "No active VPN detected on this system or in Firefox."
-		if ((!GUI_FULL_MODE)); then
+		if ((! GUI_FULL_MODE)); then
 			cat <<'VPNEOF'
 
   ╔══════════════════════════════════════════════════════════════════════╗
@@ -6428,13 +6434,13 @@ sec_15_wireguard() {
 		# wg-quick hands DNS to systemd-resolved (resolvconf compatibility).
 		pkg_install systemd-resolved
 		run "systemctl enable --now systemd-resolved" || true
-		if ((!DRY_RUN)) && ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+		if ((! DRY_RUN)) && ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
 			warn "systemd-resolved is not running: wg-quick cannot apply the tunnel's DNS server and will not start the tunnel."
 			add_action_item 15 HIGH "WG_NO_RESOLVED" \
 				"systemd-resolved must run for the tunnel's DNS (journalctl -u systemd-resolved -b), then: sudo systemctl restart wg-quick@${WG_IF}"
 		fi
 	fi
-	if ((!DRY_RUN)) && ! cmd_exists wg-quick; then
+	if ((! DRY_RUN)) && ! cmd_exists wg-quick; then
 		warn "wg-quick is not available — WireGuard setup skipped."
 		return 0
 	fi
@@ -6546,7 +6552,7 @@ _wg_check_config() {
 		host="$ip"
 	fi
 	grep -qiE '^[[:space:]]*DNS[[:space:]]*=' "$f" && _WG_HAS_DNS=1
-	if ((!_WG_HAS_DNS)); then
+	if ((! _WG_HAS_DNS)); then
 		add_action_item 15 MEDIUM "WG_NO_DNS" \
 			"The WireGuard config sets no DNS server, so DNS lookups do not go through the tunnel. Add your provider's DNS (DNS = ...) under [Interface] and re-run section 15."
 	fi
@@ -6583,7 +6589,7 @@ _wg_kill_switch() {
 		run "$fw $c >/dev/null 2>&1 || true"
 	done
 	((FW_OFFLINE)) || run "firewall-cmd --reload" || failed=1
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		info="$($fw --permanent --info-policy=fedora-harden-killswitch 2>/dev/null || true)"
 		[[ "$info" == *"target: REJECT"* && "$info" == *"egress-zones: ANY"* && "$info" == *"address=\"${ip}\""* ]] || failed=1
 	fi
@@ -6695,7 +6701,7 @@ sec_16_clamav() {
 	fi
 
 	# Post-enable status check and report
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		local freshclam_active=0 clamd_active=0
 		if systemctl is-active --quiet clamav-freshclam 2>/dev/null; then
 			freshclam_active=1
@@ -6717,7 +6723,7 @@ sec_16_clamav() {
 		} | write_user_report "section-21-clamav-${REPORT_DATE}.txt" || true
 		((freshclam_active)) || add_action_item 16 MEDIUM "CLAMAV_FRESHCLAM_NOT_RUNNING" \
 			"clamav-freshclam is not running — run: sudo systemctl start clamav-freshclam"
-		((clamd_active || !onaccess)) || add_action_item 16 MEDIUM "CLAMAV_CLAMD_NOT_RUNNING" \
+		((clamd_active || ! onaccess)) || add_action_item 16 MEDIUM "CLAMAV_CLAMD_NOT_RUNNING" \
 			"clamd@scan is not running — run: sudo systemctl start clamd@scan"
 		if cmd_exists clamscan; then
 			add_action_item 16 MEDIUM "CLAMAV_INITIAL_SCAN" \
@@ -6782,7 +6788,7 @@ RandomizedDelaySec=2h
 WantedBy=timers.target
 EOF
 	# Check the quadlet before enabling: a typo would otherwise only show in the journal.
-	if ((!DRY_RUN)) && [[ -x /usr/libexec/podman/quadlet ]] &&
+	if ((! DRY_RUN)) && [[ -x /usr/libexec/podman/quadlet ]] &&
 		! QUADLET_UNIT_DIRS=/etc/containers/systemd /usr/libexec/podman/quadlet -dryrun >/dev/null 2>&1; then
 		warn "Podman rejected $quadlet — run: /usr/libexec/podman/quadlet -dryrun"
 		add_action_item 16 MEDIUM "CLAMAV_QUADLET_INVALID" "Podman rejected $quadlet — check: QUADLET_UNIT_DIRS=/etc/containers/systemd /usr/libexec/podman/quadlet -dryrun"
@@ -6915,7 +6921,7 @@ scap_results() {
 
 # _oscap_report() - Copy results to the user's results folder and summarise them.
 _oscap_report() {
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		copy_to_user_results /root/scap-report.html "section-22-openscap-${REPORT_DATE}.html"
 		copy_to_user_results /root/scap-results.xml "section-22-openscap-results-${REPORT_DATE}.xml"
 		local pass_count="?" fail_count="?" notchecked_count="?"
@@ -6997,7 +7003,7 @@ sec_18_containers() {
 	if [[ -n "$run_user" && "$run_user" != "root" ]]; then
 		if ! grep -q "^${run_user}:" /etc/subuid 2>/dev/null; then
 			info "Adding subuid range for rootless Podman (user: $run_user)..."
-			if ((!DRY_RUN)); then
+			if ((! DRY_RUN)); then
 				backup_file /etc/subuid || return 0
 				usermod --add-subuids 100000-165535 "$run_user" 2>/dev/null ||
 					warn "usermod --add-subuids failed for $run_user — rootless Podman needs a range in /etc/subuid."
@@ -7009,7 +7015,7 @@ sec_18_containers() {
 		fi
 		if ! grep -q "^${run_user}:" /etc/subgid 2>/dev/null; then
 			info "Adding subgid range for rootless Podman (user: $run_user)..."
-			if ((!DRY_RUN)); then
+			if ((! DRY_RUN)); then
 				backup_file /etc/subgid || return 0
 				usermod --add-subgids 100000-165535 "$run_user" 2>/dev/null ||
 					warn "usermod --add-subgids failed for $run_user — rootless Podman needs a range in /etc/subgid."
@@ -7026,7 +7032,7 @@ sec_18_containers() {
 		cont_conf_dir="${user_home}/.config/containers"
 		cont_conf="${cont_conf_dir}/containers.conf"
 		if [[ -n "$user_home" ]]; then
-			if ((!DRY_RUN)); then
+			if ((! DRY_RUN)); then
 				install -d -m 700 "$cont_conf_dir" 2>/dev/null || true
 				if [[ ! -f "$cont_conf" ]]; then
 					backup_file "$cont_conf" || return 0
@@ -7102,7 +7108,7 @@ PY
 				backup_file "$policy_file" || return 0
 				if ((DRY_RUN)); then
 					info "Would merge a reject-by-default rule into $policy_file"
-				elif python3 - "$policy_file" <<'PY'; then
+				elif python3 - "$policy_file" <<'PY'
 import json, os, sys
 path = sys.argv[1]
 p = json.load(open(path))
@@ -7116,6 +7122,7 @@ with open(path, "w") as f:
     json.dump(p, f, indent=4)
     f.write("\n")
 PY
+				then
 					ok "Image policy hardened — pulls from unlisted registries are rejected; existing signature rules kept."
 				else
 					warn "Could not update $policy_file."
@@ -7138,7 +7145,7 @@ PY
 	local reg_conf_d="/etc/containers/registries.conf.d"
 	local reg_conf="${reg_conf_d}/99-hardening.conf"
 	if [[ ! -f "$reg_conf" ]]; then
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			install -d -m 755 "$reg_conf_d" 2>/dev/null || true
 			backup_file "$reg_conf" || return 0
 			cat 2>/dev/null >"$reg_conf" <<'EOF'
@@ -7213,7 +7220,7 @@ image=registry.fedoraproject.org/fedora-toolbox:$release
 additional_packages="$TOOLS_BOX_PKGS"
 pull=true
 EOF
-		if ((!DRY_RUN)); then
+		if ((! DRY_RUN)); then
 			chown -R "$run_user:" "$home/.config/distrobox" 2>/dev/null || true
 			ok "Wrote distrobox manifest $ini"
 		fi
@@ -7302,7 +7309,7 @@ EOF
 	# Use-case additions
 	local uupd=0
 	[[ -r /usr/share/ublue-os/image-info.json ]] && systemctl list-unit-files uupd.timer >/dev/null 2>&1 && uupd=1
-	if [[ " $uses " == *" creative "* || " $uses " == *" dev "* ]] && ((!uupd)); then
+	if [[ " $uses " == *" creative "* || " $uses " == *" dev "* ]] && ((! uupd)); then
 		_routine_timer boxes "Weekly upgrade of toolbox and distrobox containers" weekly || return 0
 	fi
 	if [[ " $uses " == *" dev "* ]]; then
@@ -7973,7 +7980,7 @@ _battery_limit() {
 # Written by fedora-harden.sh (section 19): keep the battery at most 80% charged.
 w $f - - - - 80
 EOF
-		if ((!DRY_RUN)) && printf '80' 2>/dev/null >"$f"; then
+		if ((! DRY_RUN)) && printf '80' 2>/dev/null >"$f"; then
 			record_change SYSFS "$f=$old"
 			ok "Battery charge limited to 80% (was $old%)."
 		fi
@@ -8065,7 +8072,7 @@ sec_20_snapshots() {
 	else
 		backend=rsync
 		pkg_install rsync
-		if ((!DRY_RUN)) && ! cmd_exists rsync; then
+		if ((! DRY_RUN)) && ! cmd_exists rsync; then
 			warn "rsync is not available — home copies not set up."
 			return 0
 		fi
@@ -8082,7 +8089,7 @@ EXCLUDES=""
 EOF
 	# The snapshot store is created by the helper on the first snapshot (Snapper's
 	# config on Bazzite: it thins to 24 recent, 7 daily, 4 weekly).
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		if [[ "$backend" == rsync ]]; then
 			install -d -m 700 "$target" && record_change SNAPSHOT_DATA "$target"
 		else
@@ -8117,7 +8124,7 @@ EOF
 		run "systemctl daemon-reload && systemctl enable fedora-harden-exclude.service" || true
 	fi
 
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		info "Indexing the home folder (folders of 5 GB or more)..."
 		FH_NO_WAIT=1 "$ROUTINE_HELPER" index >/dev/null 2>&1 || true
 		_snapshot_exclusions "$backend"
@@ -8307,7 +8314,7 @@ sec_22_perms() {
 	# keys) must stay readable by them, a known source of hard-to-trace breakage.
 	local umask_f="/etc/profile.d/99-umask.sh"
 	if ! grep -qs 'id -u' "$umask_f"; then
-		write_new_file "$umask_f" 0644 <<'UMASK' && ((!DRY_RUN)) && ok "Wrote $umask_f (umask 077 for regular users — new files private by default)"
+		write_new_file "$umask_f" 0644 <<'UMASK' && ((! DRY_RUN)) && ok "Wrote $umask_f (umask 077 for regular users — new files private by default)"
 # Written by fedora-harden.sh (section 22b): new files private for regular users.
 # Root and system accounts keep the default, so services can read what root creates.
 if [ "$(id -u)" -ge 1000 ]; then
@@ -8324,10 +8331,11 @@ UMASK
 		info "Would write $coredump_f (disable core dumps)"
 	elif [[ ! -f "$coredump_f" ]]; then
 		backup_file "$coredump_f" || return 0
-		if ! cat 2>/dev/null >"$coredump_f" <<'EOF'; then
+		if ! cat 2>/dev/null >"$coredump_f" <<'EOF'
 * soft core 0
 * hard core 0
 EOF
+		then
 			warn "Failed to write $coredump_f"
 		else
 			chmod 644 "$coredump_f" 2>/dev/null || true
@@ -8616,7 +8624,7 @@ protection_scorecard() {
 	fi
 
 	# Screen lock (GNOME and KDE settings of the desktop user)
-	if ((!HAS_DESKTOP)); then
+	if ((! HAS_DESKTOP)); then
 		_score na "Screen lock" "no desktop"
 	elif v="$(_score_user_cmd gsettings get org.gnome.desktop.screensaver lock-enabled)" && [[ -n "$v" ]]; then
 		if [[ "$v" == true ]]; then
@@ -8702,7 +8710,7 @@ _kernel_boot_hardening() {
 	local current add=() a profile
 	profile="$PROFILE_ARG"
 	[[ -n "$profile" ]] || profile="$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"' || true)"
-	if [[ ",${profile// /,}," == *,gaming,* ]] && ((!KERNEL_HARDENING)); then
+	if [[ ",${profile// /,}," == *,gaming,* ]] && ((! KERNEL_HARDENING)); then
 		info "Kernel boot hardening skipped for the gaming use case (it costs a few % of performance); --kernel-hardening turns it on."
 		return 0
 	fi
@@ -8725,7 +8733,7 @@ _kernel_boot_hardening() {
 		ok "Kernel boot hardening options are already set."
 		return 0
 	fi
-	if ((!KERNEL_HARDENING)); then
+	if ((! KERNEL_HARDENING)); then
 		confirm "Add kernel boot hardening (${add[*]})? It makes memory bugs harder to exploit and costs about 1-5% in some workloads." no || {
 			info "Kernel boot hardening not added (opt-in: --kernel-hardening)."
 			return 0
@@ -8876,10 +8884,10 @@ _use_case_boxes() {
 		return 0
 	fi
 	tool="$(image_box_tool)"
-	if ! cmd_exists "$tool" && ((!IS_OSTREE)); then
+	if ! cmd_exists "$tool" && ((! IS_OSTREE)); then
 		pkg_install "$tool"
 	fi
-	if ((!DRY_RUN)) && ! cmd_exists "$tool"; then
+	if ((! DRY_RUN)) && ! cmd_exists "$tool"; then
 		info "$tool is not available — use-case boxes not created."
 		return 0
 	fi
@@ -9305,7 +9313,7 @@ show_actionable_items() {
 		ok "No actionable items — sections 12/16/17/18/24 appear clean."
 		return 0
 	fi
-	if ((!GUI_FULL_MODE)); then
+	if ((! GUI_FULL_MODE)); then
 		printf '\n%s════════ Actionable Items (%d found) ════════%s\n' "$C_YEL" "${#ACTIONABLE_ITEMS[@]}" "$C_RST"
 		local idx=1
 		for item in "${ACTIONABLE_ITEMS[@]}"; do
@@ -9524,7 +9532,7 @@ resume_followups() {
 	mapfile -t ACTIONABLE_ITEMS < <(grep -v '^$' "$dir/.followups")
 	info "Open follow-ups from session ${dir##*/harden-backups-}:"
 	handle_actionable_follow_up ""
-	if ((!DRY_RUN)); then
+	if ((! DRY_RUN)); then
 		if ((${#ACTIONABLE_ITEMS[@]})); then
 			printf '%s\n' "${ACTIONABLE_ITEMS[@]}" 2>/dev/null >"$dir/.followups" || true
 		else
@@ -9719,7 +9727,7 @@ final_summary() {
 	copy_log_to_user
 
 	# Display terminal summary
-	if ((!GUI_FULL_MODE)); then
+	if ((! GUI_FULL_MODE)); then
 		printf '\n%s════════════════════════ Summary ════════════════════════%s\n' "$C_GRN" "$C_RST"
 		local reports_line="" ostree_line=""
 		[[ -n "$USER_RESULTS_DIR" ]] && reports_line=" Reports:      $USER_RESULTS_DIR"

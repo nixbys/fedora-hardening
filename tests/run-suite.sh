@@ -256,7 +256,7 @@ need_tool() {
 }
 
 tier_static() {
-    if ((!NATIVE)) && ! on_target_platform; then
+    if ((! NATIVE)) && ! on_target_platform; then
         tier_header "static (re-running inside Fedora $TARGET_FEDORA lint image)"
         if ! have podman; then
             record FAIL "static: Fedora $TARGET_FEDORA platform" "host is not Fedora $TARGET_FEDORA and podman is unavailable"
