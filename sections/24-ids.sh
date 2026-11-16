@@ -81,3 +81,102 @@ start_aide_baseline() {
 		add_action_item 24 MEDIUM "AIDE_INIT_FAILED" "AIDE baseline failed — run: sudo sh -c '$init'"
 	fi
 }
+
+# _ostree_integrity() - Section 24 on image-based systems. /usr comes from the image
+# and is read-only, so AIDE would mostly re-check what the image
+# already guarantees. What matters is that the booted image is signature-verified
+# and what changed in /etc, the only mutable system configuration. Uses only tools
+# already in the image (rpm-ostree, ostree); layers nothing.
+_ostree_integrity() {
+	section 24 "File integrity (image signature + /etc changes)"
+	local booted
+	booted="$(rpm-ostree status --booted 2>/dev/null | awk '$1 == "●" {print $2; exit}' || true)"
+	case "$booted" in
+	ostree-image-signed:*)
+		ok "Booted image is signature-verified: ${booted#ostree-image-signed:}"
+		;;
+	ostree-remote-image:* | ostree-remote-registry:*)
+		# Verified with the signature policy of the named OSTree remote.
+		ok "Booted image is verified through its OSTree remote: ${booted#*:}"
+		;;
+	ostree-unverified-*)
+		warn "Booted image is not signature-verified: $booted"
+		add_action_item 24 HIGH "IMAGE_UNSIGNED" \
+			"The booted image ($booted) is not signature-verified. Rebase to its ostree-image-signed: reference as documented by the image (rpm-ostree rebase ostree-image-signed:docker://...)."
+		;;
+	"")
+		info "Could not read the booted deployment (rpm-ostree status)."
+		;;
+	*)
+		info "Booted deployment: $booted (OSTree commit, verified by the remote's GPG configuration)."
+		;;
+	esac
+
+	local checker="/usr/local/sbin/fedora-harden-etc-check"
+	info "Tracking /etc changes: a weekly check logs files changed since this run (tag fedora-harden-etc)."
+	write_new_file "$checker" 0755 <<'EOF' || return 0
+#!/bin/sh
+# Written by fedora-harden.sh (section 24): report /etc files changed since the
+# baseline recorded at the end of the hardening run. Exits 1 when there are
+# changes, so the unit shows as failed (systemctl --failed) until reviewed.
+# Accept the current state as the new baseline:
+#   sudo sh -c 'ostree admin config-diff | sort > /var/lib/fedora-harden/etc-baseline.txt'
+baseline=/var/lib/fedora-harden/etc-baseline.txt
+[ -r "$baseline" ] || { echo "No baseline at $baseline"; exit 0; }
+new=$(ostree admin config-diff 2>/dev/null | sort | comm -13 "$baseline" -)
+if [ -n "$new" ]; then
+	printf '%s\n' "$new" | logger -t fedora-harden-etc -p auth.warning
+	printf 'Changed in /etc since the baseline:\n%s\n' "$new"
+	exit 1
+fi
+echo "No /etc changes since the baseline."
+EOF
+	write_new_file /etc/systemd/system/fedora-harden-etc-check.service 0644 <<EOF || return 0
+[Unit]
+Description=Report /etc changes since the fedora-harden baseline
+
+[Service]
+Type=oneshot
+ExecStart=$checker
+EOF
+	write_new_file /etc/systemd/system/fedora-harden-etc-check.timer 0644 <<'EOF' || return 0
+[Unit]
+Description=Weekly report of /etc changes (fedora-harden)
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+	enable_timer fedora-harden-etc-check.timer ||
+		warn "Could not enable fedora-harden-etc-check.timer (journalctl -u fedora-harden-etc-check)."
+	ETC_BASELINE_PENDING=1
+	add_action_item 24 LOW "ETC_CHANGE_TRACKING" \
+		"Weekly /etc change report: journalctl -t fedora-harden-etc. After intended changes, accept them: sudo sh -c 'ostree admin config-diff | sort > /var/lib/fedora-harden/etc-baseline.txt'"
+}
+
+# record_etc_baseline() - Record the /etc baseline once every section has run, so
+# the weekly check reports only changes made after hardening.
+record_etc_baseline() {
+	((ETC_BASELINE_PENDING)) || return 0
+	local baseline="/var/lib/fedora-harden/etc-baseline.txt"
+	if ((DRY_RUN)); then
+		info "Would record the /etc baseline in $baseline"
+		return 0
+	fi
+	if [[ -s "$baseline" ]]; then
+		info "Keeping the existing /etc baseline ($baseline)."
+		return 0
+	fi
+	install -d -m 700 /var/lib/fedora-harden 2>/dev/null || true
+	backup_file "$baseline" || return 0
+	if ostree admin config-diff 2>/dev/null | sort >"$baseline"; then
+		chmod 600 "$baseline" 2>/dev/null || true
+		ok "Recorded the /etc baseline ($(wc -l <"$baseline") changed files relative to the image)."
+	else
+		warn "Could not record the /etc baseline (ostree admin config-diff failed)."
+	fi
+}

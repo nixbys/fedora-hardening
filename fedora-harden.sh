@@ -275,22 +275,24 @@ source "$SCRIPT_DIR/sections/23-usbguard.sh"
 # shellcheck source=sections/24-ids.sh
 source "$SCRIPT_DIR/sections/24-ids.sh"
 
-# Scorecard, recovery file, summary and main
+# Scorecard, section helpers, personal setup, recovery file, summary and main
 # shellcheck source=lib/30-scorecard.sh
 source "$SCRIPT_DIR/lib/30-scorecard.sh"
 # shellcheck source=lib/31-kernel-boot.sh
 source "$SCRIPT_DIR/lib/31-kernel-boot.sh"
 # shellcheck source=lib/32-service-sandboxing.sh
 source "$SCRIPT_DIR/lib/32-service-sandboxing.sh"
-# shellcheck source=lib/33-recovery-file.sh
-source "$SCRIPT_DIR/lib/33-recovery-file.sh"
-# shellcheck source=lib/34-actionable-items.sh
-source "$SCRIPT_DIR/lib/34-actionable-items.sh"
-# shellcheck source=lib/35-summary.sh
-source "$SCRIPT_DIR/lib/35-summary.sh"
-# shellcheck source=lib/36-safety-point.sh
-source "$SCRIPT_DIR/lib/36-safety-point.sh"
-# shellcheck source=lib/37-main.sh
-source "$SCRIPT_DIR/lib/37-main.sh"
+# shellcheck source=lib/33-personal-setup.sh
+source "$SCRIPT_DIR/lib/33-personal-setup.sh"
+# shellcheck source=lib/34-recovery-file.sh
+source "$SCRIPT_DIR/lib/34-recovery-file.sh"
+# shellcheck source=lib/35-actionable-items.sh
+source "$SCRIPT_DIR/lib/35-actionable-items.sh"
+# shellcheck source=lib/36-summary.sh
+source "$SCRIPT_DIR/lib/36-summary.sh"
+# shellcheck source=lib/37-safety-point.sh
+source "$SCRIPT_DIR/lib/37-safety-point.sh"
+# shellcheck source=lib/38-main.sh
+source "$SCRIPT_DIR/lib/38-main.sh"
 
 main "$@"

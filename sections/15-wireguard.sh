@@ -190,34 +190,3 @@ _wg_kill_switch() {
 	fi
 	ok "Kill switch on: outbound traffic goes through ${WG_IF} or to ${ip}:${port} only."
 }
-
-# _clamav_weekly_scan - Without on-access scanning: a weekly scan of /home by a timer,
-# at idle priority, with clamscan (no resident daemon). Results: journalctl -u
-# fedora-harden-clamscan.
-_clamav_weekly_scan() {
-	write_new_file /etc/systemd/system/fedora-harden-clamscan.service 0644 <<'UNIT' || return 0
-[Unit]
-Description=Weekly ClamAV scan of /home (fedora-harden)
-
-[Service]
-Type=oneshot
-Nice=19
-IOSchedulingClass=idle
-ExecStart=/usr/bin/clamscan -r --infected --exclude-dir=/home/.snapshots /home
-UNIT
-	write_new_file /etc/systemd/system/fedora-harden-clamscan.timer 0644 <<'UNIT' || return 0
-[Unit]
-Description=Weekly ClamAV scan of /home (fedora-harden)
-
-[Timer]
-OnCalendar=weekly
-RandomizedDelaySec=6h
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-UNIT
-	if enable_timer fedora-harden-clamscan.timer; then
-		ok "Weekly ClamAV scan of /home scheduled (fedora-harden-clamscan.timer); on-access scanning off."
-	fi
-}

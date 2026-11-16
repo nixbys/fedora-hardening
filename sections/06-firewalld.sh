@@ -108,3 +108,85 @@ _firewalld_configure() {
 	run "firewall-cmd --list-all || true"
 	ok "firewalld configured."
 }
+
+# fw_cmd() - Print the firewalld CLI to use for permanent configuration.
+# firewall-cmd talks to the running daemon; when firewalld cannot start (broken
+# nftables backend, minimal containers, ...) firewall-offline-cmd edits the same
+# permanent configuration on disk so the policy applies as soon as firewalld starts.
+FW_OFFLINE=0
+fw_cmd() {
+	if ((FW_OFFLINE)); then echo firewall-offline-cmd; else echo firewall-cmd; fi
+}
+
+# firewalld_ensure_service() - Register a custom firewalld service XML if not already known.
+# Firewalld only ships built-in definitions for well-known services; KDE Connect and
+# similar require a custom XML file before --add-service can reference them.
+# Usage: firewalld_ensure_service <name> <short-desc> <port/proto> [<port/proto>...]
+firewalld_ensure_service() {
+	local svc_name="${1}"
+	shift
+	local svc_short="${1}"
+	shift
+	local svc_dir="/etc/firewalld/services"
+	local svc_file="${svc_dir}/${svc_name}.xml"
+
+	# Already known to firewalld — nothing to do.
+	if "$(fw_cmd)" --get-services 2>/dev/null | grep -qw "${svc_name}"; then
+		return 0
+	fi
+
+	if ((DRY_RUN)); then
+		info "Would create firewalld service definition: ${svc_name}"
+		return 0
+	fi
+
+	install -d -m 750 "${svc_dir}" 2>/dev/null || true
+	{
+		printf '<?xml version="1.0" encoding="utf-8"?>\n'
+		printf '<service>\n'
+		printf '  <short>%s</short>\n' "${svc_short}"
+		local portproto port proto
+		for portproto in "$@"; do
+			port="${portproto%%/*}"
+			proto="${portproto##*/}"
+			printf '  <port port="%s" protocol="%s"/>\n' "${port}" "${proto}"
+		done
+		printf '</service>\n'
+	} >"${svc_file}"
+	chmod 640 "${svc_file}" 2>/dev/null || true
+	((FW_OFFLINE)) || firewall-cmd --reload &>/dev/null || true
+	info "Created firewalld service definition: ${svc_name}"
+}
+
+# firewalld_add_service() - Add a service to a firewalld zone (permanent), soft-failing on
+# INVALID_SERVICE (exit 101) instead of aborting the script under set -e.
+# Queues an action item for manual follow-up when the service is not recognised.
+# Usage: firewalld_add_service <zone> <service>
+firewalld_add_service() {
+	local zone="${1}" svc="${2}"
+	if ((DRY_RUN)); then
+		info "Would run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent"
+		return 0
+	fi
+	local fw perm=(--permanent) out ec
+	fw="$(fw_cmd)"
+	((FW_OFFLINE)) && perm=() # firewall-offline-cmd only edits permanent config
+	log "[RUN]   ${fw} --zone=${zone} --add-service=${svc} ${perm[*]}"
+	# Capture output and exit code without triggering set -e abort on failure
+	out=$("${fw}" --zone="${zone}" --add-service="${svc}" "${perm[@]}" 2>&1) || ec=$?
+	ec=${ec:-0}
+	if ((ec == 0)); then
+		ok "firewalld: added service '${svc}' to zone '${zone}'."
+		return 0
+	fi
+	if ((ec == 101)) || [[ "${out}" == *"INVALID_SERVICE"* ]]; then
+		warn "firewalld: service '${svc}' not recognised — skipping. (${out})"
+		add_action_item "6" "MEDIUM" "FW_INVALID_SVC_${svc^^}" \
+			"firewalld service '${svc}' is not registered. Create /etc/firewalld/services/${svc}.xml then run: firewall-cmd --zone=${zone} --add-service=${svc} --permanent && firewall-cmd --reload"
+		return 1
+	fi
+	warn "${fw} --add-service=${svc} failed (exit ${ec}): ${out}"
+	add_action_item "6" "HIGH" "FW_ADD_SVC_FAILED_${svc^^}" \
+		"Could not allow '${svc}' in zone '${zone}' — run: sudo firewall-cmd --zone=${zone} --add-service=${svc} --permanent && sudo firewall-cmd --reload"
+	return 1
+}
