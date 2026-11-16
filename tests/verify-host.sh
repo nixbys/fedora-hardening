@@ -140,12 +140,12 @@ fi
 
 # --- Passwords and lockout (9) -----------------------------------------------------
 group PAM "Passwords and lockout"
-check PAM-1 "password minimum length 14, 3 character classes" "minlen = 14, minclass = 3" \
-    bash -c "grep -qE '^minlen = 14$' /etc/security/pwquality.conf && grep -qE '^minclass = 3$' /etc/security/pwquality.conf"
+check PAM-1 "password minimum length 15, no composition rules" "minlen = 15, minclass = 0" \
+    bash -c "grep -qE '^minlen = 15$' /etc/security/pwquality.conf && grep -qE '^minclass = 0$' /etc/security/pwquality.conf"
 check PAM-2 "lockout after 5 failures for 15 minutes" "deny = 5, unlock_time = 900" \
     bash -c "grep -qE '^deny = 5$' /etc/security/faillock.conf && grep -qE '^unlock_time = 900$' /etc/security/faillock.conf"
-check PAM-3 "new accounts expire passwords after 90 days" "PASS_MAX_DAYS 90" \
-    grep -qE '^PASS_MAX_DAYS[[:space:]]+90$' /etc/login.defs
+check PAM-3 "no forced password expiry" "PASS_MAX_DAYS not set to 90" \
+    bash -c "! grep -qE '^PASS_MAX_DAYS[[:space:]]+90$' /etc/login.defs"
 
 # --- Kernel (10) ------------------------------------------------------------------
 group SYS "Kernel settings"
@@ -188,6 +188,12 @@ if ((IS_OSTREE)); then
         systemctl is-enabled --quiet fedora-harden-clamscan.timer
     check CLAM-2 "the scan container is read-only and offline" "ReadOnly=true, Network=none in $clam_q" \
         bash -c "grep -qx ReadOnly=true '$clam_q' && grep -qx Network=none '$clam_q'"
+elif ! grep -qs '^OnAccessIncludePath' /etc/clamd.d/scan.conf; then
+    # On-access scanning not chosen (the default): a weekly scan of /home.
+    check CLAM-1 "weekly ClamAV scan of /home is scheduled" "fedora-harden-clamscan.timer enabled" \
+        systemctl is-enabled --quiet fedora-harden-clamscan.timer
+    check CLAM-2 "ClamAV signatures update automatically" "clamav-freshclam enabled" \
+        systemctl is-enabled --quiet clamav-freshclam
 else
     check CLAM-1 "ClamAV scanner daemon is running" "clamd@scan active" systemctl is-active --quiet clamd@scan
     check CLAM-2 "on-access scanning of /home is running" "clamav-clamonacc active" \
@@ -200,8 +206,11 @@ if ((IS_OSTREE)); then
     check INT-1 "weekly /etc change report is scheduled" "fedora-harden-etc-check.timer enabled" \
         systemctl is-enabled --quiet fedora-harden-etc-check.timer
 else
-    check INT-1 "AIDE database is initialised" "/var/lib/aide/aide.db.gz" \
-        test -s /var/lib/aide/aide.db.gz
+    # The baseline is recorded in the background at the end of a run.
+    check INT-1 "AIDE baseline recorded (or being recorded)" "/var/lib/aide/aide.db.gz" \
+        bash -c 'test -s /var/lib/aide/aide.db.gz || systemctl is-active --quiet fedora-harden-aide-init'
+    check INT-2 "weekly AIDE check is scheduled" "fedora-harden-aide-check.timer enabled" \
+        systemctl is-enabled --quiet fedora-harden-aide-check.timer
 fi
 
 # --- Desktop (15) -----------------------------------------------------------------

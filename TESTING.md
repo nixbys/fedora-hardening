@@ -143,7 +143,7 @@ that disk and runs the script over SSH. The only change to the image is enabling
 sshd. It is the one test of the image-based systems:
 
 - the run requests no tool as a layered package (`rpm-ostree status --json`)
-  (none of ClamAV, AIDE, rkhunter, OpenSCAP, setools, buildah, skopeo,
+  (none of ClamAV, AIDE, OpenSCAP, setools, buildah, skopeo,
   podman-compose, mat2, the YubiKey CLI tools or toolbox)
 - Yubico Authenticator and Metadata Cleaner are installed from Flathub instead
 - OpenSCAP runs from a throwaway container and the summary counts real results

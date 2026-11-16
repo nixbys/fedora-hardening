@@ -45,24 +45,24 @@ This is a personal hardening script that has grown a substantial feature set and
 | 5 | SELinux | Enforcing; a disabled system goes permissive + full relabel first (safe path) |
 | 6 | firewalld | Drop-default zone policy (OpenSnitch suggested for outbound control) |
 | 7 | SSH hardening | Key-based auth, hardened ciphers via `sshd_config.d/10-hardening.conf` (takes precedence over Fedora's defaults); never restarts sshd on an invalid config |
-| 8 | Password & PAM | pwquality (min length 14, 3 classes), faillock (5 tries, 15 min), account aging |
+| 8 | Password & PAM | pwquality: at least 15 characters, no composition rules or forced expiry (NIST SP 800-63B); faillock (5 tries, 15 min) |
 | 9 | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941) |
-| 10 | auditd | Identity, privilege escalation, module, time/network/mount/delete syscalls |
-| 11 | DNS over TLS | systemd-resolved with Quad9 + Cloudflare (installed if missing; warns if DNS bypasses it) |
-| 11b | MAC randomization | NetworkManager network-layer privacy |
+| 10 | auditd | Identity, privilege escalation, module, time/network/mount syscalls, deletes under /etc |
+| 11 | DNS over TLS | systemd-resolved with Quad9 only (installed if missing; warns if DNS bypasses it); LLMNR off, mDNS only for gaming/creative; NTS time (11c) |
+| 11b | MAC randomization | Random MAC for Wi-Fi, stable per-network MAC for Ethernet (home DHCP reservations keep working) |
 | 12 | Fail2Ban | Intrusion detection + auto-ban |
-| 13 | Desktop settings | Screen lock, recent docs, Bluetooth, location, mic — per DE, verified after applying |
+| 13 | Desktop settings | Screen lock, recent docs, Bluetooth, location — per DE, verified after applying; microphone off only if you choose |
 | 14 | Firefox | Flatpak + pinned arkenfox + GPC/DNT + DNS-over-HTTPS (ECH) + extensions + VPN detection |
 | 15 | WireGuard | With `--wireguard-config FILE`: the tunnel, a kill switch and DNS through the tunnel; nothing otherwise |
-| 16 | ClamAV | clamd + freshclam + on-access scanning of /home; image-based: weekly scan in a locked-down container |
+| 16 | ClamAV | freshclam + a weekly idle-priority scan of /home (on-access scanning if you choose it); image-based: weekly scan in a locked-down container |
 | 17 | OpenSCAP | Compliance scan (image-based: from a throwaway container, nothing layered) |
 | 18 | Container security | Rootless Podman, image policy, seccomp, registry hardening; toolbox or distrobox for tools |
 | 19 | Your routine | Timers for the upkeep this machine's use cases need, a weekly drift check and summary, desktop notifications |
 | 20 | Home snapshots | Btrfs snapshots (Snapper on Bazzite) or incremental copies of home, as often as the machine is used |
-| 21 | Service cleanup | Disable avahi, cups, bluetooth, modemmanager |
-| 22 | File permissions | shadow, /tmp, compilers, umask 077, core dumps, hostname privacy, unencrypted-swap check |
-| 23 | USBGuard | Interactive — plug in devices before this section runs |
-| 24 | File integrity | rkhunter + AIDE; image-based: image signature status + weekly report of `/etc` changes |
+| 21 | Service cleanup | Offers to disable avahi, cups, bluetooth, ModemManager (default No); unencrypted telnet/rsh/rlogin sockets off |
+| 22 | File permissions | shadow, /tmp, compilers, umask 077 for regular users, core dumps, hostname privacy, unencrypted-swap check |
+| 23 | USBGuard | Opt-in (never turned on by `--yes`) — plug in devices before this section runs |
+| 24 | File integrity | AIDE baseline (recorded in the background) + weekly check by a timer; image-based: image signature status + weekly report of `/etc` changes |
 
 **Sections not automated by design:** LUKS (Anaconda install-time), GRUB password (interactive key derivation), WireGuard tunnel config (requires peer keys).
 
@@ -112,11 +112,13 @@ sudo ./fedora-harden.sh --skip 16,23
 ```
 sudo ./fedora-harden.sh [options]
 
-  -u, --user <name>       Target username for SSH/chage/home-dir hardening
+  -u, --user <name>       Target username for SSH and home-folder hardening
   -y, --yes               Assume "yes" to all prompts (non-interactive)
   -n, --dry-run           Print what would run; make no changes
       --gui               Windowed frontend: progress window, dialogs and summary
       --report [file]     Write an HTML report of the last session and exit
+                          (host, user names, home paths and addresses replaced
+                          with placeholders; add --full to keep them)
       --resume            Review the last session's open follow-ups and exit
       --wireguard-config <file>  Install this WireGuard config with a kill switch (section 15)
       --profile <list>    Use cases for section 19: everyday,gaming,creative,dev,laptop
@@ -212,7 +214,7 @@ puts each one where it belongs:
 |------|----------------------|--------------------|
 | YubiKey manager (section 1) | `yubikey-manager`, `yubico-piv-tool` | Yubico Authenticator Flatpak (`com.yubico.yubioath`); only drivers and `pam-u2f` are layered |
 | SELinux tools `seinfo`, `sesearch` (4) | `setools-console` | in the tools box |
-| File integrity (12) | rkhunter + AIDE | image signature check + weekly report of `/etc` changes (`journalctl -t fedora-harden-etc`) |
+| File integrity (24) | AIDE + weekly timer | image signature check + weekly report of `/etc` changes (`journalctl -t fedora-harden-etc`) |
 | Metadata removal (13) | `mat2` | Metadata Cleaner Flatpak |
 | ClamAV (21) | clamd, freshclam, on-access scanning | weekly `fedora-harden-clamscan` container: read-only view of `/home`, no network, signatures in the image |
 | OpenSCAP (22) | `openscap-scanner` | throwaway Fedora container scanning the host read-only (`oscap-chroot`) |
@@ -236,9 +238,43 @@ ujust distrobox-assemble CONTAINER=fedora-harden-tools FILE=$HOME/.config/distro
 
 ---
 
+## Privacy
+
+The script hardens privacy and security. It does not make you anonymous: a VPN or DNS
+provider still sees your traffic, and browser fingerprinting and account logins still
+identify you. For anonymity, use Tor Browser, Tails or Whonix.
+
+**What it stores, and who can read it.** Everything stays on this machine.
+
+| What | Where | Readable by |
+|---|---|---|
+| Backups of changed files and the change journal | `/root/harden-backups-<timestamp>/` | root |
+| Session and rollback reports | `/var/lib/fedora-harden/sessions/` | root |
+| Your use cases and snapshot settings | `/etc/fedora-harden/` | root |
+| Routine state and checksums | `/var/lib/fedora-harden/` | root |
+| Log | the journal (`journalctl -t fedora-harden`) | root and members of `wheel`, `adm`, `systemd-journal` |
+| Reports you ask for (`--report`) and section reports | your `Downloads/fedora-hardening/` | you |
+
+The `--report` page is meant to be shared, so the host name, user names, home paths
+and IP/MAC addresses in it are replaced with placeholders; `--report --full` keeps
+them for your own use. Log messages never contain keys or passwords.
+
+**What it contacts.** Only what the work needs: Fedora's package repositories,
+Flathub, addons.mozilla.org (Firefox extensions), GitHub for one pinned,
+checksum-verified file (arkenfox), the ClamAV signature servers, and the container
+registries of the images it uses. There is no telemetry. After a run the system
+itself contacts less: DNS goes only to Quad9 over TLS, the host name is no longer
+announced on the local network (LLMNR off; mDNS off unless you game or create),
+Fedora's countme, ABRT crash reports and fwupd report uploads stay off, and
+NetworkManager's connectivity check can be turned off (it is asked).
+
+---
+
 ## Rollback
 
-Every file the script modifies is backed up before the change, and every file it creates is journaled, so a rollback restores modified files **and removes created ones** (drop-ins, rules, cron jobs). A session journal is written to `/root/harden-backups-<timestamp>/`.
+Every file the script modifies is backed up before the change, and every file it creates is journaled, so a rollback restores modified files **and removes created ones** (drop-ins, rules, timers). A session journal is written to `/root/harden-backups-<timestamp>/`.
+
+Before changing anything, a run also sets a **safety point**: on image-based systems the booted deployment is pinned (it stays in the boot menu whatever updates follow); on traditional Fedora with Btrfs a read-only snapshot of `/` is kept in `/var/lib/fedora-harden/root-snapshots/` (the three newest). Rollback keeps that snapshot; it is the way back if something outside the script's own changes goes wrong.
 
 ```bash
 # Undo the most recent run
