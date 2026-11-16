@@ -58,6 +58,9 @@
 #                           name, user names, home paths and addresses are replaced
 #                           with placeholders unless --full is given
 #        --resume           Review the last session's open follow-ups and exit
+#        --score            Show what protects this machine now (read-only) and exit
+#        --kernel-hardening Add the kernel boot hardening options (section 9; opt-in,
+#                           about 1-5% slower in some workloads)
 #        --wireguard-config <f> Install this WireGuard config with a kill switch (section 15)
 #        --skip <list>      Comma-separated sections to skip (e.g. 7,8,17)
 #        --only <list>      Comma-separated sections to run exclusively
@@ -248,7 +251,11 @@ REPORT_MODE=0    # Write an HTML report of the last session (--report)
 REPORT_FILE=""   # Where to write it (--report FILE)
 REPORT_FULL=0    # Keep host, user names, home paths and addresses in it (--full)
 RESUME_MODE=0    # Review the last session's open follow-ups (--resume)
+SCORE_MODE=0     # Print the protection scorecard and exit (--score)
 FORCE_GUI=0      # Run in one window (--gui)
+
+# Add the kernel boot hardening options without asking (--kernel-hardening)
+KERNEL_HARDENING=0
 
 # ---------- GUI mode state ------------------------------------------------
 GUI_FULL_MODE=0        # Set to 1 while the --gui window is open
@@ -447,6 +454,7 @@ fields separated by tabs (backslash, tab and newline escaped as \\, \t and \n):
   SUMMARY <headline> <details>
   ITEMS                               (clears the follow-up list)
   ITEM   <HIGH|MEDIUM|LOW|DONE> <section> <text>
+  SCORE  <ok|no|na|info> <label> <detail> <fix>   (protection scorecard row)
   END    <exit code> <message>
 
 The window stays open after the script exits so the summary can be read; closing
@@ -855,6 +863,8 @@ class HardenWindow(Adw.ApplicationWindow):
         self.items_page = page
         self.item_groups = []
         self.item_count = 0
+        self.score_group = None
+        self.score = {"ok": 0, "no": 0}
         return page
 
     # ── Event handling ───────────────────────────────────────────────────────
@@ -879,6 +889,8 @@ class HardenWindow(Adw.ApplicationWindow):
             self.clear_items()
         elif kind == "ITEM":
             self.add_item(args[0], args[1], args[2])
+        elif kind == "SCORE":
+            self.add_score(args[0], args[1], args[2], args[3])
         elif kind == "END":
             self.end(args[0], args[1])
 
@@ -1058,6 +1070,29 @@ class HardenWindow(Adw.ApplicationWindow):
         self.item_groups = []
         self.item_count = 0
 
+    def add_score(self, state, label, detail, fix):
+        if self.score_group is None:
+            self.score_group = Adw.PreferencesGroup(
+                title="Protection now", description="Checked on the live system")
+            self.items_page.add(self.score_group)
+            if not self.sum_head.get_label():  # --score: no run summary
+                self.sum_head.set_label("Protection now")
+                self.switcher.set_visible(True)
+                self.stack.set_visible_child_name("summary")
+        icon, cls = {"ok": ("object-select-symbolic", "st-ok"),
+                     "no": ("dialog-error-symbolic", "st-error"),
+                     "info": ("dialog-information-symbolic", "st-running")}.get(
+            state, ("media-skip-forward-symbolic", "st-pending"))
+        text = detail if state == "ok" or not fix else f"{detail}\nFix: {fix}"
+        row = Adw.ActionRow(title=GLib.markup_escape_text(label),
+                            subtitle=GLib.markup_escape_text(text), subtitle_lines=0)
+        image = Gtk.Image(icon_name=icon, pixel_size=16)
+        image.add_css_class(cls)
+        row.add_prefix(image)
+        self.score_group.add(row)
+        if state in self.score:
+            self.score[state] += 1
+
     def add_item(self, priority, section, text):
         titles = {"HIGH": "Needs attention", "MEDIUM": "Recommended", "LOW": "Optional",
                   "DONE": "Resolved this run"}
@@ -1146,6 +1181,7 @@ class HardenWindow(Adw.ApplicationWindow):
             print(f"ok={self.counts['ok']} warn={self.counts['warn']} "
                   f"error={self.counts['error']} lines={len(self.lines)}", file=fh)
             print(f"items={self.item_count}", file=fh)
+            print(f"score_ok={self.score['ok']} score_no={self.score['no']}", file=fh)
             print(f"headline={self.sum_head.get_label()}", file=fh)
             print(f"asks={self.asks}", file=fh)
             print(f"asking={asking}", file=fh)
@@ -2978,6 +3014,23 @@ _apply_rollback_journal() {
 			fi
 			;;
 
+		KERNEL_ARGS)
+			# kernel command-line options this run added
+			if ((DRY_RUN)); then
+				info "Would remove kernel options: $detail"
+			elif { ((IS_OSTREE)) && read -ra _rb_kargs <<<"$detail" &&
+				rpm-ostree kargs "${_rb_kargs[@]/#/--delete-if-present=}" >/dev/null 2>&1; } ||
+				{ ((!IS_OSTREE)) && grubby --update-kernel=ALL --remove-args="$detail" 2>/dev/null; }; then
+				ok "Removed kernel options: $detail (after a reboot)"
+				_rjl "  [OK]   KERNEL_ARGS  $detail"
+				((++_RBJ_RESTORED))
+			else
+				warn "Could not remove kernel options: $detail"
+				_rjl "  [WARN] KERNEL_ARGS  $detail"
+				((++_RBJ_ERRORS))
+			fi
+			;;
+
 		CHAGE)
 			# user:min:max:warn as they were before the run (empty = not set → -1)
 			local cu cmin cmax cwarn
@@ -3071,9 +3124,15 @@ _apply_rollback_journal() {
 # Audit rules are loaded from the restored file (auditctl -R), not regenerated.
 _rollback_reload() {
 	((DRY_RUN)) && return 0
-	local p sysctl=0 audit=0 fw=0 ssh=0 units=0 journald=0
+	local p sysctl=0 audit=0 fw=0 ssh=0 units=0 journald=0 svc
+	local -a sandboxed=()
 	for p in "$@"; do
 		case "$p" in
+		/etc/systemd/system/*.service.d/50-fedora-harden-sandbox.conf)
+			svc="${p#/etc/systemd/system/}"
+			sandboxed+=("${svc%.service.d/*}")
+			units=1
+			;;
 		/etc/sysctl.d/* | /etc/sysctl.conf) sysctl=1 ;;
 		/etc/audit/*) audit=1 ;;
 		/etc/firewalld/*) fw=1 ;;
@@ -3084,6 +3143,9 @@ _rollback_reload() {
 	done
 	((units)) && { systemctl daemon-reload 2>/dev/null || true; }
 	((journald)) && { systemctl restart systemd-journald 2>/dev/null || true; }
+	for svc in "${sandboxed[@]}"; do
+		systemctl is-active --quiet "$svc" 2>/dev/null && { systemctl restart "$svc" 2>/dev/null || true; }
+	done
 	((sysctl)) && { sysctl --system >/dev/null 2>&1 || true; }
 	((audit)) && have_cmd auditctl && [[ -f /etc/audit/audit.rules ]] && { auditctl -R /etc/audit/audit.rules >/dev/null 2>&1 || true; }
 	((fw)) && systemctl is-active --quiet firewalld 2>/dev/null && { firewall-cmd --reload >/dev/null 2>&1 || true; }
@@ -3777,6 +3839,14 @@ parse_args() {
 			RESUME_MODE=1
 			shift
 			;;
+		--score)
+			SCORE_MODE=1
+			shift
+			;;
+		--kernel-hardening)
+			KERNEL_HARDENING=1
+			shift
+			;;
 		--skip)
 			if [[ -z "${2:-}" ]]; then
 				err "Option --skip requires a section list argument"
@@ -3957,12 +4027,12 @@ preflight() {
 	info "Log:         $LOG_WHERE"
 	info "Backup dir:  $BACKUP_DIR"
 	# Without a writable journal nothing this run changes could be rolled back.
-	if ((!REPORT_MODE)) && ! init_rollback_journal; then # --report only reads
+	if ((!REPORT_MODE && !SCORE_MODE)) && ! init_rollback_journal; then # --report/--score only read
 		err "Cannot write the backup folder $BACKUP_DIR (read-only, full, or missing — on image-based systems /root is /var/roothome). Nothing was changed."
 		PRECHECK_FAILED=1
 		return 0
 	fi
-	init_session_dir
+	((SCORE_MODE)) || init_session_dir
 	((DRY_RUN)) && warn "DRY RUN mode — no changes will be applied."
 	((ASSUME_YES)) && warn "Auto-yes mode — no interactive confirmations."
 
@@ -4965,6 +5035,7 @@ EOF
 			"Some sysctl keys were rejected by the running kernel${rejected:+ ($rejected)}. Check with: sudo sysctl --system — unsupported keys can be removed from $f"
 	fi
 	run "sysctl kernel.kptr_restrict || true"
+	_kernel_boot_hardening
 }
 
 # _module_blocklist - 9b: rarely used kernel modules are a common source of kernel
@@ -7991,6 +8062,7 @@ sec_21_services() {
 			fi
 		fi
 	done
+	_sandbox_exposed_services
 	info "Service security overview (higher = less sandboxed):"
 	run "systemd-analyze security --no-pager | head -25 || true"
 }
@@ -8260,6 +8332,322 @@ UNIT
 	fi
 	add_action_item 24 LOW "AIDE_RECHECK" \
 		"After package updates, record a new AIDE baseline: sudo sh -c '$init'"
+}
+
+# ---------- Protection scorecard (--score, summary, --report) ----------------
+# Checks the LIVE system, not what this run did: each line says whether something
+# protects the machine now and, if not, how to fix it. Read-only, nothing leaves the
+# machine. Rows: "state|label|detail|fix" with state ok, no, na (not applicable) or
+# info (advice).
+declare -ga SCORE_ROWS=()
+
+_score() { # _score <ok|no|na|info> <label> <detail> [fix]
+	SCORE_ROWS+=("$1|$2|$3|${4:-}")
+}
+
+# _score_user_cmd <cmd...> - Run a read-only settings query as the desktop user.
+_score_user_cmd() {
+	local user="${TARGET_USER:-${SUDO_USER:-}}"
+	[[ -n "$user" && "$user" != root ]] && id "$user" >/dev/null 2>&1 || return 1
+	runuser -u "$user" -- "$@" 2>/dev/null
+}
+
+protection_scorecard() {
+	SCORE_ROWS=()
+	local src v zone policy user="${TARGET_USER:-${SUDO_USER:-}}"
+
+	# Disk encryption: is the root file system (the OSTree sysroot on image-based
+	# systems) on a LUKS device?
+	src="$(findmnt -no SOURCE /sysroot 2>/dev/null || true)"
+	[[ -n "$src" ]] || src="$(findmnt -no SOURCE / 2>/dev/null || true)"
+	src="${src%%\[*}"
+	if [[ "$src" != /dev/* ]]; then
+		_score na "Disk encryption" "no disk behind / (container or network root)"
+	elif lsblk -s -no TYPE "$src" 2>/dev/null | grep -qx crypt; then
+		_score ok "Disk encryption" "the system disk is encrypted (LUKS)"
+	else
+		_score no "Disk encryption" "the system disk is not encrypted" \
+			"Encryption is chosen at install time (Anaconda: Encrypt my data). An installed system needs a reinstall, or an offline 'cryptsetup reencrypt' with a full backup first."
+	fi
+
+	# Secure Boot, from the firmware variable (no extra tools needed).
+	v="$(od -An -t u1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | awk '{print $NF}' || true)"
+	if [[ ! -d /sys/firmware/efi ]]; then
+		_score na "Secure Boot" "legacy BIOS boot (no UEFI)"
+	elif [[ "$v" == 1 ]]; then
+		_score ok "Secure Boot" "on"
+	else
+		_score no "Secure Boot" "off" "Turn on Secure Boot in the UEFI firmware setup (Fedora's shim is signed), then check: mokutil --sb-state"
+	fi
+
+	# Firewall
+	if systemctl is-active --quiet firewalld 2>/dev/null; then
+		zone="$(firewall-cmd --get-default-zone 2>/dev/null || true)"
+		_score ok "Firewall" "firewalld is running (default zone: ${zone:-unknown})"
+	else
+		_score no "Firewall" "firewalld is not running" "sudo systemctl enable --now firewalld, or run section 6: sudo $SCRIPT_NAME --only 6"
+	fi
+
+	# Automatic updates
+	if ((IS_OSTREE)); then
+		policy="$(sed -n 's/^AutomaticUpdatePolicy=//p' /etc/rpm-ostreed.conf 2>/dev/null | tail -n 1 || true)"
+		if systemctl is-enabled --quiet uupd.timer 2>/dev/null; then
+			_score ok "Automatic updates" "uupd updates the system, Flatpaks and boxes"
+		elif [[ "$policy" =~ ^(stage|apply)$ ]] && systemctl is-enabled --quiet rpm-ostreed-automatic.timer 2>/dev/null; then
+			_score ok "Automatic updates" "rpm-ostree stages updates automatically ($policy)"
+		else
+			_score no "Automatic updates" "system updates are not staged automatically" "Run section 2: sudo $SCRIPT_NAME --only 2"
+		fi
+	elif systemctl is-enabled --quiet dnf5-automatic.timer 2>/dev/null ||
+		systemctl is-enabled --quiet dnf-automatic.timer 2>/dev/null ||
+		systemctl is-enabled --quiet dnf-automatic-install.timer 2>/dev/null; then
+		_score ok "Automatic updates" "dnf automatic updates are enabled"
+	else
+		_score no "Automatic updates" "no automatic updates" "Run section 2: sudo $SCRIPT_NAME --only 2"
+	fi
+
+	# SELinux
+	v="$(getenforce 2>/dev/null || echo unknown)"
+	if [[ "$v" == Enforcing ]]; then
+		_score ok "SELinux" "enforcing"
+	else
+		_score no "SELinux" "${v,,}" "Run section 5: sudo $SCRIPT_NAME --only 5 (a disabled system is relabelled first)"
+	fi
+
+	# SSH server: off, or keys only without root login
+	if ! systemctl is-active --quiet sshd 2>/dev/null && ! systemctl is-enabled --quiet sshd 2>/dev/null; then
+		_score ok "SSH server" "off"
+	else
+		v="$(sshd -T 2>/dev/null | awk '$1 == "passwordauthentication" || $1 == "permitrootlogin" {print $1 "=" $2}' | sort | paste -sd' ' - || true)"
+		if [[ "$v" == *"passwordauthentication=no"* && "$v" == *"permitrootlogin=no"* ]]; then
+			_score ok "SSH server" "on, keys only, no root login"
+		else
+			_score no "SSH server" "on and accepts passwords or root logins" "Run section 7: sudo $SCRIPT_NAME --only 7 (copy your SSH key first), or turn it off: sudo systemctl disable --now sshd"
+		fi
+	fi
+
+	# DNS over TLS: resolved uses it and /etc/resolv.conf goes through resolved
+	v="$(readlink -f /etc/resolv.conf 2>/dev/null || true)"
+	if systemctl is-active --quiet systemd-resolved 2>/dev/null &&
+		resolvectl status 2>/dev/null | grep -q '+DNSOverTLS' && [[ "$v" == /run/systemd/resolve/* ]]; then
+		_score ok "DNS over TLS" "DNS lookups are encrypted"
+	else
+		_score no "DNS over TLS" "DNS lookups are sent in the clear" "Run section 11: sudo $SCRIPT_NAME --only 11"
+	fi
+
+	# Backups of home: section 20's snapshots/copies, or Snapper's home config
+	if systemctl is-enabled --quiet fedora-harden-snapshot.timer 2>/dev/null ||
+		{ have_cmd snapper && snapper -c home get-config >/dev/null 2>&1; }; then
+		_score ok "Home snapshots" "home is snapshotted or copied regularly"
+	else
+		_score no "Home snapshots" "no regular snapshots or copies of home" "Run section 20: sudo $SCRIPT_NAME --only 20"
+	fi
+
+	# Screen lock (GNOME and KDE settings of the desktop user)
+	if ((!HAS_DESKTOP)); then
+		_score na "Screen lock" "no desktop"
+	elif v="$(_score_user_cmd gsettings get org.gnome.desktop.screensaver lock-enabled)" && [[ -n "$v" ]]; then
+		if [[ "$v" == true ]]; then
+			_score ok "Screen lock" "the screen locks when idle"
+		else
+			_score no "Screen lock" "the screen does not lock" "Run section 13: sudo $SCRIPT_NAME --only 13"
+		fi
+	elif have_cmd kreadconfig6 || have_cmd kreadconfig5; then
+		v="$(_score_user_cmd "$(command -v kreadconfig6 || command -v kreadconfig5)" --file kscreenlockerrc --group Daemon --key Autolock || true)"
+		if [[ "$v" != false ]]; then
+			_score ok "Screen lock" "the screen locks when idle"
+		else
+			_score no "Screen lock" "the screen does not lock" "Run section 13: sudo $SCRIPT_NAME --only 13"
+		fi
+	else
+		_score na "Screen lock" "not checked on this desktop"
+	fi
+
+	# Flatpak apps kept out of home and the host file system
+	if ! have_cmd flatpak; then
+		_score na "Flatpak restrictions" "Flatpak not installed"
+	elif v="$(flatpak override --system --show 2>/dev/null)" && [[ "$v" == *'!home'* && "$v" == *'!host'* ]]; then
+		_score ok "Flatpak restrictions" "apps cannot read home or the host file system unless granted"
+	else
+		_score no "Flatpak restrictions" "apps can read home or the host file system" "Run section 4: sudo $SCRIPT_NAME --only 4"
+	fi
+
+	# Firmware security level (fwupd Host Security ID), when fwupd can tell
+	if have_cmd fwupdmgr && v="$(timeout 60 fwupdmgr security </dev/null 2>/dev/null | grep -oE 'HSI:[0-9]' | head -n 1)" && [[ -n "$v" ]]; then
+		if [[ "$v" == HSI:0 ]]; then
+			_score no "Firmware security" "$v: basic firmware protections are missing" "Run 'fwupdmgr security' to see which (BIOS write protection, Secure Boot, TPM, DMA protection) and turn them on in the firmware setup."
+		else
+			_score ok "Firmware security" "$v (fwupd Host Security ID; higher is better)"
+		fi
+	else
+		_score na "Firmware security" "fwupd cannot rate this firmware"
+	fi
+
+	# Daily account with admin rights: advice only
+	if [[ -n "$user" && "$user" != root ]] && id -nG "$user" 2>/dev/null | grep -qw wheel; then
+		_score info "Admin rights" "your everyday account can use sudo" \
+			"Optional: create a separate admin account, check that it can use sudo, then remove the everyday account from the wheel group."
+	fi
+	return 0
+}
+
+# show_protection_scorecard - Print the scorecard (terminal) or show it in the window.
+show_protection_scorecard() {
+	local row state label detail fix tag col ok=0 total=0
+	protection_scorecard
+	if ((GUI_FULL_MODE)); then
+		for row in "${SCORE_ROWS[@]}"; do
+			IFS='|' read -r state label detail fix <<<"$row"
+			gui_send SCORE "$state" "$label" "$detail" "$fix"
+		done
+		return 0
+	fi
+	printf '\n%s══════════════════════ Protection now ══════════════════════%s\n' "$C_CYN" "$C_RST"
+	for row in "${SCORE_ROWS[@]}"; do
+		IFS='|' read -r state label detail fix <<<"$row"
+		case "$state" in
+		ok) tag="[ OK ]" col="$C_GRN" ;;
+		no) tag="[ NO ]" col="$C_RED" ;;
+		info) tag="[INFO]" col="$C_BLU" ;;
+		*) tag="[ -- ]" col="" ;;
+		esac
+		[[ "$state" == ok || "$state" == no ]] && ((++total))
+		[[ "$state" == ok ]] && ((++ok))
+		printf '  %s%s%s %-22s %s\n' "$col" "$tag" "$C_RST" "$label" "$detail"
+		[[ -n "$fix" && "$state" != ok ]] && printf '         → %s\n' "$fix"
+	done
+	printf '  %d of %d protections in place (checked on the live system).\n' "$ok" "$total"
+	return 0
+}
+
+# ---------- Kernel boot hardening (section 9, opt-in) ------------------------
+# Memory-safety options on the kernel command line. They cost about 1-5% in some
+# workloads (init_on_free zeroes freed memory), so they are opt-in: asked, or
+# --kernel-hardening; never by default with --yes, and not offered for gaming.
+KERNEL_HARDENING_ARGS=(init_on_free=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on)
+
+_kernel_boot_hardening() {
+	local current add=() a profile
+	profile="$PROFILE_ARG"
+	[[ -n "$profile" ]] || profile="$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"' || true)"
+	if [[ ",${profile// /,}," == *,gaming,* ]] && ((!KERNEL_HARDENING)); then
+		info "Kernel boot hardening skipped for the gaming use case (it costs a few % of performance); --kernel-hardening turns it on."
+		return 0
+	fi
+	if systemd-detect-virt --container --quiet 2>/dev/null; then
+		info "Kernel boot hardening needs a booted system (this is a container) — skipped."
+		return 0
+	fi
+	if ((IS_OSTREE)); then
+		current="$(rpm-ostree kargs 2>/dev/null || true)"
+	elif have_cmd grubby; then
+		current="$(grubby --info=DEFAULT 2>/dev/null | sed -n 's/^args="\(.*\)"$/\1/p' || true)"
+	else
+		info "Kernel boot hardening: neither rpm-ostree nor grubby is available — skipped."
+		return 0
+	fi
+	for a in "${KERNEL_HARDENING_ARGS[@]}"; do
+		[[ " $current " == *" $a "* ]] || add+=("$a")
+	done
+	if ((${#add[@]} == 0)); then
+		ok "Kernel boot hardening options are already set."
+		return 0
+	fi
+	if ((!KERNEL_HARDENING)); then
+		confirm "Add kernel boot hardening (${add[*]})? It makes memory bugs harder to exploit and costs about 1-5% in some workloads." no || {
+			info "Kernel boot hardening not added (opt-in: --kernel-hardening)."
+			return 0
+		}
+	fi
+	if ((IS_OSTREE)); then
+		local -a opts=()
+		for a in "${add[@]}"; do opts+=("--append-if-missing=$a"); done
+		run "rpm-ostree kargs ${opts[*]}" || {
+			warn "rpm-ostree could not add the kernel options."
+			return 0
+		}
+	else
+		run "grubby --update-kernel=ALL --args='${add[*]}'" || {
+			warn "grubby could not add the kernel options."
+			return 0
+		}
+	fi
+	record_change KERNEL_ARGS "${add[*]}"
+	ok "Kernel boot hardening added: ${add[*]} (takes effect after a reboot)."
+	add_action_item 9 LOW "KERNEL_ARGS_REBOOT" "Reboot to apply the kernel boot hardening options (${add[*]}); --rollback removes them."
+}
+
+# ---------- Sandboxing of exposed services (section 21) -----------------------
+# For network services that are running, a drop-in with conservative systemd
+# sandboxing; kept only when the service restarts cleanly with it. sshd is left
+# alone on purpose: its sandbox would also apply to every login session it starts.
+_sandbox_dropin() { # _sandbox_dropin <service> — the directives for that service
+	case "$1" in
+	cups)
+		# cupsd runs filters and backends (USB, network); keep it able to.
+		cat <<'EOF'
+[Service]
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+LockPersonality=yes
+EOF
+		;;
+	avahi-daemon)
+		cat <<'EOF'
+[Service]
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+NoNewPrivileges=yes
+LockPersonality=yes
+EOF
+		;;
+	*) return 1 ;;
+	esac
+}
+
+_exposure() { # _exposure <service> — systemd-analyze's exposure score (lower is better)
+	systemd-analyze security --no-pager "$1.service" 2>/dev/null | sed -n 's/.*Overall exposure level for [^:]*: \([0-9.]*\).*/\1/p' || true
+}
+
+_sandbox_exposed_services() {
+	local svc drop before after
+	for svc in cups avahi-daemon; do
+		systemctl is-active --quiet "$svc" 2>/dev/null || continue
+		drop="/etc/systemd/system/$svc.service.d/50-fedora-harden-sandbox.conf"
+		[[ -e "$drop" ]] && continue
+		before="$(_exposure "$svc")"
+		_sandbox_dropin "$svc" | write_new_file "$drop" 0644 || continue
+		((DRY_RUN)) && continue
+		if run "systemctl daemon-reload && systemctl restart $svc" && systemctl is-active --quiet "$svc"; then
+			after="$(_exposure "$svc")"
+			ok "Sandboxed $svc (exposure ${before:-?} → ${after:-?}; lower is better)."
+		else
+			warn "$svc did not start with the sandbox — removed it again."
+			rm -f "$drop"
+			systemctl daemon-reload 2>/dev/null || true
+			systemctl restart "$svc" 2>/dev/null || true
+			add_action_item 21 LOW "SANDBOX_FAILED_${svc//-/_}" \
+				"$svc did not start with the sandbox drop-in, so it runs without it. Check: journalctl -u $svc -b"
+		fi
+	done
+	systemctl is-active --quiet sshd 2>/dev/null &&
+		info "sshd is not sandboxed: a sandbox would also restrict every SSH login session."
+	return 0
 }
 
 # ---------- Actionable-items display + remediation --------------------------
@@ -8546,6 +8934,7 @@ write_html_report() {
 	local verify="$SCRIPT_DIR/tests/verify-host.sh" raw
 	raw="$(mktemp)" || return 1
 	register_tmp "$raw"
+	protection_scorecard
 	{
 		printf '<!doctype html><meta charset="utf-8"><title>fedora-harden report %s</title>\n' "$session"
 		printf '<style>body{font:15px/1.5 system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;color:#1d2320;background:#fbfbf9}h1,h2{font-weight:600}pre{background:#eef1ee;padding:.75rem;overflow-x:auto;white-space:pre-wrap}td{padding:.2rem .6rem;vertical-align:top;border-bottom:1px solid #dde2dd}</style>\n'
@@ -8580,7 +8969,15 @@ write_html_report() {
 				printf '\n'
 			done
 		fi
-		printf '</pre>\n<h2>In effect now</h2>\n'
+		printf '</pre>\n<h2>Protection now</h2><table>\n'
+		local row state label detail fix
+		for row in "${SCORE_ROWS[@]}"; do
+			IFS='|' read -r state label detail fix <<<"$row"
+			case "$state" in ok) state="Protected" ;; no) state="Not protected" ;; info) state="Advice" ;; *) state="Not applicable" ;; esac
+			printf '<tr><td>%s</td><td>%s</td><td>%s%s</td></tr>\n' "$(_html "$state")" "$(_html "$label")" \
+				"$(_html "$detail")" "${fix:+<br>Fix: $(_html "$fix")}"
+		done
+		printf '</table>\n<h2>In effect now</h2>\n'
 		if [[ -x "$verify" ]]; then
 			printf '<pre>\n'
 			"$verify" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | while IFS= read -r line; do
@@ -8823,6 +9220,14 @@ main() {
 		exit "$rb_rc"
 	fi
 
+	# --score: read-only, no session, no report folders
+	if ((SCORE_MODE)); then
+		SESSION_REPORT_FILE=""
+		show_protection_scorecard
+		EXPECTED_ABORT=1
+		exit 0
+	fi
+
 	init_user_report_dirs
 	if ((REPORT_MODE)); then
 		local rp_rc=0
@@ -8870,6 +9275,7 @@ main() {
 
 	diagnose_failures
 	final_summary
+	show_protection_scorecard
 	save_followups
 
 	SESSION_STATUS="completed"
