@@ -8,7 +8,7 @@
 #
 # Usage: install-shfmt.sh [dest-dir]   (default /usr/local/bin; root needed for dnf)
 set -euo pipefail
-SHFMT_VERSION="3.7.0" # 3.14.1 after the open branches merge (it reformats ((!x)) as ((! x)))
+SHFMT_VERSION="3.14.1"
 DEST="${1:-/usr/local/bin}"
 SUDO=()
 ((EUID == 0)) || SUDO=(sudo)

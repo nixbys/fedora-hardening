@@ -60,9 +60,9 @@ profile), `shfmt -d` (style from `.editorconfig`), `yamllint --strict`, `hadolin
 - two back-to-back runs get separate sessions (a shared session truncated the first
   run's rollback journal)
 - non-root invocation is refused
-- `--only 5,10` runs exactly those sections
+- `--only 6,9` runs exactly those sections
 - running from a read-only directory (no writable `sessions/`) still exits 0
-- section 15 end-to-end (`tests/desktop-settings.sh`): GNOME (gsettings/dconf) and XFCE
+- section 13 end-to-end (`tests/desktop-settings.sh`): GNOME (gsettings/dconf) and XFCE
   (xfconf) settings are read back as the user to prove they persisted
 - a full `--dry-run --yes` exits 0 with no `[FAIL]` lines
 - **dry-run changes nothing**: `podman diff` of the container may only show package
@@ -91,14 +91,17 @@ namespace.
 
 The full tier also checks that the run logs to the journal under its session (and
 writes no log file), that `--report` writes a page with the changes, follow-ups and
-live checks, and that `--resume` brings back the last session's follow-ups.
+live checks, and that `--resume` brings back the last session's follow-ups. `--score`
+reads the live system (the firewall is reported on) and creates no session, and the
+report includes the scorecard. A running Avahi gets the section 21 sandbox drop-in
+and keeps running; `--rollback all` removes the drop-in and Avahi still runs.
 
-Section 24 runs with `--profile everyday,dev`: the profile is saved, the timers are
+Section 19 runs with `--profile everyday,dev`: the profile is saved, the timers are
 enabled, the helper's drift check is clean after the run and catches a changed managed
 file, and the weekly summary is written. The static tier extracts the helper embedded
 in the script and lints it with ShellCheck.
 
-Section 25 runs in the full tier without Btrfs (the rsync path): the first copy
+Section 20 runs in the full tier without Btrfs (the rsync path): the first copy
 holds the home folder, nothing is copied when nothing changed, a changed file gives a
 new copy with a change note, unchanged files are hard links, the index and the
 off-machine options exist, and rollback keeps the copies. The vm tier covers Btrfs on
@@ -106,7 +109,7 @@ installed systems: home is made its own subvolume (owner and SELinux label kept)
 read-only snapshots with change notes (Silverblue), Snapper snapshots (Bazzite), and
 an approved folder becoming its own subvolume with its contents intact.
 
-Section 17 is tested against a real WireGuard peer (`tests/wireguard-test.sh`, two
+Section 15 is tested against a real WireGuard peer (`tests/wireguard-test.sh`, two
 containers on a private network): invalid and split-tunnel configs are refused; the
 handshake happens and traffic flows through the tunnel; DNS is routed through it;
 with the tunnel stopped the peer is unreachable outside the tunnel while the endpoint
@@ -124,7 +127,7 @@ under `sudo -i`/`pkexec`):
   pixel proves the Material-dark theme was applied (`#1D1B20` sidebar); Ctrl+W
   closes it
 - without `--yes`, questions appear in the window and are answered from the
-  keyboard: a typed answer (use cases for section 24) reaches the script, and
+  keyboard: a typed answer (use cases for section 19) reaches the script, and
   Return picks the default of a Yes/No question
 - Stop (Ctrl+W, then Stop in the confirmation) ends a real run with exit 130, the
   cancellation is logged and the window shows the run stopped
@@ -143,7 +146,7 @@ that disk and runs the script over SSH. The only change to the image is enabling
 sshd. It is the one test of the image-based systems:
 
 - the run requests no tool as a layered package (`rpm-ostree status --json`)
-  (none of ClamAV, AIDE, rkhunter, OpenSCAP, setools, buildah, skopeo,
+  (none of ClamAV, AIDE, OpenSCAP, setools, buildah, skopeo,
   podman-compose, mat2, the YubiKey CLI tools or toolbox)
 - Yubico Authenticator and Metadata Cleaner are installed from Flathub instead
 - OpenSCAP runs from a throwaway container and the summary counts real results
@@ -187,7 +190,7 @@ in as dependencies, which dnf never removes.
 
 ```bash
 ./test-in-podman.sh --quick --dry-run          # no systemd, fastest
-./test-in-podman.sh --dry-run --only 5,7,10    # systemd, selected sections
+./test-in-podman.sh --dry-run --only 6,7,9    # systemd, selected sections
 ./test-in-podman.sh                            # REAL run inside the container
 ./test-in-podman.sh --quick -it                # interactive shell
 ./test-in-podman.sh --keep --artifacts ./out   # keep container + logs for inspection
