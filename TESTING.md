@@ -10,7 +10,7 @@ tests (`--fedora 44` is the default, `--fedora 45` the other):
 | Static tier (lint, formatting, MCP smoke test) | `registry.fedoraproject.org/fedora:44` — the `lint` image from `Dockerfile.test`, or natively when the host is Fedora 44 |
 | Quick tier | `registry.fedoraproject.org/fedora-minimal:44` (`test-only` image, no systemd) |
 | Full tier | `registry.fedoraproject.org/fedora-minimal:44` with systemd as PID 1 (`base` image) |
-| GUI tier | `registry.fedoraproject.org/fedora:44` + Xvfb, zenity, kdialog (`gui` image) |
+| GUI tier | `registry.fedoraproject.org/fedora:44` + Xvfb, GTK4/libadwaita for Python (`gui` image) |
 | Atomic tier | the real image-based systems: `quay.io/fedora/fedora-silverblue:N` and a Universal Blue desktop (`ghcr.io/ublue-os/bluefin:44`, `ghcr.io/ublue-os/bazzite:stable` for 45), booted with systemd |
 | VM tier | the same images installed on a virtual disk with `bootc install to-disk` and booted with KVM |
 | CI (`.github/workflows/ci.yml`) | static and container jobs run as a 44/45 matrix in a container of that release; repository scans run on `fedora:44` |
@@ -116,14 +116,21 @@ works again.
 Runs `tests/gui-test.sh` on a virtual X display, as root with no UTF-8 locale (as
 under `sudo -i`/`pkexec`):
 
-- `--gui --dry-run --yes` exits 0 and never waits on a dialog
-- the progress window is closed, not orphaned, when the script exits
-- exactly one end-of-run window remains, and a sampled pixel proves the
-  Material-dark theme was applied (`#2B2930` surface)
-- killing the progress window (= the user pressing Cancel) stops a real run with
-  exit 130, and the cancellation is logged
+- `--gui --dry-run --yes` exits 0 and never hangs; the one window shows every
+  planned section finished (done or skipped), a filled activity log and the summary
+- the window stays open after the script exits and is the only window; a sampled
+  pixel proves the Material-dark theme was applied (`#1D1B20` sidebar); Ctrl+W
+  closes it
+- without `--yes`, questions appear in the window and are answered from the
+  keyboard: a typed answer (use cases for section 24) reaches the script, and
+  Return picks the default of a Yes/No question
+- Stop (Ctrl+W, then Stop in the confirmation) ends a real run with exit 130, the
+  cancellation is logged and the window shows the run stopped
+- a window that disappears mid-run stops the run (exit 130)
 
-Screenshots (`gui-summary.png`, `gui-progress.png`) are saved in `<artifacts>/gui/`.
+The window reports what it shows to `$FH_GUI_STATE` (a test-only hook) when it asks
+something and when the run ends. Screenshots (`gui-summary.png`, `gui-question.png`,
+`gui-progress.png`, `gui-stop-confirm.png`) are saved in `<artifacts>/gui/`.
 
 ### atomic (real image-based systems)
 
@@ -220,7 +227,7 @@ systemd variant, `journal.log` and `failed-units.txt`.
 | `base` | `fedora-minimal:44` + systemd and the services the script manages | full tier |
 | `test-only` | `fedora-minimal:44`, no systemd | quick tier |
 | `lint` | `fedora:44` + the lint toolchain RPMs | static tier |
-| `gui` | `fedora:44` + Xvfb, zenity, kdialog, qdbus, xdotool, ImageMagick | gui tier |
+| `gui` | `fedora:44` + Xvfb, python3-gobject, gtk4, libadwaita, xdotool, ImageMagick | gui tier |
 
 ```bash
 podman build -f Dockerfile.test --target base      -t localhost/fedora-harden:test .
