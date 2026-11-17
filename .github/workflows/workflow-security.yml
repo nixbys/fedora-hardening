@@ -87,7 +87,7 @@ jobs:
       # --offline keeps the audit hermetic; --min-severity=low surfaces everything.
       - name: Run zizmor (pinned)
         env:
-          ZIZMOR_VERSION: 1.31.1  # tracked by the weekly Reference watch
+          ZIZMOR_VERSION: 1.32.0  # tracked by the weekly Reference watch
         run: |
           set -euo pipefail
           python3 -m venv /tmp/zizmor

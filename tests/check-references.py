@@ -18,6 +18,7 @@ import argparse
 import datetime as dt
 import hashlib
 import html.parser
+import http.client
 import json
 import re
 import sys
@@ -102,7 +103,7 @@ def fingerprint(text: str) -> str:
 
 def pinned(var: str, file: str = "") -> str:
     """The pinned value of VAR="x" (shell) or VAR: x (workflow env) in file."""
-    path = SCRIPT.parent / file if file else SCRIPT
+    path = ROOT / file if file else SCRIPT
     match = re.search(rf'^\s*{re.escape(var)}(?:="([^"]+)"|: *"?([^"\s]+)"?)', path.read_text(),
                       re.MULTILINE)
     if not match:
@@ -151,7 +152,8 @@ def check(source: dict) -> tuple[str, str]:
         if new == source.get("fingerprint"):
             return "ok", "unchanged"
         return "changed", "content changed since the last review"
-    except (OSError, ValueError, KeyError) as exc:  # network/parse errors: reported, not fatal
+    # network/parse errors (a truncated download included): reported, not fatal
+    except (OSError, http.client.HTTPException, ValueError, KeyError) as exc:
         return "error", f"{type(exc).__name__}: {exc}"
 
 
