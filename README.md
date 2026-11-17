@@ -14,31 +14,31 @@ touches SSH, PAM, the kernel and the firewall: read the `--dry-run` output first
 
 | # | Section | Notes |
 |---|---------|-------|
-| 1 | System updates | `dnf upgrade` + fwupd firmware/microcode + optional HW security key |
-| 2 | Automatic updates | `dnf5-plugin-automatic` (security-only) or `rpm-ostreed` |
-| 3 | Secure Boot | Verification (GRUB password is manual — printed as an action item) |
-| 4 | Flatpak / Flathub | Blocks Flatpak apps from the host filesystem; mat2 (image-based: Metadata Cleaner Flatpak); Firejail opt-in only |
-| 5 | SELinux | Enforcing; a disabled system goes permissive + full relabel first (safe path) |
-| 6 | firewalld | Drop-default zone policy (OpenSnitch suggested for outbound control) |
-| 7 | SSH hardening | Key-based auth, hardened ciphers via `sshd_config.d/10-hardening.conf` (takes precedence over Fedora's defaults); never restarts sshd on an invalid config |
-| 8 | Password & PAM | pwquality: at least 15 characters, no composition rules or forced expiry (NIST SP 800-63B); faillock (5 tries, 15 min) |
-| 9 | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941) |
-| 10 | auditd | Identity, privilege escalation, module, time/network/mount syscalls, deletes under /etc |
-| 11 | DNS over TLS | systemd-resolved with Quad9 only (installed if missing; warns if DNS bypasses it); LLMNR off, mDNS only for gaming/creative; NTS time (11c) |
-| 11b | MAC randomization | Random MAC for Wi-Fi, stable per-network MAC for Ethernet (home DHCP reservations keep working) |
-| 12 | Fail2Ban | Intrusion detection + auto-ban |
-| 13 | Desktop settings | Screen lock, recent docs, Bluetooth, location — per DE, verified after applying; microphone off only if you choose |
-| 14 | Firefox | Flatpak + pinned arkenfox + GPC/DNT + DNS-over-HTTPS (ECH) + extensions + VPN detection |
-| 15 | WireGuard | With `--wireguard-config FILE`: the tunnel, a kill switch and DNS through the tunnel; nothing otherwise |
-| 16 | ClamAV | freshclam + a weekly idle-priority scan of /home (on-access scanning if you choose it); image-based: weekly scan in a locked-down container |
-| 17 | OpenSCAP | Compliance scan (image-based: from a throwaway container, nothing layered) |
-| 18 | Container security | Rootless Podman, image policy, seccomp, registry hardening; toolbox or distrobox for tools |
-| 19 | Your routine | Timers for the upkeep this machine's use cases need, a weekly drift check and summary, desktop notifications |
-| 20 | Home snapshots | Btrfs snapshots (Snapper on Bazzite) or incremental copies of home, as often as the machine is used |
-| 21 | Service cleanup | Offers to disable avahi, cups, bluetooth, ModemManager (default No); unencrypted telnet/rsh/rlogin sockets off |
-| 22 | File permissions | shadow, /tmp, compilers, umask 077 for regular users, core dumps, hostname privacy, unencrypted-swap check |
-| 23 | USBGuard | Opt-in (never turned on by `--yes`) — plug in devices before this section runs |
-| 24 | File integrity | AIDE baseline (recorded in the background) + weekly check by a timer; image-based: image signature status + weekly report of `/etc` changes |
+| [1](sections/01-updates.sh) | System updates | `dnf upgrade` + fwupd firmware/microcode + optional HW security key |
+| [2](sections/02-dnf-automatic.sh) | Automatic updates | `dnf5-plugin-automatic` (security-only) or `rpm-ostreed` |
+| [3](sections/03-secureboot.sh) | Secure Boot | Verification (GRUB password is manual — printed as an action item) |
+| [4](sections/04-flatpak.sh) | Flatpak / Flathub | Blocks Flatpak apps from the host filesystem; mat2 (image-based: Metadata Cleaner Flatpak); Firejail opt-in only |
+| [5](sections/05-selinux.sh) | SELinux | Enforcing; a disabled system goes permissive + full relabel first (safe path) |
+| [6](sections/06-firewalld.sh) | firewalld | Drop-default zone policy (OpenSnitch suggested for outbound control) |
+| [7](sections/07-ssh.sh) | SSH hardening | Key-based auth, hardened ciphers via `sshd_config.d/10-hardening.conf` (takes precedence over Fedora's defaults); never restarts sshd on an invalid config |
+| [8](sections/08-pam.sh) | Password & PAM | pwquality: at least 15 characters, no composition rules or forced expiry (NIST SP 800-63B); faillock (5 tries, 15 min) |
+| [9](sections/09-sysctl.sh) | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941) |
+| [10](sections/10-auditd.sh) | auditd | Identity, privilege escalation, module, time/network/mount syscalls, deletes under /etc |
+| [11](sections/11-dot.sh) | DNS over TLS | systemd-resolved with Quad9 only (installed if missing; warns if DNS bypasses it); LLMNR off, mDNS only for gaming/creative; NTS time (11c) |
+| [11b](sections/11-dot.sh) | MAC randomization | Random MAC for Wi-Fi, stable per-network MAC for Ethernet (home DHCP reservations keep working) |
+| [12](sections/12-fail2ban.sh) | Fail2Ban | Intrusion detection + auto-ban |
+| [13](sections/13-desktop.sh) | Desktop settings | Screen lock, recent docs, Bluetooth, location — per DE, verified after applying; microphone off only if you choose |
+| [14](sections/14-firefox.sh) | Firefox | Flatpak + pinned arkenfox + GPC/DNT + DNS-over-HTTPS (ECH) + extensions + VPN detection |
+| [15](sections/15-wireguard.sh) | WireGuard | With `--wireguard-config FILE`: the tunnel, a kill switch and DNS through the tunnel; nothing otherwise |
+| [16](sections/16-clamav.sh) | ClamAV | freshclam + a weekly idle-priority scan of /home (on-access scanning if you choose it); image-based: weekly scan in a locked-down container |
+| [17](sections/17-openscap.sh) | OpenSCAP | Compliance scan (image-based: from a throwaway container, nothing layered) |
+| [18](sections/18-containers.sh) | Container security | Rootless Podman, image policy, seccomp, registry hardening; toolbox or distrobox for tools |
+| [19](sections/19-routine.sh) | Your routine | Timers for the upkeep this machine's use cases need, a weekly drift check and summary, desktop notifications |
+| [20](sections/20-snapshots.sh) | Home snapshots | Btrfs snapshots (Snapper on Bazzite) or incremental copies of home, as often as the machine is used |
+| [21](sections/21-services.sh) | Service cleanup | Offers to disable avahi, cups, bluetooth, ModemManager (default No); unencrypted telnet/rsh/rlogin sockets off |
+| [22](sections/22-perms.sh) | File permissions | shadow, /tmp, compilers, umask 077 for regular users, core dumps, hostname privacy, unencrypted-swap check |
+| [23](sections/23-usbguard.sh) | USBGuard | Opt-in (never turned on by `--yes`) — plug in devices before this section runs |
+| [24](sections/24-ids.sh) | File integrity | AIDE baseline (recorded in the background) + weekly check by a timer; image-based: image signature status + weekly report of `/etc` changes |
 
 **Sections not automated by design:** LUKS (Anaconda install-time), GRUB password (interactive key derivation), WireGuard tunnel config (requires peer keys).
 
@@ -48,6 +48,8 @@ touches SSH, PAM, the kernel and the firewall: read the `--dry-run` output first
 - `bash` 5.x
 - `sudo` / root access
 - Internet connection (for package installs and firmware updates)
+- For `--gui`: a graphical session. GTK4, libadwaita and their Python bindings ship
+  with Fedora Workstation and the Atomic desktops; `--gui` installs them elsewhere
 
 ## Quick Start
 
@@ -61,8 +63,15 @@ sudo ./fedora-harden.sh --only 6,7,9        # run only specific sections
 sudo ./fedora-harden.sh --skip 16,23        # skip sections you don't want
 ```
 
-Run it from the clone: `fedora-harden.sh` loads its parts from the `lib/`, `sections/`
-and `libexec/` folders next to it (a symlink to it, e.g. in `/usr/local/bin`, works too).
+Run it from the clone: `fedora-harden.sh` loads its parts from the folders next to it
+(a symlink to it, e.g. in `/usr/local/bin`, works too).
+
+| Folder | What's in it |
+|---|---|
+| `sections/` | One file per section, numbered in run order (the numbers in the table above link to them) |
+| `lib/` | Shared code: options, logging, rollback, the GUI bridge, the scorecard, the summary |
+| `libexec/` | The `--gui` window and the routine helper, installed by the script |
+| `tests/` | The test suite and `verify-host.sh` |
 
 > **Non-interactive runs (`--yes`)** accept every recommendation, with one safety
 > exception: SSH hardening is skipped (and reported as a HIGH follow-up item) when
@@ -77,7 +86,8 @@ sudo ./fedora-harden.sh [options]
   -u, --user <name>       Target username for SSH and home-folder hardening
   -y, --yes               Assume "yes" to all prompts (non-interactive)
   -n, --dry-run           Print what would run; make no changes
-      --gui               Windowed frontend: progress window, dialogs and summary
+      --gui               Run in one window: sections, progress, live activity,
+                          questions and summary (GTK4/libadwaita)
       --report [file]     Write an HTML report of the last session and exit
                           (host, user names, home paths and addresses replaced
                           with placeholders; add --full to keep them)
@@ -177,5 +187,6 @@ sudo ./fedora-harden.sh --score                     # what protects this machine
 
 ## License
 
-Provided as-is for personal use, without warranty. Review each section before
-running it on a machine you cannot easily reinstall.
+Provided as-is for personal use, without warranty. Read the sections you plan to run
+(`sections/NN-*.sh`, or `--dry-run`) before using it on a machine you cannot easily
+reinstall.
