@@ -1,38 +1,14 @@
 # fedora-hardening
 
-> **A comprehensive, idempotent security hardening script for Fedora and all Atomic Desktop variants.**  
-> Aligned with [privacyguides.org](https://www.privacyguides.org) and [inteltechniques.com](https://inteltechniques.com) recommendations.
+A Bash script that hardens Fedora Workstation and the Fedora Atomic desktops
+(Silverblue, Kinoite, Bazzite, Bluefin and the rest) in one run, following
+[Privacy Guides](https://www.privacyguides.org) and
+[IntelTechniques](https://inteltechniques.com).
 
----
-
-## Overview
-
-`fedora-harden.sh` is a Bash script (with the parts it loads from `lib/`, `sections/` and `libexec/`) that applies 23 hardening sections to a Fedora system in one pass. It auto-detects your release variant (Workstation, Silverblue, Kinoite, Bazzite, etc.), package manager (`dnf` vs. `rpm-ostree`), and desktop environment, then applies the appropriate hardening steps automatically.
-
-Every change is journaled for full rollback support. The script is safe to run multiple times — all operations are idempotent.
-
-This is a personal hardening script that has grown a substantial feature set and a real CI pipeline, not a vendor-supported product — it runs as root and touches SSH, PAM, the kernel, and your firewall, so read `--dry-run` output before trusting it on a machine you can't easily reinstall.
-
----
-
-## Features
-
-- **23 hardening sections** covering the full security surface of a Fedora desktop or server
-- **Dual package-manager support** — mutable (`dnf`) and immutable (`rpm-ostree`) systems handled transparently
-- **Full Atomic Desktop support** — Silverblue, Kinoite, Onyx, Sericea, Lazurite, Vauxite, Bazzite, Aurora, CoreOS, and more
-- **Per-desktop-environment hardening** — KDE Plasma, GNOME, Budgie, Cinnamon, MATE, XFCE, LXQt, Sway, Hyprland, i3
-- **Firefox Flatpak hardening** — arkenfox user.js + uBlock Origin, LocalCDN, Multi-Account Containers
-- **Containerized-mindset setup** — rootless Podman + Toolbox with image policy hardening, no-new-privileges, seccomp, and unqualified-registry blocking
-- **Hardware security key support** — YubiKey/FIDO2/PIV/pam-u2f packages + USBGuard integration
-- **VPN detection** — WireGuard, Mullvad, ProtonVPN, IVPN detection with recommendations when absent
-- **Full rollback** — per-session change journal; `--rollback` or `--rollback all` to undo any or every run
-- **Logs in the system journal** — `journalctl -t fedora-harden`; failed services are reported with their own log lines
-- **Reports and follow-ups** — `--report` writes one HTML page per session; `--resume` brings back open follow-ups; `--score` shows what protects the machine right now
-- **Dry-run mode** — preview all changes without touching the system
-- **GUI** — `--gui` runs the whole session in one window: sections, progress, live activity log, questions and summary, in a Material Design dark theme (see [GUI](#gui))
-- **4-layer caching** — memoized command checks, package status, user home dirs, and rpm-ostree pending layers
-
----
+It works out the release, the package manager (`dnf` or `rpm-ostree`) and the
+desktop, then applies 24 sections in dependency order. Every change is journaled, so
+`--rollback` can undo a run, and a second run changes nothing. It runs as root and
+touches SSH, PAM, the kernel and the firewall: read the `--dry-run` output first.
 
 ## Sections at a Glance
 
@@ -66,38 +42,23 @@ This is a personal hardening script that has grown a substantial feature set and
 
 **Sections not automated by design:** LUKS (Anaconda install-time), GRUB password (interactive key derivation), WireGuard tunnel config (requires peer keys).
 
----
-
 ## Requirements
 
-- **Fedora 44+** (or a compatible Atomic/Universal Blue variant) — every change is tested on Fedora 44 and 45 (see [Testing](#testing))
+- **Fedora 44+** (or a compatible Atomic/Universal Blue variant) — tested on the latest Fedora (45) and kept compatible with 44 (see [TESTING.md](TESTING.md))
 - `bash` 5.x
 - `sudo` / root access
 - Internet connection (for package installs and firmware updates)
 
----
-
 ## Quick Start
 
 ```bash
-# Clone the repo
 git clone https://github.com/nixbys/fedora-hardening.git
 cd fedora-hardening
-
-# Preview what would change (no modifications made)
-sudo ./fedora-harden.sh --dry-run
-
-# Run all sections interactively
-sudo ./fedora-harden.sh
-
-# Target a specific user for SSH/home-dir hardening
-sudo ./fedora-harden.sh --user yourusername
-
-# Run only specific sections
-sudo ./fedora-harden.sh --only 6,7,9
-
-# Skip sections you don't want
-sudo ./fedora-harden.sh --skip 16,23
+sudo ./fedora-harden.sh --dry-run           # preview what would change (no modifications made)
+sudo ./fedora-harden.sh                     # run all sections interactively
+sudo ./fedora-harden.sh --user yourusername # target a specific user for SSH/home-dir hardening
+sudo ./fedora-harden.sh --only 6,7,9        # run only specific sections
+sudo ./fedora-harden.sh --skip 16,23        # skip sections you don't want
 ```
 
 Run it from the clone: `fedora-harden.sh` loads its parts from the `lib/`, `sections/`
@@ -107,8 +68,6 @@ and `libexec/` folders next to it (a symlink to it, e.g. in `/usr/local/bin`, wo
 > exception: SSH hardening is skipped (and reported as a HIGH follow-up item) when
 > the target user has no public key in `~/.ssh/authorized_keys`, because disabling
 > password logins would lock you out.
-
----
 
 ## All Options
 
@@ -140,111 +99,9 @@ sudo ./fedora-harden.sh [options]
   -h, --help              Show this help and exit
 ```
 
----
-
-## GUI
-
-```bash
-sudo ./fedora-harden.sh --gui          # the whole run in one window
-```
-
-Everything happens in one window:
-
-- **Sections** (left): every section this run will go through, in execution order,
-  with its status: running, done, done with warnings or errors, or skipped when it
-  does not apply to this system. F9 shows or hides the list; narrow windows fold it
-  away.
-- **Status card**: the section running now and its latest step, a progress bar,
-  the elapsed time and an estimate of the time left.
-- **Questions** appear inside the window with Yes/No buttons or a text field. Enter
-  picks the default answer; nothing pops up in a separate dialog.
-- **Notices** that need reading (USBGuard, the manual GRUB password, VPN choices)
-  stay at the top until you dismiss them.
-- **Activity**: a live log of every message, command and command output, with
-  filters (done, warnings, errors, commands), search, follow mode, and Copy activity
-  log / Copy problems only in the menu.
-- **Summary**: at the end, the outcome, the log and backup locations, and the
-  follow-up items grouped by priority, each with a copy button.
-
-**Stop** (or closing the window, or Ctrl+W) asks first, then stops after the
-current step with exit code 130; changes made so far can be undone with
-`--rollback`. The window stays open after the run so you can read the results.
-
-The window is a GTK4/libadwaita app (`libexec/fedora-harden-gui.py`). Those libraries and their
-Python bindings come with Fedora Workstation and every Atomic desktop (Silverblue,
-Kinoite, Bazzite, Bluefin), so nothing is layered for the GUI; on other package-based
-systems `--gui` installs `python3-gobject`, `gtk4` and `libadwaita`. Its Material
-Design 3 dark theme is private to the window and does not change your desktop. It
-works under `sudo` (Fedora keeps `DISPLAY`/`XAUTHORITY`). Without a usable display,
-the run stays in the terminal.
-
-| Running | Question |
-|---|---|
-| ![The window during a run](docs/screenshots/running.png) | ![A question inside the window](docs/screenshots/question.png) |
-| **Stopping** | **Summary** |
-| ![Stop asks first](docs/screenshots/stop.png) | ![Summary with follow-up items](docs/screenshots/summary.png) |
-
-Screenshots are generated by `tests/gui-screenshots.sh`, which plays a sample run
-into the window app (`libexec/fedora-harden-gui.py`; Fedora 44, virtual display, so the
-rounded window corners a compositor draws on a real desktop are not shown).
-
----
-
-## Platform Support
-
-| Variant | Package Manager | Desktop |
-|---------|----------------|---------|
-| Fedora Workstation | `dnf` | GNOME |
-| Fedora Server | `dnf` | — |
-| Fedora Spins (XFCE, LXQt, Cinnamon, MATE, Budgie) | `dnf` | various |
-| Fedora Silverblue | `rpm-ostree` | GNOME |
-| Fedora Kinoite | `rpm-ostree` | KDE Plasma |
-| Fedora Onyx | `rpm-ostree` | GNOME Atomic |
-| Fedora Sericea | `rpm-ostree` | Sway Atomic |
-| Fedora Lazurite | `rpm-ostree` | LXQt Atomic |
-| Fedora Vauxite | `rpm-ostree` | XFCE Atomic |
-| Fedora IoT / Cloud / CoreOS | `rpm-ostree` | headless |
-| Bazzite | `rpm-ostree` | KDE or GNOME |
-| Aurora / Universal Blue | `rpm-ostree` | KDE |
-
-Auto-detection reads `/etc/os-release` + `/run/ostree-booted`. Desktop detection uses `$XDG_CURRENT_DESKTOP` + installed tooling.
-
----
-
-## Image-based systems
-
-On Silverblue, Kinoite, Bazzite, Aurora and the other Atomic variants, every
-layered package has to be re-applied to each new image, and it widens the image
-everyone else gets from the vendor. So the script keeps tools out of the image and
-puts each one where it belongs:
-
-| What | Package-based Fedora | Image-based Fedora |
-|------|----------------------|--------------------|
-| YubiKey manager (section 1) | `yubikey-manager`, `yubico-piv-tool` | Yubico Authenticator Flatpak (`com.yubico.yubioath`); only drivers and `pam-u2f` are layered |
-| SELinux tools `seinfo`, `sesearch` (4) | `setools-console` | in the tools box |
-| File integrity (24) | AIDE + weekly timer | image signature check + weekly report of `/etc` changes (`journalctl -t fedora-harden-etc`) |
-| Metadata removal (13) | `mat2` | Metadata Cleaner Flatpak |
-| ClamAV (21) | clamd, freshclam, on-access scanning | weekly `fedora-harden-clamscan` container: read-only view of `/home`, no network, signatures in the image |
-| OpenSCAP (22) | `openscap-scanner` | throwaway Fedora container scanning the host read-only (`oscap-chroot`) |
-| buildah, skopeo, podman-compose (23) | packages | in the tools box |
-
-The **tools box** (`fedora-harden-tools`) uses the platform's own tool: distrobox
-on Universal Blue (which ships it instead of toolbox), toolbox elsewhere. With
-distrobox, the script writes a manifest to `~/.config/distrobox/fedora-harden-tools.ini`:
-
-```bash
-distrobox assemble create --file ~/.config/distrobox/fedora-harden-tools.ini
-# Universal Blue:
-ujust distrobox-assemble CONTAINER=fedora-harden-tools FILE=$HOME/.config/distrobox/fedora-harden-tools.ini
-```
-
-> ⚠️ **Toolbox and distrobox are not a security boundary.** Their containers share
-> your home directory, see the host's filesystem at `/run/host` and run privileged
-> without SELinux separation. Use them to keep the host clean, not to run untrusted
-> software — for that, use a Flatpak with tight permissions or a locked-down
-> `podman run --read-only --cap-drop all --network none ...`.
-
----
+The GUI, image-based systems, the routine, personal setup, the recovery file, home
+snapshots, WireGuard, hardware keys and container security are described in
+[docs/guide.md](docs/guide.md).
 
 ## Privacy
 
@@ -276,8 +133,6 @@ announced on the local network (LLMNR off; mDNS off unless you game or create),
 Fedora's countme, ABRT crash reports and fwupd report uploads stay off, and
 NetworkManager's connectivity check can be turned off (it is asked).
 
----
-
 ## Rollback
 
 Every file the script modifies is backed up before the change, and every file it creates is journaled, so a rollback restores modified files **and removes created ones** (drop-ins, rules, timers). A session journal is written to `/root/harden-backups-<timestamp>/`.
@@ -285,156 +140,11 @@ Every file the script modifies is backed up before the change, and every file it
 Before changing anything, a run also sets a **safety point**: on image-based systems the booted deployment is pinned (it stays in the boot menu whatever updates follow); on traditional Fedora with Btrfs a read-only snapshot of `/` is kept in `/var/lib/fedora-harden/root-snapshots/` (the three newest). Rollback keeps that snapshot; it is the way back if something outside the script's own changes goes wrong.
 
 ```bash
-# Undo the most recent run
-sudo ./fedora-harden.sh --rollback
-
-# Undo a specific past session
-sudo ./fedora-harden.sh --list-sessions
-sudo ./fedora-harden.sh --rollback 20260601-143022
-
-# Full-reset: reverse every session from the very first run
-sudo ./fedora-harden.sh --rollback all
+sudo ./fedora-harden.sh --rollback          # undo the most recent run
+sudo ./fedora-harden.sh --list-sessions     # list past sessions
+sudo ./fedora-harden.sh --rollback 20260601-143022   # undo one of them
+sudo ./fedora-harden.sh --rollback all      # reverse every session, back to before the first run
 ```
-
----
-
-## Your routine (Section 19)
-
-Hardening is not a one-time job: updates, cleanup, disk health, and noticing when a
-protection was undone. Section 19 sets that up to match how the machine is used. It
-detects the likely use cases (Steam or Bazzite: gaming; Blender, Kdenlive, Resolve:
-creative; IDEs or container storage: development; a battery: laptop), asks once
-(or takes `--profile`), saves the answer in `/etc/fedora-harden/profile`, and adds only
-the timers those use cases need:
-
-| Timer | What it does | For |
-|-------|--------------|-----|
-| `fedora-harden-cleanup` (monthly) | unused Flatpak runtimes, dangling Podman images, old OSTree data | everyone |
-| `fedora-harden-diskspace` (daily) | notifies below 10% free | everyone |
-| `fedora-harden-scrub` (monthly) | Btrfs scrub: finds silent corruption | Btrfs systems |
-| `fedora-harden-drift` (weekly) | notifies if a file the script manages changed or a service it started stopped | everyone |
-| `fedora-harden-summary` (Mondays) | what was done, what needs you, open follow-ups; a relevance review every 90 days | everyone |
-| `fedora-harden-boxes` (weekly) | upgrades toolbox/distrobox containers (Universal Blue's uupd already does) | creative, dev |
-| `fedora-harden-devclean` (weekly) | removes container build cache older than 30 days | dev |
-| `fedora-harden-flatpak-perms` (weekly, asked) | tells you when an app update widened its permissions | creative |
-
-Plus a 1 GB journal cap, `smartd` disk-health warnings, an optional 80% battery
-charge limit on laptops, and on image-based systems a list of layered packages that
-have a better home. Heavy jobs wait for mains power and for a game to end. A desktop
-notification appears only when something needs you; the weekly summary is in
-`/var/lib/fedora-harden/summary-<date>.txt`, and every run is in
-`journalctl -t fedora-harden-routine`. Every 90 days the summary asks for a review: if
-the machine now looks different from its saved use cases, or an automation has had
-no effect, it says so. Re-run `--only 19` to change the routine; `--rollback` removes it.
-
-### Personal setup
-
-Section 19 also offers, once each, what fits the use cases. Each is a question; with
-`--yes` only the ones a chosen use case implies happen. `--rollback` undoes all of them.
-
-| Offer | What happens | When |
-|-------|--------------|------|
-| `dev` box | a toolbox/distrobox with gcc, make, cmake, git and Python, created for you in the background; on distrobox the build tools also work from the host's terminal | dev |
-| `davincibox` | the container the davincibox project provides for DaVinci Resolve (the NVIDIA or OpenCL build), plus the `render`/`video` groups; you add the Resolve installer you downloaded, and Resolve appears in the app menu (Bazzite: `ujust install-resolve` instead) | creative |
-| Tor Browser and Mullvad Browser | from Flathub; only Tor Browser hides who you are | `private` use case |
-| Verified Flathub apps only | Flathub shows apps published by their own developers | asked |
-| Security key for sudo and login | registers your key, then makes it a second factor (pam-u2f via authselect); keep a second key registered | asked, when section 1 installed key support |
-| Disk unlock with TPM + PIN or FIDO2 | only when the root disk is already encrypted; the passphrase keeps working | asked |
-| OpenSnitch | Fedora does not package it, so the script only points you to its signed RPMs | asked |
-
-Nothing is layered on image-based systems.
-
-### Recovery file
-
-After every run, `/etc/fedora-harden/machine.conf` records what this machine was set
-up with: Fedora release and edition, the sections run, use cases, boxes, Flatpaks the
-script installed, enabled timers, the snapshot setup, the choices above and the
-answer to every question. It is readable by root only and holds no secrets (for the
-WireGuard tunnel it notes where the config was, not the config). It is also copied
-into the home folder's backups (`/home/.fedora-harden/`), so it survives a reinstall;
-`--recovery-backup off` stops that (remembered).
-
-After a reinstall or a recovery:
-
-```bash
-sudo ./fedora-harden.sh --restore machine.conf     # same sections, same answers, no questions
-```
-
-`--report` says when the recovery file was last updated but leaves its contents out,
-so the page can be shared; `--report --include-setup` adds them.
-
-## Home snapshots (Section 20)
-
-Gets back a file you deleted or overwrote, on every supported system, with what the
-system already ships:
-
-| System | How |
-|--------|-----|
-| Btrfs with Snapper (Bazzite) | Snapper's own `home` config |
-| Btrfs without Snapper (Silverblue, Kinoite, Bluefin, Aurora, Workstation) | read-only Btrfs snapshots in `/home/.snapshots` |
-| Btrfs where home is a plain folder (bootc installs) | home becomes its own subvolume at the next boot, before anyone logs in; snapshots start then |
-| No Btrfs (e.g. Fedora Server on XFS) | hard-link incremental copies with `rsync`: to a second drive when configured (`--backup-target DIR`, `/backup`, `/mnt/backup`), otherwise on the same disk |
-
-- **As often as the machine is used:** 6+ active hours a day → hourly, 1–6 → every
-  6 hours, less → daily; nothing is taken when nothing changed. Kept: 24 recent,
-  7 daily, 4 weekly. Snapshots never push the disk below 15% free.
-- **Index and change notes:** the first run indexes the home folder (folders of
-  5 GB or more); each snapshot keeps a note of what changed; the weekly index notes
-  what grew and flags new large folders. Large replaceable folders (container
-  storage, caches, game libraries) are left out of snapshots only if you say yes,
-  folder by folder.
-- **Not a backup:** snapshots live on the same disk. The follow-ups rank ways to
-  keep a copy elsewhere for this machine (an external drive with Pika Backup, a
-  network share, or cloud storage with Déjà Dup); the choice is yours.
-- **Restore** by copying from `/home/.snapshots/<date>/<user>/…` (or Snapper's
-  tools on Bazzite). `--rollback` removes the timers but never deletes snapshots.
-
-## WireGuard with a kill switch (Section 15)
-
-Download a WireGuard config from your VPN provider (a full tunnel:
-`AllowedIPs = 0.0.0.0/0, ::/0`) and pass it to section 15:
-
-```bash
-sudo ./fedora-harden.sh --only 15 --wireguard-config ~/Downloads/provider.conf
-```
-
-The script checks the config (complete, one peer, full tunnel; a hostname endpoint
-is pinned to its current address), installs it as `/etc/wireguard/wg0.conf`
-(mode 600) and starts `wg-quick@wg0` at boot. Two protections come with it:
-
-- **Kill switch** — firewalld policies let this machine send traffic only into the
-  tunnel or to the tunnel's own endpoint. If the tunnel drops, nothing leaks out
-  around it (the local network is blocked too; the follow-up says how to allow it).
-- **DNS through the tunnel** — systemd-resolved sends every lookup to the tunnel's
-  DNS server while it is up.
-
-`--rollback` stops the tunnel and removes the config and the kill switch. Without a
-config file, section 15 does nothing.
-
-## Hardware Security Keys
-
-During **Section 1**, the script will ask if you use a hardware security key (YubiKey, FIDO2, PIV, etc.). If yes, it installs `pcsc-lite`, `opensc`, `libfido2`, `yubico-piv-tool`, and `yubikey-manager`, and optionally sets up `pam-u2f`. On image-based systems it layers only the drivers (and `pam-u2f`) and installs the Yubico Authenticator Flatpak instead of the management tools.
-
-> ⚠️ **Important:** If you use a hardware key, plug it in **before Section 23 (USBGuard) runs** so it is automatically added to the allowlist. If you miss it, run:
-> ```bash
-> sudo usbguard generate-policy >> /etc/usbguard/rules.conf
-> ```
-
----
-
-## Container Security (Section 18)
-
-Section 18 sets up a **containerized-mindset** environment using rootless Podman and toolbox (distrobox on Universal Blue):
-
-- Configures `~/.config/containers/containers.conf` with `no-new-privileges`, hardened seccomp, and minimal capabilities
-- Writes `/etc/containers/policy.json` to reject images from registries other than Fedora, CentOS, Red Hat, quay.io and docker.io (confirm-gated)
-- Blocks unqualified image searches via `/etc/containers/registries.conf.d/99-hardening.conf`
-- Configures `subuid`/`subgid` for rootless container operation
-- Optionally installs `buildah`, `skopeo`, and `podman-compose` — on image-based systems they go in the tools box instead (see [Image-based systems](#image-based-systems))
-
-Toolbox and distrobox keep development tools off the host; they do not isolate them (see the warning above).
-
----
 
 ## After Running
 
@@ -455,150 +165,17 @@ sudo ./fedora-harden.sh --report                    # one HTML page: changes, fo
 sudo ./fedora-harden.sh --score                     # what protects this machine now, and how to fix the rest
 ```
 
-**Protection scorecard.** At the end of every run, on the `--gui` summary page, in
-`--report` and with `--score`, the script checks the live system, not what the run
-did: disk encryption, Secure Boot, firewall, automatic updates, SELinux, the SSH
-server, DNS over TLS, home snapshots, screen lock, Flatpak restrictions, the
-firmware security level (fwupd HSI) and, as advice, whether the everyday account is
-an administrator. Each line that is not protected says how to fix it. `--score`
-changes nothing and creates no session.
+## More
 
-**Kernel boot hardening (opt-in).** Section 9 can add `init_on_free=1`,
-`slab_nomerge`, `page_alloc.shuffle=1` and `randomize_kstack_offset=on` to the
-kernel command line (grubby, or `rpm-ostree kargs` on image-based systems). They make
-memory bugs harder to exploit and cost about 1–5% in some workloads, so they are
-asked for, never added by `--yes` alone (use `--kernel-hardening`), and not offered
-for the gaming use case. `--rollback` removes exactly the options it added.
-
-**Service sandboxing.** Section 21 gives running network services (CUPS, Avahi) a
-drop-in with conservative systemd sandboxing, keeps it only if the service restarts
-cleanly, and reports the `systemd-analyze security` exposure before and after.
-sshd is left alone: its sandbox would also restrict every SSH login session.
-
----
-
-## Testing
-
-All tests run on **Fedora 44 and 45** in throwaway rootless podman containers — the
-host is never modified:
-
-```bash
-./tests/run-suite.sh                  # everything
-./tests/run-suite.sh --tier static    # shellcheck, shfmt, yamllint, hadolint, ruff
-./tests/run-suite.sh --tier quick     # CLI, dry-run makes no changes, desktop settings
-./tests/run-suite.sh --tier full      # real run under systemd, idempotency, rollback
-./tests/run-suite.sh --tier gui       # --gui on a virtual display, theme, Stop
-./tests/run-suite.sh --tier vm        # the same images installed and booted in a VM (KVM)
-./tests/run-suite.sh --tier fault     # fault injection: no network, full disks, kills, ...
-./tests/run-suite.sh --fedora 45      # the same on Fedora 45 (default: 44)
-```
-
-Image-based behaviour is tested on the real images, not simulated: the atomic tier
-runs the images' own rpm-ostree, Flatpak, Podman quadlets and distrobox, and the vm
-tier installs each image with `bootc` and boots it, so the image-signature check and
-the `/etc` change report run against a real OSTree system.
-
-The full tier checks the hardening is really in effect (e.g. the effective sshd
-configuration via `sshd -T`, the password policy files), that a second run
-changes nothing, and that `--rollback all` restores the system. See
-[TESTING.md](TESTING.md); setup is `./setup-dev.sh` (Fedora RPM toolchain).
-
----
-
-## Repository Layout
-
-```
-fedora-harden.sh               # the tool: usage header, then loads the parts below in order
-lib/NN-*.sh                    # shared code: globals, GUI, logging and package helpers,
-                               # rollback, preflight (01-07, loaded before the sections);
-                               # scorecard, personal setup, recovery file, summary, main (30-38)
-sections/NN-*.sh               # one file per hardening section (01-updates.sh ... 24-ids.sh)
-libexec/fedora-harden-gui.py   # the --gui window (GTK4/libadwaita), copied to /run at run time
-libexec/fedora-harden-routine  # the helper the section 19/20 timers call, installed to
-                               # /usr/local/libexec
-tests/run-suite.sh             # test suite: static, quick, full and gui tiers (see TESTING.md)
-tests/*.sh, tests/*.py         # in-container checks (desktop settings, image-based simulation, GUI, MCP smoke test)
-tests/fixtures/                # sample tool output used by the tests (OpenSCAP results)
-test-in-podman.sh              # ad-hoc runs in a throwaway podman container
-Dockerfile.test                # test images (FEDORA_VERSION 44/45): base, test-only, lint, gui
-setup-dev.sh                   # contributor setup (Fedora RPM toolchain + git hooks)
-tests/verify-host.sh           # read-only check of a hardened machine (see After Running)
-mcp_server_fedora_harden.py    # optional, contributor-only: exposes lint/test workflows
-                               # as MCP tools — not used by fedora-harden.sh at runtime
-.pre-commit-config.yaml        # local lint/format/secret-scan hooks
-.github/workflows/             # CI (Fedora 44 + 45 containers): tests, gitleaks, trivy,
-                               # workflow-security (actionlint + zizmor)
-SECURITY.md / THREAT_MODEL.md  # responsible-use policy and trust boundary
-DEVELOPMENT.md                 # contributor setup, conventions, CI, keeping up with guidance
-TESTING.md                          # how to exercise the script in Podman
-```
-
-If you're only here to harden a machine, you need `fedora-harden.sh` with `lib/`,
-`sections/` and `libexec/` (clone the repository) — everything else is for people
-modifying the script itself.
-
----
-
-## CI
-
-| Check | Tool | Status |
-|-------|------|--------|
-| Shell syntax | `bash -n` | [![CI](https://github.com/nixbys/fedora-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/ci.yml) |
-| Static analysis | ShellCheck 0.11.0 (`--enable=all`) | ↑ same |
-| Formatting | shfmt v3.12.0 (style from `.editorconfig`) | ↑ same |
-| Container tests | `tests/run-suite.sh` quick, full and gui tiers (Fedora 44 and 45, podman) | ↑ same |
-| Secret scanning | gitleaks (full history, blocking) | ↑ same |
-| Vulnerabilities | Trivy (results in the Security tab) | ↑ same |
-| Workflow security | actionlint + zizmor | [![Workflow security](https://github.com/nixbys/fedora-hardening/actions/workflows/workflow-security.yml/badge.svg)](https://github.com/nixbys/fedora-hardening/actions/workflows/workflow-security.yml) |
-
-See [SECURITY.md](SECURITY.md) for how to report a vulnerability and
-[THREAT_MODEL.md](THREAT_MODEL.md) for the trust assumptions behind running
-this script as root.
-
----
-
-## Sources and staying current
-
-Each recommendation cites its source in the script (`# Source:` comments). The
-sources are listed in [`docs/references.json`](docs/references.json) with the
-sections they inform and when they were last reviewed:
-
-- Privacy Guides: Linux Overview, Desktop/PC, Linux Application Sandboxing, DNS
-  Resolvers, Desktop Browsers
-- IntelTechniques: 2026 OS Telemetry Guide, Extreme Privacy Linux commands
-- arkenfox `user.js` (pinned release, checksum-verified)
-
-The **Reference watch** workflow runs every Monday. It fetches each source,
-compares its main content with the last review, checks for a newer arkenfox
-release, and opens one tracking issue when something changed. After updating the
-script, refresh the fingerprints:
-
-```bash
-python3 tests/check-references.py           # what changed since the last review
-python3 tests/check-references.py --update  # after review: record the new state
-```
-
----
-
-## Changes
-
-See [CHANGELOG.md](CHANGELOG.md) for what changed and why.
-
----
-
-## References
-
-- [Privacy Guides — Linux Overview](https://www.privacyguides.org/en/os/linux-overview/)
-- [Privacy Guides — Linux Application Sandboxing](https://www.privacyguides.org/articles/2022/04/22/linux-application-sandboxing/)
-- [IntelTechniques — 2026 OS Telemetry Guide](https://inteltechniques.com/2026.telemetry.html) (Extreme Privacy, 5th edition)
-- [Fedora Quick Docs](https://docs.fedoraproject.org/en-US/quick-docs/) (SELinux, firewalld, Atomic desktops)
-- [CIS Red Hat Enterprise Linux Benchmarks](https://www.cisecurity.org/benchmark/red_hat_linux)
-- [arkenfox user.js](https://github.com/arkenfox/user.js)
-
-The full, machine-checked list is [`docs/references.json`](docs/references.json).
-
----
+- [docs/guide.md](docs/guide.md): the features in detail, with screenshots
+- [DEVELOPMENT.md](DEVELOPMENT.md): layout, conventions, CI; [TESTING.md](TESTING.md): the test tiers
+- [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md): reporting issues, trust assumptions
+- [CHANGELOG.md](CHANGELOG.md): what changed and why
+- Sources: every recommendation cites its source in the code (`# Source:`); the list,
+  with review dates, is [docs/references.json](docs/references.json), checked weekly
+  in CI
 
 ## License
 
-This project is provided as-is for personal use. Review every section before running on a production system. No warranty is expressed or implied.
+Provided as-is for personal use, without warranty. Review each section before
+running it on a machine you cannot easily reinstall.
