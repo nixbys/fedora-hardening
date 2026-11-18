@@ -113,6 +113,7 @@ EOF
 		ok "Wrote $f"
 	fi
 	_module_blocklist
+	_io_uring
 	# sysctl --system exits non-zero if ANY key cannot be applied (key absent on this
 	# kernel, read-only in a container, ...). The drop-in still applies at boot, so
 	# report the rejected keys instead of aborting the remaining sections.
@@ -146,4 +147,22 @@ _module_blocklist() {
 ${out%$'\n'}
 MODS
 	ok "Blocked unused kernel modules: $f"
+}
+
+# _io_uring - 9c: io_uring has been one of the most exploited kernel interfaces
+# (Google turned it off on ChromeOS and Android, and for its production servers).
+# kernel.io_uring_disabled=1 keeps it for root only; ordinary programs fall back to
+# regular I/O. Off by default for the dev use case, where databases and QEMU use it.
+_io_uring() {
+	local f=/etc/sysctl.d/98-io-uring.conf default=yes
+	[[ -r /proc/sys/kernel/io_uring_disabled ]] || return 0
+	grep -qE '^USE_CASES=.*\bdev\b' /etc/fedora-harden/profile 2>/dev/null && default=no
+	confirm "Limit io_uring (a frequently exploited kernel interface) to root?" "$default" || return 0
+	write_new_file "$f" 0644 <<'CONF' || return 0
+# Written by fedora-harden.sh (section 9c): io_uring for root only. Programs that
+# need it for speed (some databases, QEMU) fall back to regular I/O. To allow it
+# again, delete this file (or run --rollback) and reboot.
+kernel.io_uring_disabled = 1
+CONF
+	ok "io_uring limited to root: $f"
 }

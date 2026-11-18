@@ -49,4 +49,29 @@ sec_08_pam() {
 
 	# No forced password expiry (NIST SP 800-63B): login.defs and account ageing are
 	# left as Fedora ships them.
+	_sudo_defaults
+}
+
+# _sudo_defaults - 8b: commands run with sudo get their own pseudo-terminal, so a
+# program started that way can't push keystrokes back into your shell after sudo
+# returns. Recent sudo does this by default; the drop-in makes sure of it. The file
+# is checked with visudo before it is put in place, since a broken sudoers file
+# locks everyone out of sudo.
+_sudo_defaults() {
+	local f=/etc/sudoers.d/fedora-harden tmp
+	[[ -d /etc/sudoers.d ]] && cmd_exists visudo || return 0
+	if ((DRY_RUN)); then
+		info "Would write $f (Defaults use_pty)"
+		return 0
+	fi
+	tmp="$(mktemp)"
+	register_tmp "$tmp"
+	printf '%s\n' "# Written by fedora-harden.sh (section 8b). Remove with --rollback." "Defaults use_pty" >"$tmp"
+	if ! visudo -cqf "$tmp" >/dev/null 2>&1; then
+		warn "The sudo drop-in did not pass visudo; leaving sudo unchanged."
+		return 0
+	fi
+	backup_file "$f" || return 0
+	install -m 0440 -o root -g root "$tmp" "$f" && ok "sudo runs commands in their own pseudo-terminal: $f"
+	return 0
 }

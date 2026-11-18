@@ -21,8 +21,8 @@ touches SSH, PAM, the kernel and the firewall: read the `--dry-run` output first
 | [5](sections/05-selinux.sh) | SELinux | Enforcing; a disabled system goes permissive + full relabel first (safe path) |
 | [6](sections/06-firewalld.sh) | firewalld | Drop-default zone policy (OpenSnitch suggested for outbound control) |
 | [7](sections/07-ssh.sh) | SSH hardening | Key-based auth, hardened ciphers via `sshd_config.d/10-hardening.conf` (takes precedence over Fedora's defaults); never restarts sshd on an invalid config |
-| [8](sections/08-pam.sh) | Password & PAM | pwquality: at least 15 characters, no composition rules or forced expiry (NIST SP 800-63B); faillock (5 tries, 15 min) |
-| [9](sections/09-sysctl.sh) | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941) |
+| [8](sections/08-pam.sh) | Password & PAM | pwquality: at least 15 characters, no composition rules or forced expiry (NIST SP 800-63B); faillock (5 tries, 15 min); sudo runs commands in their own pseudo-terminal |
+| [9](sections/09-sysctl.sh) | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941); unused kernel modules blocked; io_uring limited to root (asked) |
 | [10](sections/10-auditd.sh) | auditd | Identity, privilege escalation, module, time/network/mount syscalls, deletes under /etc |
 | [11](sections/11-dot.sh) | DNS over TLS | systemd-resolved with Quad9 only (installed if missing; warns if DNS bypasses it); LLMNR off, mDNS only for gaming/creative; NTS time (11c) |
 | [11b](sections/11-dot.sh) | MAC randomization | Random MAC for Wi-Fi, stable per-network MAC for Ethernet (home DHCP reservations keep working) |

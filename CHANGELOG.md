@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — kernel and sudo
+
+- Section 9 asks to limit io_uring, a frequently exploited kernel interface, to
+  root (`kernel.io_uring_disabled = 1`); off by default for the dev use case.
+- Section 8 adds a sudo drop-in with `Defaults use_pty`, validated with visudo
+  before it is installed.
+- The scorecard shows whether kernel lockdown is on (Fedora enables it under
+  Secure Boot).
+
 ## Unreleased — privacy and review fixes
 
 Project layout:
