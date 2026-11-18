@@ -28,7 +28,7 @@ touches SSH, PAM, the kernel and the firewall: read the `--dry-run` output first
 | [11b](sections/11-dot.sh) | MAC randomization | Random MAC for Wi-Fi, stable per-network MAC for Ethernet (home DHCP reservations keep working) |
 | [12](sections/12-fail2ban.sh) | Fail2Ban | Intrusion detection + auto-ban |
 | [13](sections/13-desktop.sh) | Desktop settings | Screen lock, recent docs, Bluetooth, location — per DE, verified after applying; microphone off only if you choose |
-| [14](sections/14-firefox.sh) | Firefox | Flatpak + pinned arkenfox + GPC/DNT + DNS-over-HTTPS (ECH) + extensions + VPN detection |
+| [14](sections/14-browsers.sh) | Browsers | Firefox Flatpak + pinned arkenfox + extensions; Brave/Chromium/Chrome privacy policies when installed; VPN detection; Tor Browser + Mullvad Browser (opt-in, locked down) |
 | [15](sections/15-wireguard.sh) | WireGuard | With `--wireguard-config FILE`: the tunnel, a kill switch and DNS through the tunnel; nothing otherwise |
 | [16](sections/16-clamav.sh) | ClamAV | freshclam + a weekly idle-priority scan of /home (on-access scanning if you choose it); image-based: weekly scan in a locked-down container |
 | [17](sections/17-openscap.sh) | OpenSCAP | Compliance scan (image-based: from a throwaway container, nothing layered) |
