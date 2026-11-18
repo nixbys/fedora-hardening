@@ -64,14 +64,25 @@ _sudo_defaults() {
 		info "Would write $f (Defaults use_pty)"
 		return 0
 	fi
-	tmp="$(mktemp)"
+	# A full or read-only /tmp must not abort the run: skip the drop-in instead.
+	if ! tmp="$(mktemp 2>/dev/null)"; then
+		warn "Could not create a temporary file; leaving sudo unchanged."
+		return 0
+	fi
 	register_tmp "$tmp"
-	printf '%s\n' "# Written by fedora-harden.sh (section 8b). Remove with --rollback." "Defaults use_pty" >"$tmp"
+	if ! printf '%s\n' "# Written by fedora-harden.sh (section 8b). Remove with --rollback." "Defaults use_pty" 2>/dev/null >"$tmp"; then
+		warn "Could not write a temporary file (disk full?); leaving sudo unchanged."
+		return 0
+	fi
 	if ! visudo -cqf "$tmp" >/dev/null 2>&1; then
 		warn "The sudo drop-in did not pass visudo; leaving sudo unchanged."
 		return 0
 	fi
 	backup_file "$f" || return 0
-	install -m 0440 -o root -g root "$tmp" "$f" && ok "sudo runs commands in their own pseudo-terminal: $f"
+	if install -m 0440 -o root -g root "$tmp" "$f" 2>/dev/null; then
+		ok "sudo runs commands in their own pseudo-terminal: $f"
+	else
+		warn "Could not install $f; sudo is unchanged."
+	fi
 	return 0
 }
