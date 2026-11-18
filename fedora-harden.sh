@@ -252,8 +252,8 @@ source "$SCRIPT_DIR/sections/11-dot.sh"
 source "$SCRIPT_DIR/sections/12-fail2ban.sh"
 # shellcheck source=sections/13-desktop.sh
 source "$SCRIPT_DIR/sections/13-desktop.sh"
-# shellcheck source=sections/14-firefox.sh
-source "$SCRIPT_DIR/sections/14-firefox.sh"
+# shellcheck source=sections/14-browsers.sh
+source "$SCRIPT_DIR/sections/14-browsers.sh"
 # shellcheck source=sections/15-wireguard.sh
 source "$SCRIPT_DIR/sections/15-wireguard.sh"
 # shellcheck source=sections/16-clamav.sh

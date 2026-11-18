@@ -151,7 +151,21 @@ _private_browsing() {
 	info "Private browsing: Tor Browser and Mullvad Browser (Flathub). Only Tor Browser hides who you are; see the README."
 	flatpak_install_or_update flathub org.torproject.torbrowser-launcher
 	flatpak_install_or_update flathub net.mullvad.MullvadBrowser
+	_lock_down_mullvad_browser
+	info "Use them as shipped: no extensions and no about:config changes, which would make you stand out. In Tor Browser, set the Security Level to Safest for sensitive sites. Mullvad Browser hides your IP only together with a VPN."
 	SETUP_CHOICES[PRIVATE_BROWSING]=yes
+}
+
+# _lock_down_mullvad_browser - Mullvad Browser always browses privately, so it needs
+# none of the extras its Flathub build asks for: every device (cameras included),
+# smart cards, the keyring and NetworkManager. It keeps the GPU, audio, printing and
+# Downloads. Tor Browser's launcher already asks for nothing extra.
+_lock_down_mullvad_browser() {
+	flatpak info net.mullvad.MullvadBrowser &>/dev/null || ((DRY_RUN)) || return 0
+	backup_file /var/lib/flatpak/overrides/net.mullvad.MullvadBrowser || return 0
+	run "flatpak override --system --nodevice=all --device=dri --nosocket=pcsc --no-talk-name=org.freedesktop.secrets --system-no-talk-name=org.freedesktop.NetworkManager --system-no-talk-name=org.freedesktop.login1 net.mullvad.MullvadBrowser" &&
+		ok "Mullvad Browser: no cameras, smart cards, keyring or NetworkManager access."
+	return 0
 }
 
 # _flathub_verified - Optionally show only Flathub apps published by their own

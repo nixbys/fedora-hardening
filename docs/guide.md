@@ -138,7 +138,7 @@ Section 19 also offers, once each, what fits the use cases. Each is a question; 
 |-------|--------------|------|
 | `dev` box | a toolbox/distrobox with gcc, make, cmake, git and Python, created for you in the background; on distrobox the build tools also work from the host's terminal | dev |
 | `davincibox` | the container the davincibox project provides for DaVinci Resolve (the NVIDIA or OpenCL build), plus the `render`/`video` groups; you add the Resolve installer you downloaded, and Resolve appears in the app menu (Bazzite: `ujust install-resolve` instead) | creative |
-| Tor Browser and Mullvad Browser | from Flathub; only Tor Browser hides who you are | `private` use case |
+| Tor Browser and Mullvad Browser | from Flathub; only Tor Browser hides who you are. Mullvad Browser loses access to cameras, smart cards, the keyring and NetworkManager | `private` use case, or asked in section 14 |
 | Verified Flathub apps only | Flathub shows apps published by their own developers | asked |
 | Security key for sudo and login | registers your key, then makes it a second factor (pam-u2f via authselect); keep a second key registered | asked, when section 1 installed key support |
 | Disk unlock with TPM + PIN or FIDO2 | only when the root disk is already encrypted; the passphrase keeps working | asked |
