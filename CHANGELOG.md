@@ -13,6 +13,12 @@
 - Tor Browser and Mullvad Browser are offered in section 14 (opt-in) as well as
   through the `private` use case. Mullvad Browser loses access to cameras, smart
   cards, the keyring and NetworkManager; both are left otherwise as shipped.
+## Unreleased — Rawhide early warning
+
+- A weekly workflow (`.github/workflows/rawhide.yml`) runs the quick and full tiers
+  against Fedora Rawhide, the next release, on the usual Fedora CoreOS test host.
+  It never blocks a pull request; a failure opens or updates one tracking issue.
+- `tests/run-suite.sh --fedora rawhide` tests against Rawhide locally too.
 
 ## Unreleased — privacy and review fixes
 
