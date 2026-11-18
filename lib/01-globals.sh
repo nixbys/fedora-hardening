@@ -22,6 +22,9 @@ BACKUP_DIR="/root/harden-backups-${RUN_STAMP}"
 # On image-based systems these tools live in a box instead of the image (section 18).
 TOOLS_BOX="fedora-harden-tools"
 TOOLS_BOX_PKGS="openscap-scanner scap-security-guide setools-console buildah skopeo podman-compose"
+# This release. The release workflow refuses a tag that doesn't match it.
+FH_VERSION="1.0.0"
+
 # ClamAV image for the scheduled scan on image-based systems (section 16). The
 # signatures ship in the image; minor version pinned, patch releases follow.
 CLAMAV_IMAGE="docker.io/clamav/clamav:1.5"
