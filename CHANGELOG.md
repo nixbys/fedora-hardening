@@ -6,6 +6,19 @@
   checksum and a signed build attestation (`.github/workflows/release.yml`). The
   tag must match `FH_VERSION`, and the changelog section becomes the notes.
 - `--version` (`-V`) prints the release.
+## Unreleased — browsers
+
+- Section 14 is now "Browsers". Besides Firefox and the VPN check, it applies a
+  managed privacy policy to Brave, Chromium and Chrome when they are installed
+  (native or Flatpak): telemetry, Privacy Sandbox, autofill and Brave's Rewards,
+  Wallet, VPN, AI chat and Tor windows off; third-party cookies blocked, HTTPS only,
+  Global Privacy Control, de-AMP, debouncing and query-parameter stripping on. DNS
+  stays with the system's DNS over TLS. Asked once; undone by --rollback.
+- Brave's Flatpak gets /etc read-only when section 4 blocks host-etc, since that is
+  how it loads the policy.
+- Tor Browser and Mullvad Browser are offered in section 14 (opt-in) as well as
+  through the `private` use case. Mullvad Browser loses access to cameras, smart
+  cards, the keyring and NetworkManager; both are left otherwise as shipped.
 ## Unreleased — Rawhide early warning
 
 - A weekly workflow (`.github/workflows/rawhide.yml`) runs the quick and full tiers
