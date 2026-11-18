@@ -41,6 +41,7 @@
 #   tests/run-suite.sh --no-build           # reuse existing images
 #   tests/run-suite.sh --native             # run static tier on this host as-is
 #   tests/run-suite.sh --fedora 44          # test on another Fedora release (default 45)
+#   tests/run-suite.sh --fedora rawhide     # the next release, still in development
 #   tests/run-suite.sh --tier fault         # fault injection (about an hour)
 #   tests/run-suite.sh --tier vm --image quay.io/fedora/fedora-kinoite:45
 #                                           # vm tier on other images (repeatable)
@@ -107,8 +108,8 @@ while (($# > 0)); do
             shift
             ;;
         --fedora)
-            [[ "${2:-}" =~ ^[0-9]+$ ]] || {
-                echo "--fedora needs a release number (e.g. 45)" >&2
+            [[ "${2:-}" =~ ^([0-9]+|rawhide)$ ]] || {
+                echo "--fedora needs a release number (e.g. 45) or rawhide" >&2
                 exit 2
             }
             TARGET_FEDORA="$2"

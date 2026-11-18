@@ -1,0 +1,84 @@
+name: Rawhide early warning
+
+# Runs the quick and full tiers against Fedora Rawhide (the next release) once a
+# week, so breakage from renamed packages or changed defaults shows up months
+# before that release ships. Not a pull-request check: Rawhide breaks on its own
+# sometimes. A failure opens (or updates) one tracking issue instead.
+# The test host is the usual Fedora CoreOS VM (Fedora 45); only the containers
+# under test run Rawhide.
+
+on:
+  schedule:
+    - cron: '0 4 * * 3'  # Wednesdays 04:00 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: rawhide
+  cancel-in-progress: false
+
+jobs:
+  rawhide:
+    name: Quick and full tiers (Fedora Rawhide)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Allow KVM
+        run: |
+          rule='KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"'
+          echo "$rule" | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Cache the Fedora CoreOS image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/fedora-harden-vm
+          key: fcos-rawhide-${{ github.run_id }}
+          restore-keys: |
+            fcos-host-
+            fcos-builder-
+
+      - name: Run the tiers against Rawhide
+        id: suite
+        continue-on-error: true
+        env:
+          FH_VM_RELEASE: "45"
+        run: ./tests/fedora-host.sh "$RUNNER_TEMP/suite-rawhide" --tier quick --tier full --fedora rawhide
+
+      - name: Open or update the tracking issue
+        if: steps.suite.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Fedora Rawhide: the test suite fails"
+          body="The weekly run against Fedora Rawhide failed: $RUN_URL
+
+          The next Fedora release will likely break the same way. The artifacts of that
+          run hold the logs. This issue gets a comment on each failing week."
+          existing="$(gh issue list --state open --search "\"$title\" in:title" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: suite-rawhide
+          path: ${{ runner.temp }}/suite-rawhide
+          if-no-files-found: ignore
