@@ -208,6 +208,10 @@ parse_args() {
 			usage
 			exit 0
 			;;
+		-V | --version)
+			echo "fedora-harden.sh $FH_VERSION"
+			exit 0
+			;;
 		*)
 			err "Unknown argument: $1"
 			usage
