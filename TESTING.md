@@ -65,6 +65,7 @@ the host is never modified.
 ./tests/run-suite.sh --artifacts ./out  # keep logs somewhere specific
 ./tests/run-suite.sh --no-build         # reuse already-built images
 ./tests/run-suite.sh --fedora 45        # run on Fedora 45 images
+./tests/run-suite.sh --fedora rawhide   # the next release (also run weekly by .github/workflows/rawhide.yml)
 ```
 
 Results are written to `<artifacts>/results.txt`, with one log per check.
