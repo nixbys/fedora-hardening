@@ -38,7 +38,7 @@ list_sections() {
        Hyprland    — writes hypridle.conf (lock 5 min, suspend 10 min)
        i3          — xss-lock + i3lock drop-in via config.d/
        LXQt/Lazurite — lxqt-screensaver.conf + lxqt-powermanagement.conf
-  14  Firefox Flatpak + arkenfox + extensions (uBlock, LocalCDN, Containers) + VPN check
+  14  Browsers: Firefox + arkenfox, Brave/Chromium/Chrome policies, VPN check, Tor/Mullvad Browser (opt-in)
   15  WireGuard tunnel with kill switch (--wireguard-config FILE)
   16  ClamAV (weekly scan of /home, on-access opt-in; image-based: container scan)
   17  OpenSCAP (image-based: from a container)

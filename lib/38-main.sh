@@ -71,7 +71,7 @@ main() {
 	sec_11_dot
 	sec_12_fail2ban
 	sec_13_desktop
-	sec_14_firefox
+	sec_14_browsers
 	sec_15_wireguard
 	sec_16_clamav
 	sec_17_openscap
