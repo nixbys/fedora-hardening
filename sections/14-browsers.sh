@@ -1,14 +1,25 @@
 # shellcheck shell=bash
 # ============================================================================
-#  SECTION 14 — Firefox
+#  SECTION 14 — Browsers
 # ============================================================================
-# Firefox Flatpak with arkenfox and three extensions (uBlock Origin, LocalCDN,
-# Multi-Account Containers); the enterprise policy also turns off telemetry, studies and
-# Pocket. Also checks for an active VPN and recommends one when there is none.
-sec_14_firefox() {
+# 14a  Firefox Flatpak with arkenfox and three extensions (uBlock Origin, LocalCDN,
+#      Multi-Account Containers); the enterprise policy also turns off telemetry,
+#      studies and Pocket.
+# 14b  Checks for an active VPN and recommends one when there is none.
+# 14c  Brave, Chromium and Chrome, when installed: an admin policy that turns off
+#      their telemetry and extras and turns on their tracking protections.
+# 14d  Tor Browser and Mullvad Browser, offered (opt-in) as private browsers.
+sec_14_browsers() {
 	should_run 14 || return 0
-	section 14 "Firefox hardening (Flatpak preferred + arkenfox + privacy extensions)"
+	section 14 "Browsers (Firefox + arkenfox, Chromium-based policies, private browsers)"
+	_harden_firefox || true
+	_vpn_check
+	_chromium_policies
+	_offer_private_browsers
+}
 
+# _harden_firefox - 14a: Firefox Flatpak, arkenfox and the enterprise policy.
+_harden_firefox() {
 	# Flatpak is preferred for Firefox due to stronger app sandboxing.
 	if ! cmd_exists flatpak; then
 		warn "flatpak is not available yet; attempting to install it now."
@@ -173,9 +184,18 @@ EOF
 	info "Firefox hardening complete for user '$ff_user' (Flatpak + arkenfox + uBlock Origin/LocalCDN/Multi-Account Containers policy + telemetry disabled)."
 	info "Restart Firefox to apply enterprise policy installs and arkenfox preferences."
 
-	# --- 14b: VPN detection and recommendation ---------------------------------
+}
+
+# _vpn_check - 14b: VPN detection and recommendation.
+_vpn_check() {
 	info "Checking for an active VPN connection (system or browser)..."
-	local vpn_found=0 vpn_source=""
+	local vpn_found=0 vpn_source="" ff_root="" _vpn_user _vpn_home
+	# Firefox profile root, to look for a VPN browser extension below.
+	_vpn_user="${TARGET_USER:-${SUDO_USER:-}}"
+	if [[ -n "$_vpn_user" && "$_vpn_user" != root ]]; then
+		_vpn_home="$(user_home "$_vpn_user")"
+		[[ -n "$_vpn_home" ]] && ff_root="$_vpn_home/.var/app/org.mozilla.firefox/.mozilla/firefox"
+	fi
 
 	# Check for WireGuard interfaces
 	if ip link show 2>/dev/null | grep -qE '^[0-9]+: wg[0-9]+'; then
@@ -262,4 +282,133 @@ VPNEOF
 		add_action_item 14 MEDIUM "NO_VPN_DETECTED" \
 			"No VPN detected — install Mullvad (recommended), ProtonVPN, or IVPN. See section 14b output and section 15 for WireGuard setup."
 	fi
+}
+
+# _chromium_policy <brave|chromium> - The managed policy (JSON) for a Chromium-based
+# browser: no telemetry or extras, tracking protections on. DNS stays with the
+# system resolver (section 11's DNS over TLS) so there is one encrypted DNS path,
+# and it follows a VPN's DNS when one is up.
+_chromium_policy() {
+	local brave=""
+	[[ "$1" == brave ]] && brave='
+  "BraveRewardsDisabled": true,
+  "BraveWalletDisabled": true,
+  "BraveVPNDisabled": true,
+  "BraveAIChatEnabled": false,
+  "BraveLocalAIEnabled": false,
+  "BraveNewsDisabled": true,
+  "BraveTalkDisabled": true,
+  "BraveP3AEnabled": false,
+  "BraveStatsPingEnabled": false,
+  "BraveWebDiscoveryEnabled": false,
+  "BraveGlobalPrivacyControlEnabled": true,
+  "BraveDeAmpEnabled": true,
+  "BraveDebouncingEnabled": true,
+  "BraveTrackingQueryParametersFilteringEnabled": true,
+  "BraveReduceLanguageEnabled": true,
+  "DefaultBraveAdblockSetting": 2,
+  "DefaultBraveFingerprintingV2Setting": 3,
+  "DefaultBraveHttpsUpgradeSetting": 2,
+  "TorDisabled": true,'
+	cat <<JSON
+{${brave}
+  "MetricsReportingEnabled": false,
+  "UrlKeyedAnonymizedDataCollectionEnabled": false,
+  "FeedbackSurveysEnabled": false,
+  "UserFeedbackAllowed": false,
+  "SpellCheckServiceEnabled": false,
+  "SearchSuggestEnabled": false,
+  "AlternateErrorPagesEnabled": false,
+  "NetworkPredictionOptions": 2,
+  "BackgroundModeEnabled": false,
+  "ShoppingListEnabled": false,
+  "SafeBrowsingProtectionLevel": 1,
+  "BlockThirdPartyCookies": true,
+  "HttpsOnlyMode": "force_enabled",
+  "DnsOverHttpsMode": "off",
+  "WebRtcIPHandling": "default_public_interface_only",
+  "PrivacySandboxPromptEnabled": false,
+  "PrivacySandboxAdTopicsEnabled": false,
+  "PrivacySandboxSiteEnabledAdsEnabled": false,
+  "PrivacySandboxAdMeasurementEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "PaymentMethodQueryEnabled": false
+}
+JSON
+}
+
+# _chromium_policies - 14c: managed policies for the Chromium-based browsers that
+# are installed (native package or Flatpak). Brave's Flatpak reads the host's
+# /etc/brave/policies; Chromium's Flatpak reads them through an extension point
+# under /var/lib/flatpak, linked here to /etc/chromium.
+_chromium_policies() {
+	local brave=0 chromium=0 chromium_flatpak=0 chrome=0 names=()
+	{ pkg_cached brave-browser || flatpak info com.brave.Browser &>/dev/null; } && brave=1
+	pkg_cached chromium && chromium=1
+	flatpak info org.chromium.Chromium &>/dev/null && chromium=1 chromium_flatpak=1
+	pkg_cached google-chrome-stable && chrome=1
+	((brave)) && names+=(Brave)
+	((chromium)) && names+=(Chromium)
+	((chrome)) && names+=(Chrome)
+	if ((${#names[@]} == 0)); then
+		info "No Brave, Chromium or Chrome installed — no Chromium-based policies needed."
+		return 0
+	fi
+	info "Chromium-based browsers found: ${names[*]}. A managed policy turns off their telemetry and extras; they will show 'Managed by your organization'."
+	confirm "Apply privacy policies to ${names[*]}?" || return 0
+
+	if ((brave)); then
+		_chromium_policy brave | write_new_file /etc/brave/policies/managed/fedora-harden.json 644 &&
+			ok "Brave: telemetry, Rewards, Wallet, VPN, AI chat and Tor windows off; ad, tracker and fingerprinting protection on (/etc/brave/policies/managed)."
+		# Brave's Flatpak reads the policy through host-etc, which section 4's global
+		# override blocks. Flatpak can't expose a single /etc folder, so Brave alone
+		# gets /etc read-only (no secrets there are readable by a user anyway).
+		if flatpak info com.brave.Browser &>/dev/null &&
+			grep -q 'host-etc' /var/lib/flatpak/overrides/global 2>/dev/null; then
+			backup_file /var/lib/flatpak/overrides/com.brave.Browser &&
+				run "flatpak override --system --filesystem=host-etc:ro com.brave.Browser" &&
+				ok "Brave Flatpak may read /etc (read-only) so it can load the policy."
+		fi
+	fi
+	if ((chromium)); then
+		_chromium_policy chromium | write_new_file /etc/chromium/policies/managed/fedora-harden.json 644 &&
+			ok "Chromium: telemetry and Privacy Sandbox off, third-party cookies blocked, HTTPS only (/etc/chromium/policies/managed)."
+		if ((chromium_flatpak)); then
+			local ext
+			ext="/var/lib/flatpak/extension/org.chromium.Chromium.Extension.system-policies/$(uname -m)/1"
+			if [[ "$(readlink "$ext" 2>/dev/null)" != /etc/chromium ]]; then
+				if ((DRY_RUN)); then
+					info "Would link $ext -> /etc/chromium (Chromium Flatpak policy extension)"
+				elif backup_file "$ext"; then
+					install -d -m 755 "$(dirname "$ext")" && ln -sfn /etc/chromium "$ext" &&
+						ok "Chromium Flatpak reads the policy through $ext."
+				fi
+			fi
+		fi
+	fi
+	if ((chrome)); then
+		_chromium_policy chrome | write_new_file /etc/opt/chrome/policies/managed/fedora-harden.json 644 &&
+			ok "Chrome: telemetry and Privacy Sandbox off, third-party cookies blocked, HTTPS only (/etc/opt/chrome/policies/managed)."
+		add_action_item 14 LOW "CHROME_INSTALLED" \
+			"Google Chrome is installed. Even with the policy it reports to Google; Brave or Firefox (both hardened by section 14) protect privacy better."
+	fi
+	info "Restart the browser, then check chrome://policy (brave://policy) to see the policy in effect."
+}
+
+# _offer_private_browsers - 14d: Tor Browser and Mullvad Browser, opt-in. The
+# "private" use case (section 19) installs them without asking.
+_offer_private_browsers() {
+	local profile="$PROFILE_ARG"
+	[[ -n "$profile" ]] || profile="$(sed -n 's/^USE_CASES=//p' /etc/fedora-harden/profile 2>/dev/null | tr -d '"' || true)"
+	if [[ ",${profile// /,}," == *,private,* ]]; then
+		info "Tor Browser and Mullvad Browser come with the 'private' use case (section 19)."
+		return 0
+	fi
+	if flatpak info org.torproject.torbrowser-launcher &>/dev/null && flatpak info net.mullvad.MullvadBrowser &>/dev/null; then
+		info "Tor Browser and Mullvad Browser are installed; Flatpak keeps them updated."
+		return 0
+	fi
+	confirm "Install Tor Browser and Mullvad Browser for private browsing?" no || return 0
+	_private_browsing
 }
