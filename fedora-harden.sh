@@ -78,6 +78,7 @@
 #                           from the very first run (failsafe complete reversal).
 #                           Sessions without a journal have backed-up files restored;
 #                           use --list-sessions first to view available session IDs.
+#    -V, --version          Show the version and exit
 #    -h, --help             Show this help and exit
 #
 #  SECTIONS (run in numeric order; the numbers follow the dependency flow):

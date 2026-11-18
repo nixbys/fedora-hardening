@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — releases
+
+- Versioned releases: pushing a tag `vX.Y.Z` publishes a tarball, its SHA-256
+  checksum and a signed build attestation (`.github/workflows/release.yml`). The
+  tag must match `FH_VERSION`, and the changelog section becomes the notes.
+- `--version` (`-V`) prints the release.
 ## Unreleased — browsers
 
 - Section 14 is now "Browsers". Besides Firefox and the VPN check, it applies a
