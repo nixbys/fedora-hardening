@@ -63,6 +63,22 @@ sudo ./fedora-harden.sh --only 6,7,9        # run only specific sections
 sudo ./fedora-harden.sh --skip 16,23        # skip sections you don't want
 ```
 
+### Download a release instead
+
+Each release ships a tarball, its checksum and a signed build attestation, so you
+can check what you're about to run as root:
+
+```bash
+v=1.0.0
+curl -LO https://github.com/nixbys/fedora-hardening/releases/download/v$v/fedora-hardening-$v.tar.gz
+curl -LO https://github.com/nixbys/fedora-hardening/releases/download/v$v/SHA256SUMS
+sha256sum -c SHA256SUMS
+gh attestation verify fedora-hardening-$v.tar.gz -R nixbys/fedora-hardening   # built by this repo's CI
+tar xzf fedora-hardening-$v.tar.gz && cd fedora-hardening-$v
+```
+
+`./fedora-harden.sh --version` shows which release you have.
+
 Run it from the clone: `fedora-harden.sh` loads its parts from the folders next to it
 (a symlink to it, e.g. in `/usr/local/bin`, works too).
 
@@ -106,6 +122,7 @@ sudo ./fedora-harden.sh [options]
       --list-sessions     List all past hardening sessions with their status
       --rollback [id|all] Roll back changes from the last session (or session <id>)
                           Use 'all' for a full-reset rollback of every session
+  -V, --version           Show the version and exit
   -h, --help              Show this help and exit
 ```
 
