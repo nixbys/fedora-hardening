@@ -8,6 +8,12 @@
   before it is installed.
 - The scorecard shows whether kernel lockdown is on (Fedora enables it under
   Secure Boot).
+## Unreleased — Rawhide early warning
+
+- A weekly workflow (`.github/workflows/rawhide.yml`) runs the quick and full tiers
+  against Fedora Rawhide, the next release, on the usual Fedora CoreOS test host.
+  It never blocks a pull request; a failure opens or updates one tracking issue.
+- `tests/run-suite.sh --fedora rawhide` tests against Rawhide locally too.
 
 ## Unreleased — privacy and review fixes
 
