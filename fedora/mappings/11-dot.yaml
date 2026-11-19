@@ -1,0 +1,25 @@
+# Section 11 — DNS over TLS (fedora/sections/11-dot.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 11
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.DS-02
+
+nist-sp-800-53r5:
+  - SC-8  # Transmission Confidentiality and Integrity
+  - SC-21  # Secure Name/Address Resolution Service (Recursive or Caching Resolver)
+  - SC-20  # Secure Name/Address Resolution Service (Authoritative Source)
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1557.001  # Name Resolution Poisoning and SMB Relay
+    - T1040  # Network Sniffing
+    - T1557  # Adversary-in-the-Middle
+  mitigations:
+    - M1042  # Disable or Remove Feature or Program
+    - M1041  # Encrypt Sensitive Information
+    - M1037  # Filter Network Traffic
+
+benchmarks: []

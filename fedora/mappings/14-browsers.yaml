@@ -1,0 +1,27 @@
+# Section 14 — Browsers (fedora/sections/14-browsers.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 14
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.DS-02
+  - PR.PS-01
+
+nist-sp-800-53r5:
+  - CM-6  # Configuration Settings
+  - CM-7  # Least Functionality
+  - SC-8  # Transmission Confidentiality and Integrity
+  - SC-18  # Mobile Code
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1189  # Drive-by Compromise
+    - T1539  # Steal Web Session Cookie
+  mitigations:
+    - M1021  # Restrict Web-Based Content
+    - M1048  # Application Isolation and Sandboxing
+    - M1051  # Update Software
+    - M1054  # Software Configuration
+
+benchmarks: []

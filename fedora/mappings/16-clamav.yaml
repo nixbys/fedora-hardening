@@ -1,0 +1,20 @@
+# Section 16 — ClamAV (fedora/sections/16-clamav.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 16
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - DE.CM-09
+
+nist-sp-800-53r5:
+  - SI-3  # Malicious Code Protection
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1566  # Phishing
+    - T1027  # Obfuscated Files or Information
+  mitigations:
+    - M1049  # Antivirus/Antimalware
+
+benchmarks: []

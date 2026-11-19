@@ -1,0 +1,24 @@
+# Section 12 — Fail2Ban (fedora/sections/12-fail2ban.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 12
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - DE.CM-01
+  - RS.MI-01
+
+nist-sp-800-53r5:
+  - AC-7  # Unsuccessful Logon Attempts
+  - SI-4  # System Monitoring
+  - SC-7  # Boundary Protection
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1110  # Brute Force
+    - T1110.001  # Password Guessing
+    - T1110.003  # Password Spraying
+  mitigations:
+    - M1036  # Account Use Policies
+
+benchmarks: []

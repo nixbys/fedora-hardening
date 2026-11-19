@@ -1,0 +1,22 @@
+# Section 17 — OpenSCAP (fedora/sections/17-openscap.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 17
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - ID.RA-01
+  - DE.CM-09
+
+nist-sp-800-53r5:
+  - RA-5  # Vulnerability Monitoring and Scanning
+  - CA-7  # Continuous Monitoring
+  - CM-6  # Configuration Settings
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1190  # Exploit Public-Facing Application
+  mitigations:
+    - M1016  # Vulnerability Scanning
+
+benchmarks: []
