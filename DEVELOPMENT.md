@@ -81,6 +81,18 @@ own entry script and folder, reusing `core/`:
 Don't add distribution checks (`if debian; then ...`) to `core/` or to Fedora's
 sections: a family that needs different behaviour gets it in its own files.
 
+## Framework mappings
+
+`fedora/mappings/NN-name.yaml` maps a section to NIST CSF 2.0 subcategories, NIST
+SP 800-53 Rev. 5 controls and MITRE ATT&CK Enterprise techniques and mitigations; the
+edition is part of each key, so a new edition means new keys, not silently stale
+ones. The files are references only: they never feed the script. When a section's
+behaviour changes, update its mapping and `reviewed` date, then regenerate the table:
+`python3 tests/check-mappings.py --write` (the static tier fails if `docs/MAPPING.md`
+is stale or an ID is malformed). Use only ATT&CK mitigations ATT&CK itself links to
+the listed techniques. A benchmark entry needs item numbers from the benchmark itself,
+and CIS Red Hat Enterprise Linux is always marked `authoritative: false` for Fedora.
+
 ## Conventions in the script
 
 These rules exist because breaking them caused real bugs:

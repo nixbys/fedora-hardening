@@ -1,0 +1,24 @@
+# Section 23 — USBGuard (fedora/sections/23-usbguard.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 23
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.PS-01
+  - PR.AA-06
+
+nist-sp-800-53r5:
+  - MP-7  # Media Use
+  - SC-41  # Port and I/O Device Access
+  - CM-7  # Least Functionality
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1200  # Hardware Additions
+    - T1091  # Replication Through Removable Media
+  mitigations:
+    - M1034  # Limit Hardware Installation
+    - M1042  # Disable or Remove Feature or Program
+
+benchmarks: []

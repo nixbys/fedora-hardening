@@ -1,0 +1,27 @@
+# Section 5 — SELinux (fedora/sections/05-selinux.sh): enforcing now and at boot (a
+# disabled system goes through permissive and a full relabel first), plus the
+# troubleshooting and policy tools.
+# References only; editions pinned in docs/MAPPING.md.
+section: 5
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.AA-05  # least privilege enforced by policy, not by each program
+  - PR.PS-01  # enforcing mode set and kept across reboots
+
+nist-sp-800-53r5:
+  - AC-3  # Access Enforcement
+  - AC-3(3)  # Mandatory Access Control
+  - AC-6  # Least Privilege
+  - SC-39  # Process Isolation (each service confined to its own domain)
+  - CM-6  # Configuration Settings
+
+# Only mitigations ATT&CK links to the listed techniques.
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1068  # Exploitation for Privilege Escalation (limits what an exploited service reaches)
+    - T1611  # Escape to Host (container processes are confined)
+  mitigations:
+    - M1048  # Application Isolation and Sandboxing
+
+benchmarks: []

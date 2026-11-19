@@ -1,0 +1,23 @@
+# Section 20 — Home snapshots and copies (fedora/sections/20-snapshots.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 20
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.DS-11
+  - RC.RP-03
+
+nist-sp-800-53r5:
+  - CP-9  # System Backup
+  - CP-10  # System Recovery and Reconstitution
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1485  # Data Destruction
+    - T1486  # Data Encrypted for Impact
+    - T1490  # Inhibit System Recovery
+  mitigations:
+    - M1053  # Data Backup
+
+benchmarks: []

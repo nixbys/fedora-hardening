@@ -1,0 +1,28 @@
+# Section 8 — Password & PAM policy (fedora/sections/08-pam.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 8
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.AA-01
+  - PR.AA-03
+
+nist-sp-800-53r5:
+  - IA-5  # Authenticator Management
+  - IA-5(1)  # Password-based Authentication
+  - AC-7  # Unsuccessful Logon Attempts
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1110  # Brute Force
+    - T1110.001  # Password Guessing
+    - T1110.003  # Password Spraying
+    - T1548.003  # Sudo and Sudo Caching
+  mitigations:
+    - M1027  # Password Policies
+    - M1036  # Account Use Policies
+    - M1026  # Privileged Account Management
+    - M1028  # Operating System Configuration
+
+benchmarks: []

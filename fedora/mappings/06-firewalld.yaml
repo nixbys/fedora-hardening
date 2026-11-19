@@ -1,0 +1,26 @@
+# Section 6 — firewalld (fedora/sections/06-firewalld.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 6
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.IR-01
+  - DE.CM-01
+
+nist-sp-800-53r5:
+  - SC-7  # Boundary Protection
+  - SC-7(5)  # Deny by Default — Allow by Exception
+  - AU-12  # Audit Record Generation
+  - CM-7  # Least Functionality
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1046  # Network Service Discovery
+    - T1133  # External Remote Services
+    - T1210  # Exploitation of Remote Services
+  mitigations:
+    - M1035  # Limit Access to Resource Over Network
+    - M1042  # Disable or Remove Feature or Program
+
+benchmarks: []

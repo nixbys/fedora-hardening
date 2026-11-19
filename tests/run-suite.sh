@@ -337,6 +337,9 @@ tier_static() {
 
     if need_tool yamllint "static: yamllint"; then
         check "static: yamllint --strict" bash -c 'cd "$1" && yamllint --strict .' _ "$ROOT"
+        # Control-framework mappings: valid, version-pinned IDs, and docs/MAPPING.md
+        # regenerated from them (PyYAML comes with yamllint).
+        check "static: framework mappings and docs/MAPPING.md" python3 "$ROOT/tests/check-mappings.py"
     fi
 
     if need_tool hadolint "static: hadolint"; then

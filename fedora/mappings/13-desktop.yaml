@@ -1,0 +1,23 @@
+# Section 13 — Desktop environment privacy & screen-lock settings (fedora/sections/13-desktop.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 13
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.AA-03
+  - PR.PS-01
+
+nist-sp-800-53r5:
+  - AC-11  # Device Lock
+  - AC-11(1)  # Pattern-hiding Displays
+  - SC-42  # Sensor Capability and Data
+  - CM-7  # Least Functionality
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1091  # Replication Through Removable Media
+  mitigations:
+    - M1042  # Disable or Remove Feature or Program
+
+benchmarks: []

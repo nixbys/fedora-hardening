@@ -23,6 +23,12 @@
   stops with exit 130 (stopped) instead of 1 (bash unsets a coprocess's PID variable
   when it exits, which tripped `set -u`). The GUI tests' Stop checks no longer race a
   section that can finish in under a second.
+## Unreleased — framework mappings
+
+- `fedora/mappings/`: all 24 sections mapped to NIST CSF 2.0, NIST SP 800-53 Rev. 5
+  (release 5.2.0) and MITRE ATT&CK Enterprise v20.1 (#38). `docs/MAPPING.md` is generated from them; the static tier
+  checks both. References only: no framework text, no compliance claim, no effect on
+  what the script does.
 
 ## Unreleased — core and Fedora parts
 

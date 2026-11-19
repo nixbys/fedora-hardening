@@ -1,0 +1,24 @@
+# Section 22 — File permission hardening (fedora/sections/22-perms.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 22
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.AA-05
+  - PR.DS-01
+
+nist-sp-800-53r5:
+  - AC-3  # Access Enforcement
+  - AC-6  # Least Privilege
+  - CM-6  # Configuration Settings
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1222.002  # Linux and Mac Permissions
+    - T1059.004  # Unix Shell
+  mitigations:
+    - M1022  # Restrict File and Directory Permissions
+    - M1038  # Execution Prevention
+
+benchmarks: []

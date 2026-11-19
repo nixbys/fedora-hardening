@@ -1,0 +1,27 @@
+# Section 18 — Container Security (Podman + Toolbox) (fedora/sections/18-containers.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 18
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.AA-05
+  - PR.PS-01
+  - ID.RA-09
+
+nist-sp-800-53r5:
+  - SC-39  # Process Isolation
+  - AC-6  # Least Privilege
+  - CM-14  # Signed Components
+  - SI-7  # Software, Firmware, and Information Integrity
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1611  # Escape to Host
+    - T1525  # Implant Internal Image
+  mitigations:
+    - M1048  # Application Isolation and Sandboxing
+    - M1026  # Privileged Account Management
+    - M1045  # Code Signing
+
+benchmarks: []

@@ -1,0 +1,43 @@
+# Section 7 — SSH hardening (fedora/sections/07-ssh.sh): key-only logins, no root
+# login, no password or keyboard-interactive auth, modern ciphers/MACs/KEX, 3 auth
+# tries, idle sessions dropped, no X11 or agent forwarding.
+# References only; editions pinned in docs/MAPPING.md. Mappings never affect what the
+# script does.
+section: 7
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.AA-03  # users are authenticated (public keys only)
+  - PR.AA-05  # least privilege: no direct root login
+  - PR.DS-02  # data in transit: modern ciphers, MACs and key exchange
+  - PR.IR-01  # remote access limited to authenticated, non-root users
+  - PR.PS-01  # configuration applied as a reviewed drop-in
+
+nist-sp-800-53r5:
+  - AC-17  # Remote Access
+  - AC-17(2)  # Protection of Confidentiality and Integrity Using Encryption
+  - AC-6(2)  # Non-privileged Access for Nonsecurity Functions (log in as a user, then sudo)
+  - AC-7  # Unsuccessful Logon Attempts (MaxAuthTries 3)
+  - AC-12  # Session Termination (ClientAlive)
+  - IA-2  # Identification and Authentication
+  - IA-5  # Authenticator Management (keys, no passwords)
+  - SC-8  # Transmission Confidentiality and Integrity
+  - SC-13  # Cryptographic Protection
+  - CM-6  # Configuration Settings
+  - CM-7  # Least Functionality (no X11 or agent forwarding)
+
+# Only mitigations ATT&CK itself links to the listed techniques, and only where the
+# section does what the mitigation describes (key-only SSH is not MFA, so no M1032).
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1021.004  # Remote Services: SSH
+    - T1110  # Brute Force
+    - T1563.001  # Remote Service Session Hijacking: SSH Hijacking
+  mitigations:
+    - M1042  # Disable or Remove Feature or Program (passwords, root login, forwarding)
+    - M1036  # Account Use Policies (MaxAuthTries)
+    - M1026  # Privileged Account Management (no root login)
+
+# Nearest benchmark for a distribution without its own. Not filled in yet: item
+# numbers must come from the licensed benchmark, never be guessed.
+benchmarks: []

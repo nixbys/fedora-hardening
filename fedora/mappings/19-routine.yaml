@@ -1,0 +1,24 @@
+# Section 19 — Your routine (use-case automation) (fedora/sections/19-routine.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 19
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - ID.RA-07
+  - DE.CM-09
+  - PR.PS-02
+
+nist-sp-800-53r5:
+  - CA-7  # Continuous Monitoring
+  - CM-3  # Configuration Change Control
+  - SI-7  # Software, Firmware, and Information Integrity
+  - SI-2  # Flaw Remediation
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1068  # Exploitation for Privilege Escalation
+  mitigations:
+    - M1051  # Update Software
+
+benchmarks: []

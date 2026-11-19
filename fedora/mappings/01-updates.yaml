@@ -1,0 +1,26 @@
+# Section 1 — System updates (fedora/sections/01-updates.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 1
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.PS-02
+  - PR.PS-03
+
+nist-sp-800-53r5:
+  - SI-2  # Flaw Remediation
+  - SI-2(5)  # Automatic Software and Firmware Updates
+  - SI-7  # Software, Firmware, and Information Integrity
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1068  # Exploitation for Privilege Escalation
+    - T1190  # Exploit Public-Facing Application
+    - T1203  # Exploitation for Client Execution
+    - T1542  # Pre-OS Boot
+  mitigations:
+    - M1051  # Update Software
+    - M1046  # Boot Integrity
+
+benchmarks: []
