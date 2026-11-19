@@ -45,6 +45,15 @@ protection_scorecard() {
 		_score no "Secure Boot" "off" "Turn on Secure Boot in the UEFI firmware setup (Fedora's shim is signed), then check: mokutil --sb-state"
 	fi
 
+	# Kernel lockdown: Fedora turns on "integrity" under Secure Boot, which stops even
+	# root from loading unsigned kernel modules or writing to kernel memory.
+	v="$(sed -n 's/.*\[\([a-z]*\)\].*/\1/p' /sys/kernel/security/lockdown 2>/dev/null || true)"
+	case "$v" in
+	integrity | confidentiality) _score ok "Kernel lockdown" "$v" ;;
+	none) _score no "Kernel lockdown" "off" "Turn on Secure Boot (Fedora then enables lockdown=integrity). Unsigned third-party modules such as NVIDIA's need signing first: see section 3." ;;
+	*) _score na "Kernel lockdown" "not reported by this kernel" ;;
+	esac
+
 	# Firewall
 	if systemctl is-active --quiet firewalld 2>/dev/null; then
 		zone="$(firewall-cmd --get-default-zone 2>/dev/null || true)"
