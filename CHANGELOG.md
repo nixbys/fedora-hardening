@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — kernel, removable media, DMA, scorecard alerts
+
+- Section 9: `dev.tty.ldisc_autoload = 0`; `vm.unprivileged_userfaultfd = 0` and
+  `dev.tty.legacy_tiocsti = 0` (Fedora's defaults, now kept).
+- Section 9's kernel boot hardening asks separately (default no) for DMA attack
+  protection: the IOMMU on and strict, no early PCI DMA. Not offered in a VM.
+- Section 13: no autorun and no automatic file manager window for USB drives and
+  discs (GNOME, Budgie, Cinnamon, MATE); drives still mount.
+- Section 6 logs blocked connections addressed to this machine (`LogDenied=unicast`
+  instead of `all`, which also logged broadcast noise); the weekly summary counts
+  them and lists the most targeted ports.
+- Scorecard: a DMA protection row (IOMMU, Thunderbolt). `--score --json` prints it as
+  JSON. The routine's weekly drift check compares it with last week's, using a
+  root-owned copy of the checks, and notifies when a protection turned off.
+- Reference watch also looks for text repeated word for word from a source
+  (`tests/check-overlap.py`), and tracks Madaidan's Linux Hardening Guide.
+- License: GPL-3.0-or-later (`LICENSE`). The script header no longer shows a stale
+  version; use `--version`.
+- `--help | head` no longer reports an error.
+- `--gui`: when the window is closed or killed while it shows a question, the run
+  stops with exit 130 (stopped) instead of 1 (bash unsets a coprocess's PID variable
+  when it exits, which tripped `set -u`). The GUI tests' Stop checks no longer race a
+  section that can finish in under a second.
+
 ## Unreleased — core and Fedora parts
 
 - The code is split into `core/` (logging, rollback, recovery file, scorecard,

@@ -3,11 +3,11 @@
 Fedora Hardening Script - MCP Server
 
 Exposes the project's development workflow (lint, podman tests, docs checks,
-quality report) as MCP tools so an MCP client such as Claude can drive it.
+quality report) as MCP tools, so any MCP client can run them.
 
 Usage:
     pip install --user mcp
-    claude mcp add fedora-harden-dev -- python3 /path/to/mcp_server_fedora_harden.py
+    register as a stdio server: python3 /path/to/mcp_server_fedora_harden.py
 
 Works with the MCP Python SDK 1.x (FastMCP) and 2.x (MCPServer).
 """

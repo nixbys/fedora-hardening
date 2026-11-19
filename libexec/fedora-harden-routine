@@ -7,7 +7,8 @@
 #   cleanup           unused Flatpak runtimes, dangling Podman images, old OSTree data (monthly)
 #   scrub             Btrfs scrub of every Btrfs filesystem, idle I/O priority (monthly)
 #   diskspace         warn when / or /var/home has less than 10% free (daily)
-#   drift             have managed files changed or managed services stopped? (weekly)
+#   drift             have managed files changed or managed services stopped, or did a
+#                     protection on last week's scorecard turn off? (weekly)
 #   boxes             upgrade toolbox/distrobox containers of each user (weekly)
 #   devclean          remove container build cache older than 30 days for each user (weekly)
 #   flatpak-perms     report apps whose permissions changed since last week (weekly)
@@ -157,8 +158,37 @@ cmd_diskspace() {
     done
 }
 
+# score_check - Compare the protection scorecard with last week's. A protection that
+# was on and is off now (Secure Boot switched off in the firmware, firewalld turned
+# off by an update...) gets a notification. The scorecard is the root-owned copy
+# section 19 installs, never the script in a user's clone.
+score_check() {
+    local helper=/usr/local/libexec/fedora-harden-score now="$STATE/score.now" last="$STATE/score.last"
+    local state label lost=""
+    local -A before=()
+    [[ -x "$helper" ]] || return 0
+    "$helper" >"$now" 2>/dev/null || {
+        rm -f "$now"
+        return 0
+    }
+    if [[ -s "$last" ]]; then
+        while IFS='|' read -r state label _; do before[$label]="$state"; done <"$last"
+        while IFS='|' read -r state label _; do
+            [[ "$state" == no && "${before[$label]:-}" == ok ]] && lost+="${lost:+, }$label"
+        done <"$now"
+    fi
+    mv -f "$now" "$last" && chmod 600 "$last"
+    if [[ -n "$lost" ]]; then
+        say ATTENTION "protection lost since last week: $lost (see: sudo fedora-harden.sh --score)"
+        notify critical "Protection lost" "On last week, off now: $lost. Details and fixes: sudo fedora-harden.sh --score"
+    else
+        say DONE "scorecard: no protection lost since last week"
+    fi
+}
+
 cmd_drift() {
     local changed="" stopped="" u
+    score_check
     if [[ -s "$STATE/managed.sha256" ]]; then
         changed="$(sha256sum --quiet -c "$STATE/managed.sha256" 2>/dev/null | sed 's/: .*//' | tr '\n' ' ')"
     fi
@@ -235,6 +265,7 @@ cmd_summary() {
             ATTENTION*) ((++attention)) && printf '  - %s\n' "${line#ATTENTION }" ;;
             esac
         done < <(journalctl -t fedora-harden-routine --since "$since" -o cat --no-pager 2>/dev/null)
+        firewall_week "$since"
         dir=""
         for d in /root/harden-backups-*/; do # glob order is by date; the last wins
             [[ -f "${d}.followups" ]] && dir="$d"
@@ -256,6 +287,22 @@ cmd_summary() {
         notify normal "Time for a review" "$(review_text)"
         date +%s >"$STATE/review-notified"
     fi
+}
+
+# firewall_week - Blocked inbound connections this week, from firewalld's log of
+# denied unicast packets (section 6), with the most targeted ports.
+firewall_week() {
+    local since="$1" n ports
+    command -v firewall-cmd >/dev/null || return 0
+    n="$(journalctl -k --since "$since" -o cat --no-pager 2>/dev/null | grep -cE '_(DROP|REJECT): ')"
+    ((n > 0)) || {
+        printf '\nFirewall: no blocked connections logged this week.\n'
+        return 0
+    }
+    ports="$(journalctl -k --since "$since" -o cat --no-pager 2>/dev/null | grep -E '_(DROP|REJECT): ' |
+        grep -oE 'PROTO=[A-Z0-9]+ .*DPT=[0-9]+' | sed -E 's/PROTO=([A-Z0-9]+) .*DPT=([0-9]+)/\2\/\L\1/' |
+        sort | uniq -c | sort -rn | head -5 | awk '{printf "%s%s (%d)", (NR > 1 ? ", " : ""), $2, $1}')"
+    printf '\nFirewall: %d blocked inbound connection(s) this week%s.\n' "$n" "${ports:+; most targeted: $ports}"
 }
 
 # Relevance review: every 90 days, compare the saved use cases with what the machine

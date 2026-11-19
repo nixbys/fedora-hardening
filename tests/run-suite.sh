@@ -412,6 +412,16 @@ tier_quick() {
     check "quick: --score prints the protection scorecard and exits 0" \
         bash -c 'quick_out="$(podman run --rm -v "$1:/opt/fedora-hardening:ro,z" --entrypoint /opt/fedora-hardening/fedora-harden.sh "$2" --score </dev/null 2>&1)" &&
             grep -q "Protection now" <<<"$quick_out" && grep -q "SELinux" <<<"$quick_out"' _ "$ROOT" "$IMG_QUICK"
+    # --score --json: stdout is exactly one JSON object (everything else goes to
+    # stderr), with the DMA row and counts that match the rows. Plain bash and grep:
+    # the CI host (Fedora CoreOS) has no python3 or jq.
+    check "quick: --score --json prints only valid JSON" \
+        bash -c 'out="$(podman run --rm -v "$1:/opt/fedora-hardening:ro,z" --entrypoint /opt/fedora-hardening/fedora-harden.sh "$2" --score --json </dev/null 2>/dev/null)" &&
+            [[ "$(wc -l <<<"$out")" -eq 1 && "$out" == "{\"version\":"*"}" ]] &&
+            for l in SELinux "DMA protection" "Kernel lockdown"; do grep -qF "\"label\":\"$l\"" <<<"$out" || exit 1; done &&
+            ok="$(grep -o "\"state\":\"ok\"" <<<"$out" | wc -l)" && no="$(grep -o "\"state\":\"no\"" <<<"$out" | wc -l)" &&
+            [[ "$out" == *"\"ok\":$ok,\"total\":$((ok + no))}" ]]' _ "$ROOT" "$IMG_QUICK"
+    expect_rc "quick: --json without --score exits 2" 2 quick_run --json
     expect_rc "quick: --profile accepts the private use case" 0 quick_run --dry-run --yes --only 19 --profile private,dev
     expect_rc "quick: --recovery-backup needs on or off" 2 quick_run --recovery-backup maybe
     expect_rc "quick: --restore of a missing file exits 2" 2 quick_run --restore /nonexistent

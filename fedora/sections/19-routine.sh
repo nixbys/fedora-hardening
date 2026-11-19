@@ -186,9 +186,33 @@ print(" ".join(b[0].get("requested-packages", []) + b[0].get("requested-local-pa
 
 # At the end of a run with section 19: checksums of the /etc files this run
 # manages and the services it started, for the weekly drift check.
+# _install_score_helper - A root-owned copy of the scorecard checks for the routine's
+# weekly comparison (score_check in the helper). It is built from this run's own
+# functions, so it always matches the script that wrote it; the routine never runs
+# the script from a user's clone, which that user could change.
+_install_score_helper() {
+	local f=/usr/local/libexec/fedora-harden-score
+	write_new_file "$f" 0755 <<SCORE || return 0
+#!/usr/bin/bash
+# Written by fedora-harden.sh (section 19) from its own scorecard; rewritten by
+# every run, removed by --rollback. Prints one "state|label|detail|fix" line per
+# check, for fedora-harden-routine's weekly comparison.
+set -uo pipefail
+IS_OSTREE=$IS_OSTREE
+HAS_DESKTOP=$HAS_DESKTOP
+TARGET_USER=$(printf '%q' "$TARGET_USER")
+SCRIPT_NAME=fedora-harden.sh
+$(declare -f have_cmd _score _score_user_cmd platform_score_rows protection_scorecard)
+declare -ga SCORE_ROWS=()
+protection_scorecard
+printf '%s\n' "\${SCORE_ROWS[@]}"
+SCORE
+}
+
 record_routine_state() {
 	((ROUTINE_ACTIVE)) || return 0
 	((DRY_RUN)) && return 0
+	_install_score_helper
 	local dir=/var/lib/fedora-harden f u
 	install -d -m 700 "$dir" 2>/dev/null || return 0
 	local -A files=()

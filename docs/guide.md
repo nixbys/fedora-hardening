@@ -114,8 +114,8 @@ the timers those use cases need:
 | `fedora-harden-cleanup` (monthly) | unused Flatpak runtimes, dangling Podman images, old OSTree data | everyone |
 | `fedora-harden-diskspace` (daily) | notifies below 10% free | everyone |
 | `fedora-harden-scrub` (monthly) | Btrfs scrub: finds silent corruption | Btrfs systems |
-| `fedora-harden-drift` (weekly) | notifies if a file the script manages changed or a service it started stopped | everyone |
-| `fedora-harden-summary` (Mondays) | what was done, what needs you, open follow-ups; a relevance review every 90 days | everyone |
+| `fedora-harden-drift` (weekly) | notifies if a file the script manages changed, a service it started stopped, or a protection on last week's scorecard is off now (Secure Boot, the firewall...) | everyone |
+| `fedora-harden-summary` (Mondays) | what was done, what needs you, open follow-ups, connections the firewall blocked (and the most targeted ports); a relevance review every 90 days | everyone |
 | `fedora-harden-boxes` (weekly) | upgrades toolbox/distrobox containers (Universal Blue's uupd already does) | creative, dev |
 | `fedora-harden-devclean` (weekly) | removes container build cache older than 30 days | dev |
 | `fedora-harden-flatpak-perms` (weekly, asked) | tells you when an app update widened its permissions | creative |
@@ -238,18 +238,25 @@ Toolbox and distrobox keep development tools off the host; they do not isolate t
 
 **Protection scorecard.** At the end of every run, on the `--gui` summary page, in
 `--report` and with `--score`, the script checks the live system, not what the run
-did: disk encryption, Secure Boot, firewall, automatic updates, SELinux, the SSH
-server, DNS over TLS, home snapshots, screen lock, Flatpak restrictions, the
-firmware security level (fwupd HSI) and, as advice, whether the everyday account is
-an administrator. Each line that is not protected says how to fix it. `--score`
-changes nothing and creates no session.
+did: disk encryption, Secure Boot, kernel lockdown, DMA protection (IOMMU), firewall,
+automatic updates, SELinux, the SSH server, DNS over TLS, home snapshots, screen
+lock, Flatpak restrictions, the firmware security level (fwupd HSI) and, as advice,
+whether the everyday account is an administrator. Each line that is not protected
+says how to fix it. `--score` changes nothing and creates no session;
+`--score --json` prints the same as one JSON object, for scripts and monitoring.
+With the routine (section 19), a root-owned copy of these checks runs weekly and
+notifies you when a protection that was on is now off.
 
 **Kernel boot hardening (opt-in).** Section 9 can add `init_on_free=1`,
 `slab_nomerge`, `page_alloc.shuffle=1` and `randomize_kstack_offset=on` to the
 kernel command line (grubby, or `rpm-ostree kargs` on image-based systems). They make
 memory bugs harder to exploit and cost about 1–5% in some workloads, so they are
 asked for, never added by `--yes` alone (use `--kernel-hardening`), and not offered
-for the gaming use case. `--rollback` removes exactly the options it added.
+for the gaming use case. A second question (default no) adds DMA attack protection:
+`intel_iommu=on iommu=force iommu.passthrough=0 iommu.strict=1
+efi=disable_early_pci_dma`, so a device on Thunderbolt/USB4 or PCIe can read only the
+memory it is given. It is not offered in a virtual machine. `--rollback` removes
+exactly the options it added.
 
 **Service sandboxing.** Section 21 gives running network services (CUPS, Avahi) a
 drop-in with conservative systemd sandboxing, keeps it only if the service restarts

@@ -3,7 +3,8 @@
 #  Fedora 44+ Security Hardening Script (multi-release + multi-desktop aware)
 #  Aligned with privacyguides.org and inteltechniques.com recommendations;
 #  sources and review dates: docs/references.json (checked weekly in CI)
-#  v3.0 - November 2026 (tested on Fedora 44 and 45: tests/run-suite.sh)
+#  Tested on Fedora 44 and 45 (tests/run-suite.sh); version: --version
+#  License: GPL-3.0-or-later (LICENSE)
 #
 #  FEATURES:
 #    • 24 hardening sections (plus subsections 3b, 11b and 14b) with automatic
@@ -59,6 +60,7 @@
 #                           with placeholders unless --full is given
 #        --resume           Review the last session's open follow-ups and exit
 #        --score            Show what protects this machine now (read-only) and exit
+#        --json             With --score: print it as JSON, for scripts and monitoring
 #        --kernel-hardening Add the kernel boot hardening options (section 9; opt-in,
 #                           about 1-5% slower in some workloads)
 #        --wireguard-config <f> Install this WireGuard config with a kill switch (section 15)
