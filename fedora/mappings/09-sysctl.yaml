@@ -1,0 +1,36 @@
+# Section 9 — Kernel and network sysctl (fedora/sections/09-sysctl.sh): ASLR
+# entropy, kptr/dmesg restriction, ptrace limited, BPF hardened, kexec off, TTY line
+# disciplines/userfaultfd/TIOCSTI for root only, unused kernel modules blocked (9b),
+# io_uring for root only (9c, asked); network: reverse-path filtering, no
+# redirects or source routing, SYN cookies, martian logging, IPv6 privacy addresses.
+# The opt-in kernel boot options (memory, DMA/IOMMU) are part of this section too.
+# References only; editions pinned in docs/MAPPING.md.
+section: 9
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.PS-01  # hardened kernel configuration applied and kept in a drop-in
+  - PR.IR-01  # network stack refuses spoofed, redirected and source-routed traffic
+
+nist-sp-800-53r5:
+  - CM-6  # Configuration Settings
+  - CM-7  # Least Functionality (modules, kexec, io_uring, unprivileged BPF)
+  - SI-16  # Memory Protection (ASLR, kptr_restrict, boot memory options)
+  - SC-39  # Process Isolation (ptrace scope, dmesg restriction)
+  - SC-7  # Boundary Protection (rp_filter, no redirects or source routing)
+  - SC-5  # Denial-of-service Protection (SYN cookies)
+
+# Only mitigations ATT&CK links to the listed techniques.
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1068  # Exploitation for Privilege Escalation
+    - T1547.006  # Boot or Logon Autostart Execution: Kernel Modules and Extensions
+    - T1055.008  # Process Injection: Ptrace System Calls
+    - T1557  # Adversary-in-the-Middle (ICMP redirects, source routing)
+  mitigations:
+    - M1050  # Exploit Protection (ASLR, kernel pointer and memory hardening)
+    - M1042  # Disable or Remove Feature or Program (modules, kexec, io_uring)
+    - M1026  # Privileged Account Management (ptrace for privileged users only)
+    - M1037  # Filter Network Traffic (redirects, source routes, rp_filter)
+
+benchmarks: []

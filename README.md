@@ -203,6 +203,8 @@ sudo ./fedora-harden.sh --score                     # what protects this machine
 - Sources: every recommendation cites its source in the code (`# Source:`); the list,
   with review dates, is [docs/references.json](docs/references.json), checked weekly
   in CI
+- [docs/MAPPING.md](docs/MAPPING.md): sections mapped to NIST CSF 2.0, NIST SP 800-53
+  and MITRE ATT&CK, for reviewers and auditors (references, not a compliance claim)
 
 ## License
 
