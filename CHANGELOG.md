@@ -19,6 +19,10 @@
 - License: GPL-3.0-or-later (`LICENSE`). The script header no longer shows a stale
   version; use `--version`.
 - `--help | head` no longer reports an error.
+- `--gui`: when the window is closed or killed while it shows a question, the run
+  stops with exit 130 (stopped) instead of 1 (bash unsets a coprocess's PID variable
+  when it exits, which tripped `set -u`). The GUI tests' Stop checks no longer race a
+  section that can finish in under a second.
 
 ## Unreleased — core and Fedora parts
 
