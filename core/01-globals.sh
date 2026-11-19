@@ -66,6 +66,8 @@ REPORT_FILE=""   # Where to write it (--report FILE)
 REPORT_FULL=0    # Keep host, user names, home paths and addresses in it (--full)
 RESUME_MODE=0    # Review the last session's open follow-ups (--resume)
 SCORE_MODE=0     # Print the protection scorecard and exit (--score)
+SCORE_JSON=0     # With --score: print it as JSON (--json)
+SCORE_FD=1       # Where the JSON goes (main points it at the real stdout)
 FORCE_GUI=0      # Run in one window (--gui)
 
 # Add the kernel boot hardening options without asking (--kernel-hardening)

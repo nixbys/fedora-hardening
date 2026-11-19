@@ -3,7 +3,8 @@
 #  SECTION 9 — Kernel sysctl
 # ============================================================================
 # Network (spoofing, ICMP, redirects, forwarding), ASLR (randomize_va_space,
-# mmap_rnd_bits), BPF JIT hardening, kexec off, ptrace restriction, sysrq off, TCP
+# mmap_rnd_bits), BPF JIT hardening, kexec off, ptrace restriction, sysrq off, TTY
+# line disciplines, userfaultfd and TIOCSTI for root only, TCP
 # timestamp privacy, IPv6 privacy extensions and no core dumps. Based on Madaidan's
 # Linux Hardening Guide (linked by privacyguides.org).
 sec_09_sysctl() {
@@ -68,6 +69,14 @@ kernel.kexec_load_disabled = 1
 # subsystem vulnerabilities (Madaidan Linux Hardening Guide, linked by privacyguides.org)
 net.core.bpf_jit_harden = 2
 kernel.unprivileged_bpf_disabled = 1
+
+# TTY line disciplines load only with CAP_SYS_MODULE (old ones have had exploits);
+# userfaultfd, often used to exploit use-after-free bugs, and typing into another
+# terminal (TIOCSTI) are root-only. Fedora already sets the last two; this keeps
+# them set. (Madaidan Linux Hardening Guide, linked by privacyguides.org)
+dev.tty.ldisc_autoload = 0
+vm.unprivileged_userfaultfd = 0
+dev.tty.legacy_tiocsti = 0
 
 # NOTE: 'kernel.unprivileged_userns_clone' is an Ubuntu-specific knob
 # and does not exist on the Fedora kernel. The Fedora equivalent is

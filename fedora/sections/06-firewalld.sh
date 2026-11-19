@@ -94,7 +94,10 @@ _firewalld_configure() {
 		firewalld_add_service drop "$svc" || true
 	done
 
-	run "$(fw_cmd) --set-log-denied=all" || warn "$(fw_cmd) --set-log-denied failed"
+	# Log blocked connections addressed to this machine (unicast): the routine's
+	# weekly summary counts them. Broadcast and multicast drops (DHCP, mDNS, other
+	# devices' chatter) are not logged; they would only fill the journal.
+	run "$(fw_cmd) --set-log-denied=unicast" || warn "$(fw_cmd) --set-log-denied failed"
 	if ((FW_OFFLINE)); then
 		run "firewall-offline-cmd --zone=drop --list-all || true"
 		warn "firewalld permanent configuration written offline — it is NOT active until firewalld starts."
