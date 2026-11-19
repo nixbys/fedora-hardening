@@ -3,7 +3,7 @@ name: Release
 # Pushing a tag vX.Y.Z publishes that version: a tarball of the tagged tree, its
 # SHA-256 checksum and a signed build attestation, so anyone can verify a
 # download before running it as root (see "Download a release" in the README).
-# The tag must match FH_VERSION in lib/01-globals.sh, and CHANGELOG.md must have a
+# The tag must match FH_VERSION in core/01-globals.sh, and CHANGELOG.md must have a
 # "## X.Y.Z" section, which becomes the release notes.
 
 on:
@@ -42,9 +42,9 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           version="${TAG#v}"
-          declared="$(sed -n 's/^FH_VERSION="\(.*\)"$/\1/p' lib/01-globals.sh)"
+          declared="$(sed -n 's/^FH_VERSION="\(.*\)"$/\1/p' core/01-globals.sh)"
           if [ "$declared" != "$version" ]; then
-            echo "::error::Tag $TAG doesn't match FH_VERSION=$declared in lib/01-globals.sh"
+            echo "::error::Tag $TAG doesn't match FH_VERSION=$declared in core/01-globals.sh"
             exit 1
           fi
           awk -v v="$version" '

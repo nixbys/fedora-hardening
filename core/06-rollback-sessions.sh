@@ -79,7 +79,7 @@ _apply_rollback_journal() {
 	done <"$journal_file"
 
 	local i n=${#journal_lines[@]}
-	local -a touched=() rb_pkgs=()
+	local -a touched=()
 	for ((i = n - 1; i >= 0; i--)); do
 		local ts ctype detail
 		IFS='|' read -r ts ctype detail <<<"${journal_lines[$i]}"
@@ -126,27 +126,6 @@ _apply_rollback_journal() {
 			fi
 			;;
 
-		PKG_INSTALL)
-			if ((IS_OSTREE)); then
-				if ((DRY_RUN)); then
-					info "Would run: rpm-ostree uninstall $detail"
-				elif run "rpm-ostree uninstall $detail" 2>/dev/null; then
-					ok "rpm-ostree uninstall queued: $detail (reboot required)"
-					_rjl "  [OK]   RPM_OSTREE_UNINSTALL  $detail"
-					((++_RBJ_RESTORED))
-				else
-					warn "rpm-ostree uninstall failed for: $detail (may not have been layered)"
-					_rjl "  [WARN] RPM_OSTREE_UNINSTALL  $detail"
-					((++_RBJ_ERRORS))
-				fi
-			else
-				# Removed together after the loop: one transaction also removes the
-				# dependencies they pulled in, even ones shared between installs.
-				read -ra _rb_more <<<"$detail"
-				rb_pkgs+=("${_rb_more[@]}")
-			fi
-			;;
-
 		SERVICE_ENABLE)
 			if ((DRY_RUN)); then
 				info "Would run: systemctl disable $detail"
@@ -181,24 +160,6 @@ _apply_rollback_journal() {
 			_rjl "  [KEEP] SNAPSHOT_DATA  $detail"
 			;;
 
-		OSTREE_PIN)
-			# The booted deployment pinned before the run (its checksum).
-			local pidx
-			pidx="$(ostree_deployment_index "$detail")"
-			if ((DRY_RUN)); then
-				info "Would unpin the safety-point deployment ${detail:0:12}"
-			elif [[ -z "$pidx" ]]; then
-				_rjl "  [SKIP] OSTREE_PIN  ${detail:0:12} (no longer deployed)"
-			elif ostree admin pin --unpin "$pidx" >/dev/null 2>&1; then
-				ok "Unpinned the safety-point deployment ${detail:0:12}"
-				_rjl "  [OK]   OSTREE_PIN  $detail"
-				((++_RBJ_RESTORED))
-			else
-				warn "Could not unpin deployment ${detail:0:12}: sudo ostree admin pin --unpin $pidx"
-				((++_RBJ_ERRORS))
-			fi
-			;;
-
 		ROOT_SNAPSHOT)
 			# A read-only snapshot of / from before the run: a recovery point, kept.
 			info "Kept the pre-run snapshot $detail (delete with: sudo btrfs subvolume delete $detail)."
@@ -229,23 +190,6 @@ _apply_rollback_journal() {
 			else
 				warn "Could not stop wg-quick@$detail"
 				_rjl "  [WARN] WG_TUNNEL  $detail"
-				((++_RBJ_ERRORS))
-			fi
-			;;
-
-		KERNEL_ARGS)
-			# kernel command-line options this run added
-			if ((DRY_RUN)); then
-				info "Would remove kernel options: $detail"
-			elif { ((IS_OSTREE)) && read -ra _rb_kargs <<<"$detail" &&
-				rpm-ostree kargs "${_rb_kargs[@]/#/--delete-if-present=}" >/dev/null 2>&1; } ||
-				{ ((! IS_OSTREE)) && grubby --update-kernel=ALL --remove-args="$detail" 2>/dev/null; }; then
-				ok "Removed kernel options: $detail (after a reboot)"
-				_rjl "  [OK]   KERNEL_ARGS  $detail"
-				((++_RBJ_RESTORED))
-			else
-				warn "Could not remove kernel options: $detail"
-				_rjl "  [WARN] KERNEL_ARGS  $detail"
 				((++_RBJ_ERRORS))
 			fi
 			;;
@@ -324,18 +268,6 @@ _apply_rollback_journal() {
 			fi
 			;;
 
-		AUTHSELECT_FEATURE)
-			if ((DRY_RUN)); then
-				info "Would run: authselect disable-feature $detail"
-			elif authselect disable-feature "$detail" >/dev/null 2>&1; then
-				ok "authselect feature $detail disabled"
-				((++_RBJ_RESTORED))
-			else
-				warn "Could not disable authselect feature $detail"
-				((++_RBJ_ERRORS))
-			fi
-			;;
-
 		LUKS_TOKEN)
 			# device:tpm2|fido2 — the unlock method section 19 enrolled; the
 			# passphrase was never touched
@@ -351,109 +283,18 @@ _apply_rollback_journal() {
 			fi
 			;;
 
-		OSTREE_INITRAMFS)
-			if ((DRY_RUN)); then
-				info "Would run: rpm-ostree initramfs --disable"
-			elif rpm-ostree initramfs --disable >/dev/null 2>&1; then
-				ok "Local initramfs regeneration turned off (applies at the next boot)"
-				((++_RBJ_RESTORED))
-			else
-				warn "Could not run rpm-ostree initramfs --disable"
-				((++_RBJ_ERRORS))
-			fi
-			;;
-
 		*)
-			warn "Unknown journal entry type '$ctype' — skipping"
-			_rjl "  [SKIP] UNKNOWN  $ctype: $detail"
+			# Entries only this distribution family writes (packages, kernel options...).
+			if ! platform_undo_change "$ctype" "$detail"; then
+				warn "Unknown journal entry type '$ctype' — skipping"
+				_rjl "  [SKIP] UNKNOWN  $ctype: $detail"
+			fi
 			;;
 		esac
 	done
 
-	if ((${#rb_pkgs[@]})); then
-		# dnf refuses to remove protected packages (systemd, systemd-udev, dnf, ...);
-		# a minimal system can pull them in as dependencies. They stay installed.
-		local -A protected=()
-		local pname pfile kept=()
-		for pfile in /etc/dnf/protected.d/*.conf /usr/share/dnf5/protected.d/*.conf; do
-			[[ -r "$pfile" ]] || continue
-			while read -r pname; do
-				[[ -n "$pname" && "$pname" != \#* ]] && protected[$pname]=1
-			done <"$pfile"
-		done
-		protected[dnf5]=1 protected[dnf]=1
-		for pname in "${rb_pkgs[@]}"; do
-			if [[ -n "${protected[${pname%.*}]:-}" ]]; then
-				info "Keeping protected package $pname (pulled in as a dependency)."
-			else
-				kept+=("$pname")
-			fi
-		done
-		rb_pkgs=("${kept[@]}")
-	fi
-	# Never remove what something outside this list still needs: a package the user
-	# installed later can depend on one this run pulled in, and dnf would remove the
-	# user's package with it. rpm's own test names every such requirement; keep its
-	# provider and test again until the rest can go.
-	if ((${#rb_pkgs[@]})) && ((! DRY_RUN)); then
-		local -a present=()
-		for pname in "${rb_pkgs[@]}"; do
-			rpm -q "$pname" >/dev/null 2>&1 && present+=("$pname")
-		done
-		rb_pkgs=("${present[@]}")
-		local _try cap prov test_out changed
-		for ((_try = 0; _try < 10 && ${#rb_pkgs[@]} > 0; _try++)); do
-			test_out="$(rpm -e --test "${rb_pkgs[@]}" 2>&1)" && break
-			changed=0
-			local -A still_needed=()
-			while IFS= read -r cap; do
-				[[ -n "$cap" ]] || continue
-				while IFS= read -r prov; do
-					[[ -n "$prov" ]] && still_needed[$prov]=1
-				done < <(rpm -q --whatprovides --qf '%{NAME}.%{ARCH}\n' "$cap" 2>/dev/null)
-			done < <(sed -n 's/^[[:space:]]*\(.*\) is needed by (installed) .*/\1/p' <<<"$test_out")
-			kept=()
-			for pname in "${rb_pkgs[@]}"; do
-				if [[ -n "${still_needed[$pname]:-}" ]]; then
-					info "Keeping $pname: a package installed outside this run still needs it."
-					_rjl "  [KEEP] PKG_REMOVE  $pname (still needed)"
-					changed=1
-				else
-					kept+=("$pname")
-				fi
-			done
-			unset still_needed
-			rb_pkgs=("${kept[@]}")
-			((changed)) || break
-		done
-	fi
-	if ((${#rb_pkgs[@]})); then
-		if ((DRY_RUN)); then
-			info "Would run: dnf remove -y ${rb_pkgs[*]}"
-		elif run "dnf remove -y ${rb_pkgs[*]}" 2>/dev/null; then
-			ok "Packages removed (with the dependencies they pulled in): ${rb_pkgs[*]}"
-			_rjl "  [OK]   PKG_REMOVE  ${rb_pkgs[*]}"
-			((++_RBJ_RESTORED))
-		else
-			# One transaction fails as a whole (a protected or pre-existing package):
-			# fall back to one package at a time.
-			local pkg
-			for pkg in "${rb_pkgs[@]}"; do
-				if run "dnf remove -y $pkg" 2>/dev/null; then
-					ok "Package removed: $pkg"
-					_rjl "  [OK]   PKG_REMOVE  $pkg"
-					((++_RBJ_RESTORED))
-				elif rpm -q "$pkg" >/dev/null 2>&1; then
-					# Still installed: another installed package (often a protected one
-					# such as systemd-udev) needs it. Leaving it is correct.
-					info "Keeping $pkg: an installed package still needs it."
-					_rjl "  [KEEP] PKG_REMOVE  $pkg (still required)"
-				else
-					_rjl "  [SKIP] PKG_REMOVE  $pkg (already absent)"
-				fi
-			done
-		fi
-	fi
+	# Package removal and other family-specific undo steps (the platform file).
+	platform_undo_finish
 	_rollback_reload "${touched[@]}"
 }
 
@@ -461,7 +302,7 @@ _apply_rollback_journal() {
 # loaded from the restored file (auditctl -R), not regenerated.
 _rollback_reload() {
 	((DRY_RUN)) && return 0
-	local p sysctl=0 audit=0 fw=0 ssh=0 units=0 journald=0 svc
+	local p sysctl=0 audit=0 ssh=0 units=0 journald=0 svc
 	local -a sandboxed=()
 	for p in "$@"; do
 		case "$p" in
@@ -472,7 +313,6 @@ _rollback_reload() {
 			;;
 		/etc/sysctl.d/* | /etc/sysctl.conf) sysctl=1 ;;
 		/etc/audit/*) audit=1 ;;
-		/etc/firewalld/*) fw=1 ;;
 		/etc/ssh/*) ssh=1 ;;
 		/etc/systemd/journald.conf.d/*) units=1 journald=1 ;;
 		/etc/systemd/* | /etc/containers/systemd/*) units=1 ;;
@@ -485,8 +325,9 @@ _rollback_reload() {
 	done
 	((sysctl)) && { sysctl --system >/dev/null 2>&1 || true; }
 	((audit)) && have_cmd auditctl && [[ -f /etc/audit/audit.rules ]] && { auditctl -R /etc/audit/audit.rules >/dev/null 2>&1 || true; }
-	((fw)) && systemctl is-active --quiet firewalld 2>/dev/null && { firewall-cmd --reload >/dev/null 2>&1 || true; }
 	((ssh)) && systemctl is-active --quiet sshd 2>/dev/null && { systemctl reload sshd 2>/dev/null || true; }
+	# The firewall and other family-specific services (the platform file).
+	platform_reload_paths "$@"
 	return 0
 }
 
@@ -628,7 +469,7 @@ rollback_session() {
 			printf 'Changes reverted:     %d\n' "$_RBJ_RESTORED"
 			printf 'Errors/warnings:      %d\n' "$_RBJ_ERRORS"
 			printf 'Completed:            %s\n' "$(date '+%F %T')"
-			((IS_OSTREE)) && printf '\nNOTE: rpm-ostree uninstalls require a reboot to take effect.\n'
+			((IS_OSTREE)) && printf '\nNOTE: on image-based systems, package removals take effect after a reboot.\n'
 			printf '\nA reboot is recommended to ensure all rollback changes are applied.\n'
 		} >>"$rb_report" 2>/dev/null || true
 		chmod 600 "$rb_report" 2>/dev/null || true
@@ -640,7 +481,7 @@ rollback_session() {
 	else
 		ok "Rollback complete: $_RBJ_RESTORED change(s) reversed for session $session_id."
 	fi
-	((IS_OSTREE)) && warn "A reboot is required for rpm-ostree changes to take effect."
+	((IS_OSTREE)) && warn "A reboot is required for package changes on this image-based system to take effect."
 	info "A system reboot is recommended to finalize all rollback changes."
 	return 0
 }
@@ -809,7 +650,7 @@ rollback_all_sessions() {
 		printf 'Errors/warnings:    %d\n' "$total_errors"
 		printf 'Completed:          %s\n' "$(date '+%F %T')"
 		printf 'Log file:           %s\n' "$rb_log"
-		((IS_OSTREE)) && printf '\nNOTE: rpm-ostree uninstalls require a reboot to take effect.\n'
+		((IS_OSTREE)) && printf '\nNOTE: on image-based systems, package removals take effect after a reboot.\n'
 		printf '\nA reboot is strongly recommended to finalize all rollback changes.\n'
 	} >>"$rb_report" 2>/dev/null || true
 	chmod 600 "$rb_report" 2>/dev/null || true
@@ -825,7 +666,7 @@ rollback_all_sessions() {
 	else
 		ok "Full rollback complete: $total_restored change(s) reversed across $sessions_ok session(s)."
 	fi
-	((IS_OSTREE)) && warn "A reboot is required for rpm-ostree changes to take effect."
+	((IS_OSTREE)) && warn "A reboot is required for package changes on this image-based system to take effect."
 	info "A system reboot is strongly recommended to finalize all rollback changes."
 	return 0
 }

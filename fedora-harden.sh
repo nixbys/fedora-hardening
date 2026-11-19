@@ -199,101 +199,106 @@ set -Eeuo pipefail
 # whatever umask it was started with (configs in /etc must stay world-readable).
 umask 022
 
-# The program lives in lib/, sections/ and libexec/ next to this file (install it
+# The program lives in core/, fedora/ and libexec/ next to this file (install it
 # with git clone; see README). A symlink to this file (e.g. /usr/local/bin/harden)
 # is followed to find them.
 SCRIPT_DIR="$(readlink -f -- "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="${SCRIPT_DIR%/*}"
-if [[ ! -f "$SCRIPT_DIR/lib/01-globals.sh" || ! -d "$SCRIPT_DIR/sections" ]]; then
-	printf '%s: lib/ and sections/ are missing next to it in %s.\n' "${0##*/}" "$SCRIPT_DIR" >&2
+if [[ ! -f "$SCRIPT_DIR/core/01-globals.sh" || ! -d "$SCRIPT_DIR/fedora/sections" ]]; then
+	printf '%s: core/ and fedora/ are missing next to it in %s.\n' "${0##*/}" "$SCRIPT_DIR" >&2
 	printf 'Run it from a full copy of the project: git clone https://github.com/nixbys/fedora-hardening\n' >&2
 	exit 1
 fi
 
 # Load order matters: files run top-level statements (globals, traps) as they load.
-# shellcheck source=lib/01-globals.sh
-source "$SCRIPT_DIR/lib/01-globals.sh"
-# shellcheck source=lib/02-gui.sh
-source "$SCRIPT_DIR/lib/02-gui.sh"
-# shellcheck source=lib/03-logging.sh
-source "$SCRIPT_DIR/lib/03-logging.sh"
-# shellcheck source=lib/04-report.sh
-source "$SCRIPT_DIR/lib/04-report.sh"
-# shellcheck source=lib/05-rollback-journal.sh
-source "$SCRIPT_DIR/lib/05-rollback-journal.sh"
-# shellcheck source=lib/06-rollback-sessions.sh
-source "$SCRIPT_DIR/lib/06-rollback-sessions.sh"
-# shellcheck source=lib/07-preflight.sh
-source "$SCRIPT_DIR/lib/07-preflight.sh"
+# core/ is the distribution-neutral framework (logging, rollback, recovery file,
+# scorecard, summary, main); fedora/ is everything Fedora-specific: the platform
+# file (packages, detection, section list), helpers and the sections.
+# shellcheck source=core/01-globals.sh
+source "$SCRIPT_DIR/core/01-globals.sh"
+# shellcheck source=core/02-gui.sh
+source "$SCRIPT_DIR/core/02-gui.sh"
+# shellcheck source=core/03-logging.sh
+source "$SCRIPT_DIR/core/03-logging.sh"
+# shellcheck source=core/04-report.sh
+source "$SCRIPT_DIR/core/04-report.sh"
+# shellcheck source=core/05-rollback-journal.sh
+source "$SCRIPT_DIR/core/05-rollback-journal.sh"
+# shellcheck source=core/06-rollback-sessions.sh
+source "$SCRIPT_DIR/core/06-rollback-sessions.sh"
+# shellcheck source=core/07-preflight.sh
+source "$SCRIPT_DIR/core/07-preflight.sh"
+# shellcheck source=core/30-scorecard.sh
+source "$SCRIPT_DIR/core/30-scorecard.sh"
+# shellcheck source=core/34-recovery-file.sh
+source "$SCRIPT_DIR/core/34-recovery-file.sh"
+# shellcheck source=core/35-actionable-items.sh
+source "$SCRIPT_DIR/core/35-actionable-items.sh"
+# shellcheck source=core/36-summary.sh
+source "$SCRIPT_DIR/core/36-summary.sh"
+# shellcheck source=core/38-main.sh
+source "$SCRIPT_DIR/core/38-main.sh"
 
-# Sections, in run order
-# shellcheck source=sections/01-updates.sh
-source "$SCRIPT_DIR/sections/01-updates.sh"
-# shellcheck source=sections/02-dnf-automatic.sh
-source "$SCRIPT_DIR/sections/02-dnf-automatic.sh"
-# shellcheck source=sections/03-secureboot.sh
-source "$SCRIPT_DIR/sections/03-secureboot.sh"
-# shellcheck source=sections/04-flatpak.sh
-source "$SCRIPT_DIR/sections/04-flatpak.sh"
-# shellcheck source=sections/05-selinux.sh
-source "$SCRIPT_DIR/sections/05-selinux.sh"
-# shellcheck source=sections/06-firewalld.sh
-source "$SCRIPT_DIR/sections/06-firewalld.sh"
-# shellcheck source=sections/07-ssh.sh
-source "$SCRIPT_DIR/sections/07-ssh.sh"
-# shellcheck source=sections/08-pam.sh
-source "$SCRIPT_DIR/sections/08-pam.sh"
-# shellcheck source=sections/09-sysctl.sh
-source "$SCRIPT_DIR/sections/09-sysctl.sh"
-# shellcheck source=sections/10-auditd.sh
-source "$SCRIPT_DIR/sections/10-auditd.sh"
-# shellcheck source=sections/11-dot.sh
-source "$SCRIPT_DIR/sections/11-dot.sh"
-# shellcheck source=sections/12-fail2ban.sh
-source "$SCRIPT_DIR/sections/12-fail2ban.sh"
-# shellcheck source=sections/13-desktop.sh
-source "$SCRIPT_DIR/sections/13-desktop.sh"
-# shellcheck source=sections/14-browsers.sh
-source "$SCRIPT_DIR/sections/14-browsers.sh"
-# shellcheck source=sections/15-wireguard.sh
-source "$SCRIPT_DIR/sections/15-wireguard.sh"
-# shellcheck source=sections/16-clamav.sh
-source "$SCRIPT_DIR/sections/16-clamav.sh"
-# shellcheck source=sections/17-openscap.sh
-source "$SCRIPT_DIR/sections/17-openscap.sh"
-# shellcheck source=sections/18-containers.sh
-source "$SCRIPT_DIR/sections/18-containers.sh"
-# shellcheck source=sections/19-routine.sh
-source "$SCRIPT_DIR/sections/19-routine.sh"
-# shellcheck source=sections/20-snapshots.sh
-source "$SCRIPT_DIR/sections/20-snapshots.sh"
-# shellcheck source=sections/21-services.sh
-source "$SCRIPT_DIR/sections/21-services.sh"
-# shellcheck source=sections/22-perms.sh
-source "$SCRIPT_DIR/sections/22-perms.sh"
-# shellcheck source=sections/23-usbguard.sh
-source "$SCRIPT_DIR/sections/23-usbguard.sh"
-# shellcheck source=sections/24-ids.sh
-source "$SCRIPT_DIR/sections/24-ids.sh"
+# Fedora: platform file and section helpers
+# shellcheck source=fedora/lib/00-platform.sh
+source "$SCRIPT_DIR/fedora/lib/00-platform.sh"
+# shellcheck source=fedora/lib/31-kernel-boot.sh
+source "$SCRIPT_DIR/fedora/lib/31-kernel-boot.sh"
+# shellcheck source=fedora/lib/32-service-sandboxing.sh
+source "$SCRIPT_DIR/fedora/lib/32-service-sandboxing.sh"
+# shellcheck source=fedora/lib/33-personal-setup.sh
+source "$SCRIPT_DIR/fedora/lib/33-personal-setup.sh"
+# shellcheck source=fedora/lib/37-safety-point.sh
+source "$SCRIPT_DIR/fedora/lib/37-safety-point.sh"
 
-# Scorecard, section helpers, personal setup, recovery file, summary and main
-# shellcheck source=lib/30-scorecard.sh
-source "$SCRIPT_DIR/lib/30-scorecard.sh"
-# shellcheck source=lib/31-kernel-boot.sh
-source "$SCRIPT_DIR/lib/31-kernel-boot.sh"
-# shellcheck source=lib/32-service-sandboxing.sh
-source "$SCRIPT_DIR/lib/32-service-sandboxing.sh"
-# shellcheck source=lib/33-personal-setup.sh
-source "$SCRIPT_DIR/lib/33-personal-setup.sh"
-# shellcheck source=lib/34-recovery-file.sh
-source "$SCRIPT_DIR/lib/34-recovery-file.sh"
-# shellcheck source=lib/35-actionable-items.sh
-source "$SCRIPT_DIR/lib/35-actionable-items.sh"
-# shellcheck source=lib/36-summary.sh
-source "$SCRIPT_DIR/lib/36-summary.sh"
-# shellcheck source=lib/37-safety-point.sh
-source "$SCRIPT_DIR/lib/37-safety-point.sh"
-# shellcheck source=lib/38-main.sh
-source "$SCRIPT_DIR/lib/38-main.sh"
+# Fedora sections, in run order
+# shellcheck source=fedora/sections/01-updates.sh
+source "$SCRIPT_DIR/fedora/sections/01-updates.sh"
+# shellcheck source=fedora/sections/02-dnf-automatic.sh
+source "$SCRIPT_DIR/fedora/sections/02-dnf-automatic.sh"
+# shellcheck source=fedora/sections/03-secureboot.sh
+source "$SCRIPT_DIR/fedora/sections/03-secureboot.sh"
+# shellcheck source=fedora/sections/04-flatpak.sh
+source "$SCRIPT_DIR/fedora/sections/04-flatpak.sh"
+# shellcheck source=fedora/sections/05-selinux.sh
+source "$SCRIPT_DIR/fedora/sections/05-selinux.sh"
+# shellcheck source=fedora/sections/06-firewalld.sh
+source "$SCRIPT_DIR/fedora/sections/06-firewalld.sh"
+# shellcheck source=fedora/sections/07-ssh.sh
+source "$SCRIPT_DIR/fedora/sections/07-ssh.sh"
+# shellcheck source=fedora/sections/08-pam.sh
+source "$SCRIPT_DIR/fedora/sections/08-pam.sh"
+# shellcheck source=fedora/sections/09-sysctl.sh
+source "$SCRIPT_DIR/fedora/sections/09-sysctl.sh"
+# shellcheck source=fedora/sections/10-auditd.sh
+source "$SCRIPT_DIR/fedora/sections/10-auditd.sh"
+# shellcheck source=fedora/sections/11-dot.sh
+source "$SCRIPT_DIR/fedora/sections/11-dot.sh"
+# shellcheck source=fedora/sections/12-fail2ban.sh
+source "$SCRIPT_DIR/fedora/sections/12-fail2ban.sh"
+# shellcheck source=fedora/sections/13-desktop.sh
+source "$SCRIPT_DIR/fedora/sections/13-desktop.sh"
+# shellcheck source=fedora/sections/14-browsers.sh
+source "$SCRIPT_DIR/fedora/sections/14-browsers.sh"
+# shellcheck source=fedora/sections/15-wireguard.sh
+source "$SCRIPT_DIR/fedora/sections/15-wireguard.sh"
+# shellcheck source=fedora/sections/16-clamav.sh
+source "$SCRIPT_DIR/fedora/sections/16-clamav.sh"
+# shellcheck source=fedora/sections/17-openscap.sh
+source "$SCRIPT_DIR/fedora/sections/17-openscap.sh"
+# shellcheck source=fedora/sections/18-containers.sh
+source "$SCRIPT_DIR/fedora/sections/18-containers.sh"
+# shellcheck source=fedora/sections/19-routine.sh
+source "$SCRIPT_DIR/fedora/sections/19-routine.sh"
+# shellcheck source=fedora/sections/20-snapshots.sh
+source "$SCRIPT_DIR/fedora/sections/20-snapshots.sh"
+# shellcheck source=fedora/sections/21-services.sh
+source "$SCRIPT_DIR/fedora/sections/21-services.sh"
+# shellcheck source=fedora/sections/22-perms.sh
+source "$SCRIPT_DIR/fedora/sections/22-perms.sh"
+# shellcheck source=fedora/sections/23-usbguard.sh
+source "$SCRIPT_DIR/fedora/sections/23-usbguard.sh"
+# shellcheck source=fedora/sections/24-ids.sh
+source "$SCRIPT_DIR/fedora/sections/24-ids.sh"
 
 main "$@"

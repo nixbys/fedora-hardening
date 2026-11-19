@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — core and Fedora parts
+
+- The code is split into `core/` (logging, rollback, recovery file, scorecard,
+  summary, `main`) and `fedora/` (package handling, detection, the section list,
+  section helpers and `fedora/sections/`). Behaviour is unchanged.
+- `core/` reaches dnf, rpm-ostree, grubby, SELinux and firewalld only through
+  `fedora/lib/00-platform.sh`; the static tier checks that, and that the platform
+  file provides everything `core/` expects. DEVELOPMENT.md describes how another
+  distribution family would be added (its own entry script and folder); only Fedora
+  is supported.
+
 ## 1.0.0 — 2026-11-19
 
 The first versioned release. It collects all changes made before releases began, newest first.

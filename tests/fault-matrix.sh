@@ -47,12 +47,12 @@ verdict() { # verdict <name> <0|1 ok> [detail]
 want() { [[ " ${GROUPS_WANTED[*]} " == *" $1 "* ]]; }
 
 # clean_log <log> — no raw bash errors from the script, no unexpected abort.
-# "fedora-harden.sh: line N:" (or lib/..., sections/...) is bash reporting an error
+# "fedora-harden.sh: line N:" (or core/..., fedora/lib/..., fedora/sections/...) is bash reporting an error
 # inside the script.
 clean_log() {
-    ! grep -qE '(fedora-harden|lib/[0-9]+-[a-z-]+|sections/[0-9]+-[a-z-]+)\.sh: line [0-9]+:|unbound variable|syntax error near|bad substitution|Aborted at line' "$1"
+    ! grep -qE '(fedora-harden|(core|lib|sections)/[0-9]+-[a-z-]+)\.sh: line [0-9]+:|unbound variable|syntax error near|bad substitution|Aborted at line' "$1"
 }
-bash_errors() { grep -E '(fedora-harden|lib/[0-9]+-[a-z-]+|sections/[0-9]+-[a-z-]+)\.sh: line [0-9]+:|unbound variable|Aborted at line' "$1" | head -3 | tr '\n' ' '; }
+bash_errors() { grep -E '(fedora-harden|(core|lib|sections)/[0-9]+-[a-z-]+)\.sh: line [0-9]+:|unbound variable|Aborted at line' "$1" | head -3 | tr '\n' ' '; }
 
 # quick <log> [podman args...] -- <script args...> — run in a throwaway no-systemd container
 # (project at /opt/fedora-hardening, readable by any user)
