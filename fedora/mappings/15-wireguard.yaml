@@ -1,0 +1,24 @@
+# Section 15 — WireGuard with kill switch (fedora/sections/15-wireguard.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 15
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.DS-02
+  - PR.IR-01
+
+nist-sp-800-53r5:
+  - SC-8  # Transmission Confidentiality and Integrity
+  - SC-8(1)  # Cryptographic Protection
+  - SC-7  # Boundary Protection
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1040  # Network Sniffing
+    - T1557  # Adversary-in-the-Middle
+  mitigations:
+    - M1041  # Encrypt Sensitive Information
+    - M1037  # Filter Network Traffic
+
+benchmarks: []

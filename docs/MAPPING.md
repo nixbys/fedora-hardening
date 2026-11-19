@@ -25,11 +25,32 @@ is copied here: follow the IDs to the source.
 
 | Section | CSF 2.0 | SP 800-53 Rev. 5 | ATT&CK techniques | ATT&CK mitigations | Benchmark proxy | Reviewed |
 |---|---|---|---|---|---|---|
+| [1. System updates](../fedora/sections/01-updates.sh) | PR.PS-02, PR.PS-03 | SI-2, SI-2(5), SI-7 | T1068, T1190, T1203, T1542 | M1051, M1046 | — | 2026-11-19 |
+| [2. automatic security updates (dnf5-plugin-automatic, Fedora 41+)](../fedora/sections/02-dnf-automatic.sh) | PR.PS-02 | SI-2, SI-2(5) | T1068, T1190, T1203 | M1051 | — | 2026-11-19 |
+| [3. Secure Boot verification](../fedora/sections/03-secureboot.sh) | PR.PS-01, ID.RA-01 | SI-7, SI-7(9), CM-6 | T1542, T1542.003 | M1046 | — | 2026-11-19 |
+| [4. Flatpak / Flathub](../fedora/sections/04-flatpak.sh) | PR.AA-05, PR.PS-01 | AC-6, SC-39, CM-7 | T1203, T1189 | M1048 | — | 2026-11-19 |
 | [5. SELinux](../fedora/sections/05-selinux.sh) | PR.AA-05, PR.PS-01 | AC-3, AC-3(3), AC-6, SC-39, CM-6 | T1068, T1611 | M1048 | — | 2026-11-19 |
+| [6. firewalld](../fedora/sections/06-firewalld.sh) | PR.IR-01, DE.CM-01 | SC-7, SC-7(5), AU-12, CM-7 | T1046, T1133, T1210 | M1035, M1042 | — | 2026-11-19 |
 | [7. SSH hardening](../fedora/sections/07-ssh.sh) | PR.AA-03, PR.AA-05, PR.DS-02, PR.IR-01, PR.PS-01 | AC-17, AC-17(2), AC-6(2), AC-7, AC-12, IA-2, IA-5, SC-8, SC-13, CM-6, CM-7 | T1021.004, T1110, T1563.001 | M1042, M1036, M1026 | — | 2026-11-19 |
+| [8. Password & PAM policy](../fedora/sections/08-pam.sh) | PR.AA-01, PR.AA-03 | IA-5, IA-5(1), AC-7 | T1110, T1110.001, T1110.003, T1548.003 | M1027, M1036, M1026, M1028 | — | 2026-11-19 |
 | [9. Kernel sysctl](../fedora/sections/09-sysctl.sh) | PR.PS-01, PR.IR-01 | CM-6, CM-7, SI-16, SC-39, SC-7, SC-5 | T1068, T1547.006, T1055.008, T1557 | M1050, M1042, M1026, M1037 | — | 2026-11-19 |
+| [10. auditd](../fedora/sections/10-auditd.sh) | PR.PS-04, DE.CM-09 | AU-2, AU-3, AU-12 | T1548 | M1047 | — | 2026-11-19 |
+| [11. DNS over TLS](../fedora/sections/11-dot.sh) | PR.DS-02 | SC-8, SC-21, SC-20 | T1557.001, T1040, T1557 | M1042, M1041, M1037 | — | 2026-11-19 |
+| [12. Fail2Ban](../fedora/sections/12-fail2ban.sh) | DE.CM-01, RS.MI-01 | AC-7, SI-4, SC-7 | T1110, T1110.001, T1110.003 | M1036 | — | 2026-11-19 |
+| [13. Desktop environment privacy & screen-lock settings](../fedora/sections/13-desktop.sh) | PR.AA-03, PR.PS-01 | AC-11, AC-11(1), SC-42, CM-7 | T1091 | M1042 | — | 2026-11-19 |
+| [14. Browsers](../fedora/sections/14-browsers.sh) | PR.DS-02, PR.PS-01 | CM-6, CM-7, SC-8, SC-18 | T1189, T1539 | M1021, M1048, M1051, M1054 | — | 2026-11-19 |
+| [15. WireGuard with kill switch](../fedora/sections/15-wireguard.sh) | PR.DS-02, PR.IR-01 | SC-8, SC-8(1), SC-7 | T1040, T1557 | M1041, M1037 | — | 2026-11-19 |
+| [16. ClamAV](../fedora/sections/16-clamav.sh) | DE.CM-09 | SI-3 | T1566, T1027 | M1049 | — | 2026-11-19 |
+| [17. OpenSCAP](../fedora/sections/17-openscap.sh) | ID.RA-01, DE.CM-09 | RA-5, CA-7, CM-6 | T1190 | M1016 | — | 2026-11-19 |
+| [18. Container Security (Podman + Toolbox)](../fedora/sections/18-containers.sh) | PR.AA-05, PR.PS-01, ID.RA-09 | SC-39, AC-6, CM-14, SI-7 | T1611, T1525 | M1048, M1026, M1045 | — | 2026-11-19 |
+| [19. Your routine (use-case automation)](../fedora/sections/19-routine.sh) | ID.RA-07, DE.CM-09, PR.PS-02 | CA-7, CM-3, SI-7, SI-2 | T1068 | M1051 | — | 2026-11-19 |
+| [20. Home snapshots and copies](../fedora/sections/20-snapshots.sh) | PR.DS-11, RC.RP-03 | CP-9, CP-10 | T1485, T1486, T1490 | M1053 | — | 2026-11-19 |
+| [21. Disable unnecessary services (interactive)](../fedora/sections/21-services.sh) | PR.PS-01, PR.IR-01 | CM-7, SC-39 | T1210, T1046 | M1042, M1048 | — | 2026-11-19 |
+| [22. File permission hardening](../fedora/sections/22-perms.sh) | PR.AA-05, PR.DS-01 | AC-3, AC-6, CM-6 | T1222.002, T1059.004 | M1022, M1038 | — | 2026-11-19 |
+| [23. USBGuard](../fedora/sections/23-usbguard.sh) | PR.PS-01, PR.AA-06 | MP-7, SC-41, CM-7 | T1200, T1091 | M1034, M1042 | — | 2026-11-19 |
+| [24. AIDE file integrity](../fedora/sections/24-ids.sh) | DE.CM-09, PR.DS-01 | SI-7, SI-7(1), AU-12 | T1554 | M1045 | — | 2026-11-19 |
 
-Not mapped yet: sections 1, 2, 3, 4, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24.
+Every section is mapped.
 
 ## Benchmarks
 

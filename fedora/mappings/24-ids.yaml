@@ -1,0 +1,22 @@
+# Section 24 — AIDE file integrity (fedora/sections/24-ids.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 24
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - DE.CM-09
+  - PR.DS-01
+
+nist-sp-800-53r5:
+  - SI-7  # Software, Firmware, and Information Integrity
+  - SI-7(1)  # Integrity Checks
+  - AU-12  # Audit Record Generation
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1554  # Compromise Host Software Binary
+  mitigations:
+    - M1045  # Code Signing
+
+benchmarks: []

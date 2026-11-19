@@ -25,9 +25,8 @@
   section that can finish in under a second.
 ## Unreleased — framework mappings
 
-- `fedora/mappings/`: sections 5 (SELinux), 7 (SSH) and 9 (kernel sysctl) mapped to NIST
-  CSF 2.0, NIST SP 800-53 Rev. 5 (release 5.2.0) and MITRE ATT&CK Enterprise v20.1, as
-  a proof of format (#38). `docs/MAPPING.md` is generated from them; the static tier
+- `fedora/mappings/`: all 24 sections mapped to NIST CSF 2.0, NIST SP 800-53 Rev. 5
+  (release 5.2.0) and MITRE ATT&CK Enterprise v20.1 (#38). `docs/MAPPING.md` is generated from them; the static tier
   checks both. References only: no framework text, no compliance claim, no effect on
   what the script does.
 

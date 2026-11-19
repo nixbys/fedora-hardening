@@ -1,0 +1,23 @@
+# Section 21 — Disable unnecessary services (interactive) (fedora/sections/21-services.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 21
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.PS-01
+  - PR.IR-01
+
+nist-sp-800-53r5:
+  - CM-7  # Least Functionality
+  - SC-39  # Process Isolation
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1210  # Exploitation of Remote Services
+    - T1046  # Network Service Discovery
+  mitigations:
+    - M1042  # Disable or Remove Feature or Program
+    - M1048  # Application Isolation and Sandboxing
+
+benchmarks: []

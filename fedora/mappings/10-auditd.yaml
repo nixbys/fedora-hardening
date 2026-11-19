@@ -1,0 +1,22 @@
+# Section 10 — auditd (fedora/sections/10-auditd.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 10
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.PS-04
+  - DE.CM-09
+
+nist-sp-800-53r5:
+  - AU-2  # Event Logging
+  - AU-3  # Content of Audit Records
+  - AU-12  # Audit Record Generation
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1548  # Abuse Elevation Control Mechanism
+  mitigations:
+    - M1047  # Audit
+
+benchmarks: []

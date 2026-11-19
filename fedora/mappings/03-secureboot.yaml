@@ -1,0 +1,23 @@
+# Section 3 — Secure Boot verification (fedora/sections/03-secureboot.sh).
+# References only; editions pinned in docs/MAPPING.md. Only ATT&CK mitigations ATT&CK
+# links to the listed techniques, and only where the section does what they describe.
+section: 3
+reviewed: 2026-11-19
+
+nist-csf-2.0:
+  - PR.PS-01
+  - ID.RA-01
+
+nist-sp-800-53r5:
+  - SI-7  # Software, Firmware, and Information Integrity
+  - SI-7(9)  # Verify Boot Process
+  - CM-6  # Configuration Settings
+
+mitre-attack-enterprise-v20.1:
+  techniques:
+    - T1542  # Pre-OS Boot
+    - T1542.003  # Bootkit
+  mitigations:
+    - M1046  # Boot Integrity
+
+benchmarks: []
