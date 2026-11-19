@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased — kernel, removable media, DMA, scorecard alerts
+## Unreleased
+
+### Fewer moving parts
+
+- The optional MCP developer server is gone: it repeated what `tests/run-suite.sh`
+  already does. CI and troubleshooting are documented once, in TESTING.md. The GUI
+  test sends Ctrl+W a second time when the virtual display drops the first press.
+
+### Kernel, removable media, DMA, scorecard alerts
 
 - Section 9: `dev.tty.ldisc_autoload = 0`; `vm.unprivileged_userfaultfd = 0` and
   `dev.tty.legacy_tiocsti = 0` (Fedora's defaults, now kept).
@@ -23,14 +31,15 @@
   stops with exit 130 (stopped) instead of 1 (bash unsets a coprocess's PID variable
   when it exits, which tripped `set -u`). The GUI tests' Stop checks no longer race a
   section that can finish in under a second.
-## Unreleased — framework mappings
+
+### Framework mappings
 
 - `fedora/mappings/`: all 24 sections mapped to NIST CSF 2.0, NIST SP 800-53 Rev. 5
   (release 5.2.0) and MITRE ATT&CK Enterprise v20.1 (#38). `docs/MAPPING.md` is generated from them; the static tier
   checks both. References only: no framework text, no compliance claim, no effect on
   what the script does.
 
-## Unreleased — core and Fedora parts
+### Core and Fedora parts
 
 - The code is split into `core/` (logging, rollback, recovery file, scorecard,
   summary, `main`) and `fedora/` (package handling, detection, the section list,

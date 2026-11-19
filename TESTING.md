@@ -10,13 +10,13 @@ runs on the release it tests:
 
 | What | Runs on |
 |------|---------|
-| Static tier (lint, formatting, MCP smoke test) | `registry.fedoraproject.org/fedora:45` — the `lint` image from `Dockerfile.test`, or natively when the host is Fedora 45 |
+| Static tier (lint, formatting, framework mappings) | `registry.fedoraproject.org/fedora:45` — the `lint` image from `Dockerfile.test`, or natively when the host is Fedora 45 |
 | Quick tier | `registry.fedoraproject.org/fedora-minimal:45` (`test-only` image, no systemd) |
 | Full tier | `registry.fedoraproject.org/fedora-minimal:45` with systemd as PID 1 (`base` image) |
 | GUI tier | `registry.fedoraproject.org/fedora:45` + Xvfb, GTK4/libadwaita for Python (`gui` image) |
 | VM tier | the real image-based systems: `quay.io/fedora/fedora-silverblue:45` and a Universal Blue desktop (`ghcr.io/ublue-os/bazzite:stable`), installed with bootc and booted |
 | CI (`.github/workflows/ci.yml`) | static jobs run in a `fedora:45` container; container tests run on a Fedora CoreOS 45 VM (`tests/fedora-host.sh`) |
-| Developer tooling (`setup-dev.sh`, pre-commit) | Fedora RPMs (`ShellCheck yamllint ruff hadolint gitleaks pre-commit python3-mcp`); shfmt is built at a pinned version with Fedora's Go (`tests/install-shfmt.sh`) |
+| Developer tooling (`setup-dev.sh`, pre-commit) | Fedora RPMs (`ShellCheck yamllint ruff hadolint gitleaks pre-commit`); shfmt is built at a pinned version with Fedora's Go (`tests/install-shfmt.sh`) |
 
 On an rpm-ostree host (Silverblue, Kinoite, Bazzite, …) do development inside a
 Fedora 45 toolbox:
@@ -78,8 +78,8 @@ with `-x -a`, so globals and functions defined in one part are known in the othe
 `shfmt -d` (style from `.editorconfig`), a check that `fedora-harden.sh` loads every file
 in `core/` and `fedora/`, checks that `core/` calls no distribution-specific tools and
 that the Fedora platform file provides everything `core/` expects, `yamllint --strict`, `hadolint`, `ruff` and `py_compile`-style
-parsing (including the `--gui` window app, `libexec/fedora-harden-gui.py`), an MCP
-server smoke test over stdio, and a regression guard against `((x++))`-style increments
+parsing (including the `--gui` window app, `libexec/fedora-harden-gui.py`), the
+framework mappings (`tests/check-mappings.py`), and a regression guard against `((x++))`-style increments
 that abort under `set -e` when `x` is 0.
 
 Containers get the working tree mounted read-only at `/opt/fedora-hardening` (the
@@ -290,6 +290,11 @@ On a Fedora host the WireGuard tunnel checks run instead of being skipped.
 ## Troubleshooting
 
 - **`podman: command not found`** — `sudo dnf install podman` (or use the toolbox above).
+- **A git hook fails with "command not found"** — re-run `./setup-dev.sh`; on an
+  rpm-ostree host, inside the toolbox.
+- **Container builds fail with "mounting an overlay over build context"** — podman is
+  running inside a container on Fedora 45+; the suite handles it, for manual builds set
+  `TMPDIR` to a directory on a real filesystem.
 - **Static tier says the lint image failed to build** — see `<artifacts>/build-lint.log`.
 - **A full-tier check failed** — the container is removed afterwards, but every log
   is in the artifacts directory: `full_real1.log`, `full_journal.log` (the container's journal,

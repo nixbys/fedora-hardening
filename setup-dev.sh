@@ -4,7 +4,7 @@
 # The development platform is the latest Fedora (45), the release the tests run on.
 # All tooling comes from Fedora RPMs, so local runs, pre-commit hooks and CI use
 # the same tool versions:
-#   ShellCheck shfmt yamllint ruff hadolint gitleaks pre-commit python3-mcp podman
+#   ShellCheck shfmt yamllint ruff hadolint gitleaks pre-commit podman
 #
 # On an rpm-ostree host (Silverblue, Kinoite, Bazzite, ...) run this inside a
 # Fedora 45 toolbox:
@@ -41,8 +41,6 @@ FEDORA_TOOLS=(
     gitleaks:gitleaks
     pre-commit:pre-commit
 )
-OPTIONAL_RPMS=(python3-mcp)
-SKIP_OPTIONAL=0
 DRY_RUN=0
 
 show_help() {
@@ -53,14 +51,12 @@ USAGE:
     ./setup-dev.sh [OPTIONS]
 
 OPTIONS:
-    --skip-optional    Skip optional packages (${OPTIONAL_RPMS[*]})
     --dry-run          Show what would be installed
     --help             Show this help
 
 PLATFORM:
     Fedora ${TARGET_FEDORA}. Tools are installed as Fedora RPMs with dnf:
       $(printf '%s ' "${FEDORA_TOOLS[@]#*:}")
-    Optional: ${OPTIONAL_RPMS[*]} (for the optional MCP server)
     On rpm-ostree hosts, run inside a fedora-toolbox:${TARGET_FEDORA} toolbox.
 
 EOF
@@ -69,10 +65,6 @@ EOF
 # Parse arguments
 while (($# > 0)); do
     case "$1" in
-        --skip-optional)
-            SKIP_OPTIONAL=1
-            shift
-            ;;
         --dry-run)
             DRY_RUN=1
             shift
@@ -174,11 +166,6 @@ main() {
             missing+=("$rpm")
         fi
     done
-    if ((! SKIP_OPTIONAL)); then
-        for rpm in "${OPTIONAL_RPMS[@]}"; do
-            rpm -q "$rpm" >/dev/null 2>&1 || missing+=("$rpm")
-        done
-    fi
     if ((${#missing[@]})); then
         log_info "Installing with dnf: ${missing[*]}"
         if ! as_root dnf install -y "${missing[@]}"; then

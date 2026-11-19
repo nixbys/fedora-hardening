@@ -20,7 +20,7 @@ toolbox enter fh-dev
 ```
 
 `setup-dev.sh` installs `ShellCheck yamllint ruff hadolint gitleaks pre-commit
-python3-mcp podman` from Fedora's repositories. shfmt is an RPM on Fedora 44; on 45 it
+podman` from Fedora's repositories. shfmt is an RPM on Fedora 44; on 45 it
 is built at the same pinned version with Fedora's Go (`tests/install-shfmt.sh`).
 
 ## Workflow
@@ -141,45 +141,10 @@ and opens its own issue. Write the guidance in the project's own words; a quotat
 (quotation marks or a `>` block, with the citation) is fine. Run it locally before a
 release: `python3 tests/check-overlap.py`.
 
-## CI
-
-| Workflow | Runs | What it does |
-|---|---|---|
-| `ci.yml` | push, PR, nightly | static tier and quick/full/gui tiers on Fedora 44 and 45; gitleaks; trivy |
-| `workflow-security.yml` | push, PR | actionlint and zizmor audit of every workflow |
-| `reference-watch.yml` | weekly | checks the guidance sources and the pinned arkenfox release |
-
-Every job runs in a `registry.fedoraproject.org/fedora` container. Actions are pinned
-to commit SHAs; Dependabot proposes grouped updates weekly.
-
-## MCP server (optional)
-
-`mcp_server_fedora_harden.py` exposes lint, test and docs checks as tools for any
-MCP client (an editor or assistant that speaks the Model Context Protocol). It is
-not used by `fedora-harden.sh`.
-
-```bash
-sudo dnf install python3-mcp
-# then register it with your MCP client as a stdio server:
-python3 "$PWD/mcp_server_fedora_harden.py"
-```
-
-Tools: `verify-script`, `lint-script`, `test-script`, `check-security`,
-`validate-docs`, `analyze-performance`, `generate-changelog`, `quality-report`,
-`setup-dev-environment`.
-
 ## Releasing
 
 Changes land through pull requests with green CI. Before a large change, tag the
 current `main` so users can return to it (for example `pre-fedora44-overhaul`), and
 record user-visible changes in [CHANGELOG.md](CHANGELOG.md).
 
-## Troubleshooting
-
-- **A hook fails with "command not found"**: re-run `./setup-dev.sh`; on an rpm-ostree
-  host, make sure you are inside the toolbox.
-- **Container builds fail with "mounting an overlay over build context"**: you are
-  running podman inside a container on Fedora 45+; the suite handles this, for manual
-  builds set `TMPDIR` to a directory on a real filesystem.
-- **SELinux denials on bind mounts**: use `:z`, not `:Z`, when mounting the repository
-  into containers while tests run.
+CI, the test tiers and troubleshooting are in [TESTING.md](TESTING.md).

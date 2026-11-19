@@ -135,8 +135,3 @@ These are open and acknowledged:
    idempotency, and `--rollback all`. Sections that need real hardware or a
    desktop session (Secure Boot, USBGuard, firmware, most desktop settings) are
    only dry-run checked; contributions adding assertions are welcome.
-3. **`mcp_server_fedora_harden.py` shells out to run lint/test/security
-   commands** as a local development convenience. It is not part of the
-   hardening script's runtime path and is not invoked by `fedora-harden.sh`,
-   but it runs with whatever privileges the developer invoking it has —
-   treat it as regular local tooling, not as a hardened component.
