@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased — kernel and sudo
+## 1.0.0 — 2026-11-19
+
+The first versioned release. It collects all changes made before releases began, newest first.
+
+### Kernel and sudo
 
 - Section 9 asks to limit io_uring, a frequently exploited kernel interface, to
   root (`kernel.io_uring_disabled = 1`); off by default for the dev use case.
@@ -8,13 +12,15 @@
   before it is installed.
 - The scorecard shows whether kernel lockdown is on (Fedora enables it under
   Secure Boot).
-## Unreleased — releases
+
+### Releases
 
 - Versioned releases: pushing a tag `vX.Y.Z` publishes a tarball, its SHA-256
   checksum and a signed build attestation (`.github/workflows/release.yml`). The
   tag must match `FH_VERSION`, and the changelog section becomes the notes.
 - `--version` (`-V`) prints the release.
-## Unreleased — browsers
+
+### Browsers
 
 - Section 14 is now "Browsers". Besides Firefox and the VPN check, it applies a
   managed privacy policy to Brave, Chromium and Chrome when they are installed
@@ -27,14 +33,15 @@
 - Tor Browser and Mullvad Browser are offered in section 14 (opt-in) as well as
   through the `private` use case. Mullvad Browser loses access to cameras, smart
   cards, the keyring and NetworkManager; both are left otherwise as shipped.
-## Unreleased — Rawhide early warning
+
+### Rawhide early warning
 
 - A weekly workflow (`.github/workflows/rawhide.yml`) runs the quick and full tiers
   against Fedora Rawhide, the next release, on the usual Fedora CoreOS test host.
   It never blocks a pull request; a failure opens or updates one tracking issue.
 - `tests/run-suite.sh --fedora rawhide` tests against Rawhide locally too.
 
-## Unreleased — privacy and review fixes
+### Privacy and review fixes
 
 Project layout:
 - `fedora-harden.sh` is now a short entry point that loads `lib/NN-*.sh` (shared code)
@@ -92,7 +99,7 @@ New:
   NetworkManager's connectivity check can be turned off (asked; default keep).
 - The weekly summary says when a reboot is waiting for installed updates.
 
-## Unreleased — scorecard and deep hardening
+### Scorecard and deep hardening
 
 - **Protection scorecard:** at the end of a run, on the `--gui` summary page, in
   `--report`, and with the new read-only `--score`, the script checks the live
@@ -108,7 +115,7 @@ New:
   before and after is reported. sshd is left alone (its sandbox would apply to
   every login session). `--rollback` removes the drop-ins and restarts the service.
 
-## Unreleased — personal setup
+### Personal setup
 
 - **Section 19 also sets up what your use cases need, once each:** a `dev` box with
   build tools and the `davincibox` container for DaVinci Resolve (created for you,
@@ -124,7 +131,7 @@ New:
   adds them.
 - The use-case profile (`/etc/fedora-harden/profile`) is now readable by root only.
 
-## Unreleased — sections numbered in the order they run
+### Sections numbered in the order they run
 
 - **Sections are renumbered 1–24 in execution order.** The order was already chosen
   for dependencies; now the numbers match it, in `--list`, the README and the code.
@@ -152,7 +159,7 @@ New:
   package), so the first check reported changes the run itself had made.
 - Follow-up items and session reports from earlier runs keep their old numbers.
 
-## Unreleased — one GUI mode
+### One GUI mode
 
 - **`--gui` runs the whole session in one window.** The script no longer opens a
   progress window, separate question dialogs and a separate summary. One GTK4/libadwaita
@@ -177,7 +184,7 @@ New:
   the GUI. On other package-based systems `--gui` installs them.
 - zenity and kdialog are no longer used. `--gui-full` is removed: use `--gui`.
 
-## Unreleased — home snapshots (section 20)
+### Home snapshots (section 20)
 
 - **New section 20:** snapshots of the home folder on every supported system:
   Snapper on Bazzite, read-only Btrfs snapshots on other Btrfs systems (home is made
@@ -190,7 +197,7 @@ New:
 - Off-machine backup options are ranked for the machine as follow-ups.
 - Rollback never deletes snapshots or copies.
 
-## Unreleased — your routine (section 19)
+### Your routine (section 19)
 
 - **New section 19:** detects how the machine is used (everyday, gaming, creative,
   development, laptop), asks once or takes `--profile`, and adds only the timers those
@@ -205,7 +212,7 @@ New:
 - Heavy jobs wait for mains power and for a game to end. Everything is undone by
   `--rollback`.
 
-## Unreleased — journal logging, honest diagnosis, WireGuard kill switch
+### Journal logging, honest diagnosis, WireGuard kill switch
 
 - **Logs in the system journal:** every message goes to the journal with the session
   and section as fields (`journalctl -t fedora-harden FH_SESSION=<id>`); a log file is
@@ -223,7 +230,7 @@ New:
   all of it is undone by `--rollback`. Without a config it does nothing (it used to
   install `wireguard-tools` and print a guide).
 
-## Unreleased — production hardening from fault injection
+### Production hardening from fault injection
 
 A new `fault` test tier breaks the script's surroundings one fault at a time. Every
 failure it found is fixed and covered by the tier.
@@ -255,7 +262,7 @@ failure it found is fixed and covered by the tier.
   without ClamAV; section 18 merges into an existing image policy instead of
   replacing it, keeping signature rules such as Universal Blue's.
 
-## Unreleased — image-based systems keep tools out of the image
+### Image-based systems keep tools out of the image
 
 On Silverblue, Kinoite, Bazzite, Aurora and other Atomic variants the script no
 longer layers tools into the image; package-based Fedora behaves as before.
@@ -293,7 +300,7 @@ longer layers tools into the image; package-based Fedora behaves as before.
   weekly report on a real OSTree sysroot). They replace a simulation with stub
   commands. Both run in CI for Fedora 44 and 45.
 
-## Unreleased — current guidance (Privacy Guides, IntelTechniques)
+### Current guidance (Privacy Guides, IntelTechniques)
 
 Reviewed against Privacy Guides (Linux Overview updated October 2026, Desktop,
 Linux Application Sandboxing) and IntelTechniques (Extreme Privacy 5th ed., 2026
@@ -323,7 +330,7 @@ OS Telemetry Guide):
   **Reference watch** workflow open an issue when a source changes or arkenfox
   releases a new version. The static tests also verify the pinned arkenfox checksum.
 
-## Unreleased — Fedora 45
+### Fedora 45
 
 - Tested on **Fedora 45** alongside 44: every test tier runs on both releases in CI.
   The hardening needed no changes for 45; the effective SSH, password and firewall
@@ -337,9 +344,9 @@ OS Telemetry Guide):
   the tests now allow for it. Dependabot no longer tries to track the Fedora
   images, which it cannot query.
 
-## Unreleased — Fedora 44 test suite, hardening fixes, Material-dark GUI
+### Fedora 44 test suite, hardening fixes, Material-dark GUI
 
-### If you ran an earlier version: re-run these sections
+#### If you ran an earlier version: re-run these sections
 
 Earlier versions reported some hardening as applied when it was not. Re-run them
 after updating (preview first with `--dry-run`):
@@ -356,7 +363,7 @@ sudo ./fedora-harden.sh --only 2,7,8,13,16
 | 15 Desktop settings | `gsettings`/`xfconf-query` ran without a D-Bus session and silently discarded every change. | Runs on the user's session bus and reads the values back. |
 | 21 ClamAV | `clamd@scan` was started before its socket was configured and never ran; on-access scanning was configured but not started. | Socket configured first; `clamonacc` enabled. |
 
-### Safety
+#### Safety
 
 - sshd is never restarted on a configuration that `sshd -t` rejects.
 - `--yes` no longer disables password logins when the target user has no public
@@ -366,7 +373,7 @@ sudo ./fedora-harden.sh --only 2,7,8,13,16
   longer edit `/etc/selinux/config`.
 - `--rollback` now also removes files the script created.
 
-### Reliability
+#### Reliability
 
 The script used to abort — skipping every later section — on:
 `((counter++))` when the counter was 0 (36 places, including rollback),
@@ -375,7 +382,7 @@ unsupported sysctl key, auditd/resolved/rkhunter/AIDE/Flatpak failures, a failed
 package install, or a failed config write. All now warn and add a follow-up item.
 A successful run from a read-only directory no longer exits 1.
 
-### GUI (`--gui`, `--gui-full`)
+#### GUI (`--gui`, `--gui-full`)
 
 - Material Design 3 dark theme for all dialogs, titlebar included (zenity draws its
   own); private to the script, no desktop settings changed. zenity is preferred,
@@ -389,7 +396,7 @@ A successful run from a read-only directory no longer exits 1.
   (selectable, so commands can be copied). Dialog errors fall back to terminal
   prompts instead of answering "No".
 
-### Testing, CI and tooling
+#### Testing, CI and tooling
 
 - `tests/run-suite.sh`: static, quick, full (real run, idempotency, rollback) and
   gui tiers, all on Fedora 44 images. The old harness pulled the wrong image and
