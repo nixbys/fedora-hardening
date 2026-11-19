@@ -73,10 +73,11 @@ Results are written to `<artifacts>/results.txt`, with one log per check.
 ### static
 
 `bash -n` on every script and part, ShellCheck (warning level and the strict
-`.shellcheckrc` profile; `lib/` and `sections/` are checked through `fedora-harden.sh`
+`.shellcheckrc` profile; `core/` and `fedora/` are checked through `fedora-harden.sh`
 with `-x -a`, so globals and functions defined in one part are known in the others),
 `shfmt -d` (style from `.editorconfig`), a check that `fedora-harden.sh` loads every file
-in `lib/` and `sections/`, `yamllint --strict`, `hadolint`, `ruff` and `py_compile`-style
+in `core/` and `fedora/`, checks that `core/` calls no distribution-specific tools and
+that the Fedora platform file provides everything `core/` expects, `yamllint --strict`, `hadolint`, `ruff` and `py_compile`-style
 parsing (including the `--gui` window app, `libexec/fedora-harden-gui.py`), an MCP
 server smoke test over stdio, and a regression guard against `((x++))`-style increments
 that abort under `set -e` when `x` is 0.

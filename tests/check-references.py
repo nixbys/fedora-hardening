@@ -3,7 +3,7 @@
 
 Reads docs/references.json, fetches every source and compares a fingerprint of
 its main content with the stored one. GitHub-release sources are compared with
-the version pinned in the script (lib/01-globals.sh).
+the version pinned in the script (core/01-globals.sh).
 
     python3 tests/check-references.py              # report; exit 1 if anything changed
     python3 tests/check-references.py --update     # after review: store new fingerprints
@@ -187,7 +187,7 @@ def main() -> int:
         lines += [
             "",
             "**To resolve:** read the changes, update the script where the advice changed",
-            "(bump `ARKENFOX_VERSION`/`ARKENFOX_SHA256` in `lib/01-globals.sh` for a new",
+            "(bump `ARKENFOX_VERSION`/`ARKENFOX_SHA256` in `core/01-globals.sh` for a new",
             "arkenfox release),",
             "then run `python3 tests/check-references.py --update` and commit",
             "`docs/references.json`. This issue updates itself on the next weekly run.",

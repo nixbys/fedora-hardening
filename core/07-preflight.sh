@@ -13,61 +13,6 @@ usage() {
     ' "$0"
 }
 
-list_sections() {
-	cat <<'EOF'
-   1  System updates (incl. fwupd firmware/microcode + hardware key support)
-   2  Automatic updates
-   3  Secure Boot verify
-   4  Flatpak / Flathub, global Flatpak restrictions, mat2 (Firejail opt-in)
-   5  SELinux tools
-   6  firewalld
-   7  SSH hardening
-   8  PAM/password policy (incl. sudo use_pty)
-   9  Kernel sysctl (incl. IPv6 privacy extensions, io_uring for root only)
-  10  auditd (incl. time/network/mount rules, deletes under /etc)
-  11  DNS over TLS (11b: NetworkManager MAC address randomization)
-  12  Fail2Ban
-  13  Desktop environment settings (auto-dispatches by detected DE):
-       KDE Plasma  — kwriteconfig6/5: screen lock, recent-docs, BT opt-out
-       GNOME/Onyx  — gsettings: lock, location off, privacy (mic off if asked)
-       Budgie      — gsettings (GNOME backend): same privacy stack
-       Cinnamon    — org.cinnamon.desktop.screensaver + GNOME privacy schemas
-       MATE        — org.mate.screensaver + org.mate.power-manager
-       XFCE/Vauxite— xfconf-query: screensaver + power manager idle
-       Sway/Sericea— writes swaylock.conf + swayidle.conf
-       Hyprland    — writes hypridle.conf (lock 5 min, suspend 10 min)
-       i3          — xss-lock + i3lock drop-in via config.d/
-       LXQt/Lazurite — lxqt-screensaver.conf + lxqt-powermanagement.conf
-  14  Browsers: Firefox + arkenfox, Brave/Chromium/Chrome policies, VPN check, Tor/Mullvad Browser (opt-in)
-  15  WireGuard tunnel with kill switch (--wireguard-config FILE)
-  16  ClamAV (weekly scan of /home, on-access opt-in; image-based: container scan)
-  17  OpenSCAP (image-based: from a container)
-  18  Container security (Podman + toolbox/distrobox / containerized-mindset setup)
-  19  Your routine: upkeep, health and drift checks for your use cases (--profile)
-  20  Home snapshots (Btrfs) or incremental copies, as often as the machine is used
-  21  Service trim
-  22  File permissions (incl. umask 077 for users, core dump limits, hostname privacy)
-  23  USBGuard
-  24  AIDE file integrity (image-based: image signature + /etc change report)
-
- Execution order: 1 to 24. The numbers follow the dependency flow.
-
- DE detection (section 13 auto-dispatches — all detected DEs are hardened):
-    Running session: XDG_CURRENT_DESKTOP / DESKTOP_SESSION
-    Installed tools: kwriteconfig, gnome-shell, cinnamon, mate-session,
-                     xfce4-session, startlxqt, sway, Hyprland, i3, budgie-desktop
-    Spin → DE:  Kinoite/Aurora→KDE  Silverblue/Onyx→GNOME  Sericea→Sway
-                Lazurite→LXQt  Vauxite→XFCE  Bazzite→KDE or GNOME
-
- Supported Fedora variants (auto-detected):
-    Workstation, Server, IoT, Cloud, CoreOS
-    Kinoite (KDE), Silverblue (GNOME), Onyx (GNOME Atomic)
-    Sericea (Sway Atomic), Lazurite (LXQt Atomic), Vauxite (XFCE Atomic)
-    Bazzite (gaming), Aurora / Universal Blue (KDE)
-    XFCE/LXQt/Cinnamon/MATE/Budgie spins (mutable)
-EOF
-}
-
 parse_args() {
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
@@ -290,57 +235,8 @@ preflight() {
 
 	init_log_target || true
 
-	# Distro check: Verify this is a Fedora system and detect variant
-	# Sources /etc/os-release to extract distribution metadata
-	if [[ ! -r /etc/os-release ]]; then
-		err "Cannot read /etc/os-release — is this Fedora?"
-		exit 1
-	fi
-	# shellcheck source=/dev/null
-	. /etc/os-release
-	[[ "${ID:-}" == "fedora" ]] || warn "Distro ID is '${ID:-unknown}', not 'fedora'. Proceeding anyway."
-	if [[ -e /run/ostree-booted ]]; then
-		IS_OSTREE=1
-	fi
-	FEDORA_VARIANT="${VARIANT_ID:-${VARIANT:-unknown}}"
-	detect_fedora_release_type
-	detect_desktop_envs
-	((IS_KINOITE)) && HAS_KDE=1
-	if [[ "${VERSION_ID:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-		FEDORA_MAJOR="${VERSION_ID%%.*}"
-	fi
-	if ((FEDORA_MAJOR > 0 && FEDORA_MAJOR < 44)); then
-		warn "Fedora version is '${VERSION_ID:-unknown}' — guide targets Fedora 44+."
-		confirm "Proceed on this older version?" || exit 0
-	fi
-	info "Host: $HOST_LABEL   Distro: ${PRETTY_NAME:-?}   Kernel: $KERNEL_LABEL"
-	info "Variant: ${FEDORA_VARIANT}"
-	info "Release flags: workstation=$IS_WORKSTATION server=$IS_SERVER iot=$IS_IOT cloud=$IS_CLOUD coreos=$IS_COREOS ostree=$IS_OSTREE atomic_desktop=$IS_ATOMIC_DESKTOP"
-	if ((IS_OSTREE)); then
-		info "Detected rpm-ostree (immutable) host. Using rpm-ostree for package/update actions."
-	fi
-	if ((IS_KINOITE)); then
-		info "Detected Fedora Kinoite variant."
-	fi
-	if ((IS_SILVERBLUE)); then
-		info "Detected Fedora Silverblue variant. KDE-only tweaks will be skipped where incompatible."
-	fi
-	if ((IS_WORKSTATION)); then
-		info "Detected Fedora Workstation variant. Desktop-focused sections are enabled."
-	fi
-	if ((IS_SERVER)); then
-		info "Detected Fedora Server release profile."
-	fi
-	if ((IS_IOT)); then
-		info "Detected Fedora IoT release profile."
-	fi
-	if ((IS_CLOUD)); then
-		info "Detected Fedora Cloud release profile."
-	fi
-	if ((IS_COREOS)); then
-		info "Detected Fedora CoreOS release profile."
-	fi
-	info "Fedora major version detected: ${FEDORA_MAJOR}"
+	# Distribution and variant detection (the family's platform file).
+	platform_detect
 	if ((HAS_DESKTOP)); then
 		info "Detected desktop environments: ${DESKTOP_ENVS:-unknown}"
 	else

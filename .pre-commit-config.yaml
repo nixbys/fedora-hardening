@@ -19,15 +19,15 @@ repos:
         entry: shellcheck --severity=warning
         language: system
         types: [shell]
-        exclude: '^(lib|sections)/'
+        exclude: '^(core|fedora)/'
 
-      # lib/ and sections/ are parts of fedora-harden.sh: check them through it, so
+      # core/ and fedora/ are parts of fedora-harden.sh: check them through it, so
       # globals and functions defined in one part are known in the others.
       - id: shellcheck-parts
-        name: shellcheck fedora-harden.sh with lib/ and sections/ (Fedora RPM)
+        name: shellcheck fedora-harden.sh with core/ and fedora/ (Fedora RPM)
         entry: shellcheck -x -a --severity=warning fedora-harden.sh
         language: system
-        files: '^(fedora-harden\.sh|(lib|sections)/.*\.sh)$'
+        files: '^(fedora-harden\.sh|(core|fedora)/.*\.sh)$'
         pass_filenames: false
 
       - id: shfmt

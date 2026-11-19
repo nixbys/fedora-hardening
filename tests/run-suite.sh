@@ -291,19 +291,37 @@ tier_static() {
     tier_header "static (platform: $platform)"
     on_target_platform || record SKIP "static: platform is Fedora $TARGET_FEDORA" "running natively on $platform (--native)"
 
-    # The script is fedora-harden.sh plus the parts it loads from lib/ and sections/,
+    # The script is fedora-harden.sh plus the parts it loads from core/ and fedora/,
     # and the routine helper it installs from libexec/. ShellCheck checks the parts
     # through fedora-harden.sh (-x follows its source lines, -a reports their
     # findings), so they are analysed with the globals and functions they share.
-    local parts=("$ROOT"/lib/*.sh "$ROOT"/sections/*.sh)
+    local parts=("$ROOT"/core/*.sh "$ROOT"/fedora/lib/*.sh "$ROOT"/fedora/sections/*.sh)
     local scripts=("$ROOT"/*.sh "$ROOT"/tests/*.sh "$ROOT/libexec/fedora-harden-routine")
     local all=("${scripts[@]}" "${parts[@]}")
     local rel=("${all[@]#"$ROOT"/}")
 
     check "static: bash -n (all scripts)" bash -c 'for f; do bash -n "$f" || exit 1; done' _ "${all[@]}"
-    check "static: fedora-harden.sh loads every file in lib/ and sections/" bash -c '
-        cd "$1" && diff <(printf "%s\n" lib/*.sh sections/*.sh | sort) \
+    check "static: fedora-harden.sh loads every file in core/ and fedora/" bash -c '
+        cd "$1" && diff <(printf "%s\n" core/*.sh fedora/lib/*.sh fedora/sections/*.sh | sort) \
             <(sed -n "s|^source \"\$SCRIPT_DIR/\(.*\)\"\$|\1|p" fedora-harden.sh | sort)' _ "$ROOT"
+    # core/ is shared by every distribution family: it reaches package managers,
+    # boot loaders, SELinux and the firewall only through the platform file.
+    check "static: core/ calls no distribution-specific tools" bash -c '
+        ! grep -nE "\b(dnf5?|rpm|rpm-ostree|ostree|grubby|authselect|semanage|restorecon|setsebool|getenforce|firewall-cmd|apt-get|apt|dpkg|zypper|pacman)\b" "$1"/core/*.sh |
+            grep -vE "^[^:]+:[0-9]+:[[:space:]]*#"' _ "$ROOT"
+    # Every function core/ expects from a family (listed at the top of the platform
+    # file) is defined there.
+    check "static: the Fedora platform file provides the whole contract" bash -c '
+        f="$1/fedora/lib/00-platform.sh"
+        for fn in platform_detect list_sections section_compatible pkg_cached pkg_install pkg_upgrade \
+            platform_score_rows platform_run_sections platform_after_run platform_undo_change \
+            platform_undo_finish platform_reload_paths; do
+            grep -q "^$fn() {" "$f" || { echo "missing: $fn"; exit 1; }
+        done
+        grep -q "^safety_point() {" "$1"/fedora/lib/*.sh || { echo "missing: safety_point"; exit 1; }
+        for v in SECTIONS PLATFORM_PKG_LABEL PLATFORM_RELEASE PLATFORM_GUI_PACKAGES; do
+            grep -q "^$v=" "$f" || { echo "missing: $v"; exit 1; }
+        done' _ "$ROOT"
 
     if need_tool shellcheck "static: shellcheck"; then
         check "static: shellcheck --severity=warning" shellcheck -x -a --severity=warning "${scripts[@]}"
@@ -342,8 +360,8 @@ tier_static() {
 
     # The pinned arkenfox release must still match its checksum (catches re-tagging).
     local ark_ver ark_sum
-    ark_ver="$(sed -n 's/^ARKENFOX_VERSION="\(.*\)"$/\1/p' "$ROOT/lib/01-globals.sh")"
-    ark_sum="$(sed -n 's/^ARKENFOX_SHA256="\(.*\)"$/\1/p' "$ROOT/lib/01-globals.sh")"
+    ark_ver="$(sed -n 's/^ARKENFOX_VERSION="\(.*\)"$/\1/p' "$ROOT/core/01-globals.sh")"
+    ark_sum="$(sed -n 's/^ARKENFOX_SHA256="\(.*\)"$/\1/p' "$ROOT/core/01-globals.sh")"
     if have curl; then
         check "static: pinned arkenfox $ark_ver matches its checksum" bash -c \
             'curl -fsSL "https://raw.githubusercontent.com/arkenfox/user.js/$1/user.js" | sha256sum | grep -q "^$2 "' _ "$ark_ver" "$ark_sum"
@@ -357,7 +375,7 @@ tier_static() {
         source <(sed -n "/^scap_results() {/,/^}/p" "$1")
         [[ "$(scap_results "$2")" == "1 1 0" ]] &&
             [[ "$(scap_results "$2" failing)" == xccdf_org.ssgproject.content_rule_aide_build_database ]]' \
-        _ "$ROOT/sections/17-openscap.sh" "$ROOT/tests/fixtures/scap-results-sample.xml"
+        _ "$ROOT/fedora/sections/17-openscap.sh" "$ROOT/tests/fixtures/scap-results-sample.xml"
 
     # Regression guard: under `set -e` a post-increment of a zero counter inside (( ))
     # evaluates to 0, returns status 1 and aborts the script.

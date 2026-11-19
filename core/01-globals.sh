@@ -76,49 +76,29 @@ AIDE_BASELINE_PENDING=0 # Section 24 asks for the AIDE baseline; it is recorded 
 GUI_FULL_MODE=0         # Set to 1 while the --gui window is open
 GUI_CANCEL_REQUESTED=0  # Set to 1 when the user stops the run from the window
 
-# Sections run in numeric order, which follows the dependency flow (see main). --only/--skip accept these.
-SECTIONS=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24)
-
 # ---------- Execution state flags -------------------------------------------
 LOG_READY=0       # Set to 1 after log file initialized
 PRECHECK_FAILED=0 # Set to 1 if preflight checks fail
 EXPECTED_ABORT=0  # Set to 1 if clean exit expected (--list, --rollback)
 
 # ---------- Platform/variant detection flags --------------------------------
-IS_OSTREE=0              # Set to 1 if system uses immutable rpm-ostree
-ETC_BASELINE_PENDING=0   # Section 24 (image-based): record the /etc baseline after the last section
-IS_KINOITE=0             # Set to 1 if Fedora Kinoite (immutable + KDE)
-IS_SILVERBLUE=0          # Set to 1 if Fedora Silverblue (immutable + GNOME)
-IS_ONYX=0                # Set to 1 if Fedora Onyx (immutable + GNOME, Atomic)
-IS_SERICEA=0             # Set to 1 if Fedora Sericea (immutable + Sway, Atomic)
-IS_LAZURITE=0            # Set to 1 if Fedora Lazurite (immutable + LXQt, Atomic)
-IS_VAUXITE=0             # Set to 1 if Fedora Vauxite (immutable + XFCE, Atomic)
-IS_BAZZITE=0             # Set to 1 if Bazzite (gaming remix, KDE or GNOME)
-IS_AURORA=0              # Set to 1 if Aurora (Universal Blue KDE remix)
-IS_SERVER=0              # Set to 1 if Fedora Server
-IS_WORKSTATION=0         # Set to 1 if Fedora Workstation
-IS_IOT=0                 # Set to 1 if Fedora IoT (immutable)
-IS_CLOUD=0               # Set to 1 if Fedora Cloud
-IS_COREOS=0              # Set to 1 if Fedora CoreOS (immutable)
-IS_ATOMIC_DESKTOP=0      # Set to 1 if Atomic Desktop variant
-IS_GAMING_SPIN=0         # Set to 1 if gaming-oriented spin (Bazzite, etc.)
-HAS_KDE=0                # Set to 1 if KDE Plasma session detected
-HAS_GNOME=0              # Set to 1 if GNOME session detected
-HAS_SWAY=0               # Set to 1 if Sway/wlroots compositor detected
-HAS_HYPRLAND=0           # Set to 1 if Hyprland compositor detected
-HAS_I3=0                 # Set to 1 if i3 window manager detected
-HAS_XFCE=0               # Set to 1 if XFCE desktop detected
-HAS_CINNAMON=0           # Set to 1 if Cinnamon desktop detected
-HAS_MATE=0               # Set to 1 if MATE desktop detected
-HAS_BUDGIE=0             # Set to 1 if Budgie desktop detected
-HAS_LXQT=0               # Set to 1 if LXQt desktop detected
-HAS_DESKTOP=0            # Set to 1 if any desktop environment detected
-DESKTOP_ENVS=""          # Comma-separated list of detected desktop environments
-FEDORA_VARIANT="unknown" # Human-readable Fedora variant name
-FEDORA_MAJOR=0           # Fedora major version number
-UI_SECTION_DONE=0        # Count of completed sections for progress tracking
-CURRENT_SECTION=0        # Section number currently executing (for action items)
-UI_SECTION_TOTAL=23      # Total hardening sections to execute
+IS_OSTREE=0            # 1 on image-based systems (set by the platform file)
+ETC_BASELINE_PENDING=0 # Section 24 (image-based): record the /etc baseline after the last section
+HAS_KDE=0              # Set to 1 if KDE Plasma session detected
+HAS_GNOME=0            # Set to 1 if GNOME session detected
+HAS_SWAY=0             # Set to 1 if Sway/wlroots compositor detected
+HAS_HYPRLAND=0         # Set to 1 if Hyprland compositor detected
+HAS_I3=0               # Set to 1 if i3 window manager detected
+HAS_XFCE=0             # Set to 1 if XFCE desktop detected
+HAS_CINNAMON=0         # Set to 1 if Cinnamon desktop detected
+HAS_MATE=0             # Set to 1 if MATE desktop detected
+HAS_BUDGIE=0           # Set to 1 if Budgie desktop detected
+HAS_LXQT=0             # Set to 1 if LXQt desktop detected
+HAS_DESKTOP=0          # Set to 1 if any desktop environment detected
+DESKTOP_ENVS=""        # Comma-separated list of detected desktop environments
+UI_SECTION_DONE=0      # Count of completed sections for progress tracking
+CURRENT_SECTION=0      # Section number currently executing (for action items)
+UI_SECTION_TOTAL=23    # Total hardening sections to execute
 
 # Error tracking & remediation infrastructure
 ERROR_CAPTURE_FILE=""        # Temp file for capturing command stderr

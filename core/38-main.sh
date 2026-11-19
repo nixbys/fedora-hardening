@@ -19,7 +19,7 @@ main() {
 		exit 1
 	fi
 
-	# --rollback: undo a previous session (requires root + IS_OSTREE detection from preflight)
+	# --rollback: undo a previous session (requires root and the platform detection from preflight)
 	if [[ -n "$ROLLBACK_SESSION_ID" ]]; then
 		SESSION_REPORT_FILE="" # Rollback produces its own report; skip session stub
 		local rb_rc=0
@@ -57,42 +57,17 @@ main() {
 	abort_if_cancelled
 	safety_point
 
-	# Execution order is optimized for dependency flow and operational safety.
-	sec_01_updates
-	sec_02_dnf_automatic
-	sec_03_secureboot
-	sec_04_flatpak
-	sec_05_selinux
-	sec_06_firewalld
-	sec_07_ssh
-	sec_08_pam
-	sec_09_sysctl
-	sec_10_auditd
-	sec_11_dot
-	sec_12_fail2ban
-	sec_13_desktop
-	sec_14_browsers
-	sec_15_wireguard
-	sec_16_clamav
-	sec_17_openscap
-	sec_18_containers
-	sec_19_routine
-	sec_20_snapshots
-	sec_21_services
-	sec_22_perms
-	sec_23_usbguard
-	sec_24_ids
-	record_routine_state
+	# The family's sections, in their order (the platform file).
+	platform_run_sections
 
 	diagnose_failures
 	final_summary
 	show_protection_scorecard
 	write_recovery_file
-	# Last to write: the /etc and AIDE baselines include everything this run wrote,
-	# the recovery file and any follow-ups applied included, so the first checks
-	# start clean. Follow-ups are saved after them so a late item is kept.
-	record_etc_baseline
-	start_aide_baseline
+	# Last to write (the platform file): integrity baselines include everything this
+	# run wrote, the recovery file and any follow-ups applied included, so the first
+	# checks start clean. Follow-ups are saved after them so a late item is kept.
+	platform_after_run
 	save_followups
 
 	SESSION_STATUS="completed"

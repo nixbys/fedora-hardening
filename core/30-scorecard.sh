@@ -19,7 +19,7 @@ _score_user_cmd() {
 
 protection_scorecard() {
 	SCORE_ROWS=()
-	local src v zone policy user="${TARGET_USER:-${SUDO_USER:-}}"
+	local src v user="${TARGET_USER:-${SUDO_USER:-}}"
 
 	# Disk encryption: is the root file system (the OSTree sysroot on image-based
 	# systems) on a LUKS device?
@@ -54,39 +54,8 @@ protection_scorecard() {
 	*) _score na "Kernel lockdown" "not reported by this kernel" ;;
 	esac
 
-	# Firewall
-	if systemctl is-active --quiet firewalld 2>/dev/null; then
-		zone="$(firewall-cmd --get-default-zone 2>/dev/null || true)"
-		_score ok "Firewall" "firewalld is running (default zone: ${zone:-unknown})"
-	else
-		_score no "Firewall" "firewalld is not running" "sudo systemctl enable --now firewalld, or run section 6: sudo $SCRIPT_NAME --only 6"
-	fi
-
-	# Automatic updates
-	if ((IS_OSTREE)); then
-		policy="$(sed -n 's/^AutomaticUpdatePolicy=//p' /etc/rpm-ostreed.conf 2>/dev/null | tail -n 1 || true)"
-		if systemctl is-enabled --quiet uupd.timer 2>/dev/null; then
-			_score ok "Automatic updates" "uupd updates the system, Flatpaks and boxes"
-		elif [[ "$policy" =~ ^(stage|apply)$ ]] && systemctl is-enabled --quiet rpm-ostreed-automatic.timer 2>/dev/null; then
-			_score ok "Automatic updates" "rpm-ostree stages updates automatically ($policy)"
-		else
-			_score no "Automatic updates" "system updates are not staged automatically" "Run section 2: sudo $SCRIPT_NAME --only 2"
-		fi
-	elif systemctl is-enabled --quiet dnf5-automatic.timer 2>/dev/null ||
-		systemctl is-enabled --quiet dnf-automatic.timer 2>/dev/null ||
-		systemctl is-enabled --quiet dnf-automatic-install.timer 2>/dev/null; then
-		_score ok "Automatic updates" "dnf automatic updates are enabled"
-	else
-		_score no "Automatic updates" "no automatic updates" "Run section 2: sudo $SCRIPT_NAME --only 2"
-	fi
-
-	# SELinux
-	v="$(getenforce 2>/dev/null || echo unknown)"
-	if [[ "$v" == Enforcing ]]; then
-		_score ok "SELinux" "enforcing"
-	else
-		_score no "SELinux" "${v,,}" "Run section 5: sudo $SCRIPT_NAME --only 5 (a disabled system is relabelled first)"
-	fi
+	# Firewall, automatic updates and mandatory access control: the platform file.
+	platform_score_rows
 
 	# SSH server: off, or keys only without root login
 	if ! systemctl is-active --quiet sshd 2>/dev/null && ! systemctl is-enabled --quiet sshd 2>/dev/null; then

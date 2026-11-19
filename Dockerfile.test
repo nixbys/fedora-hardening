@@ -69,8 +69,8 @@ ENV PATH="/opt/fedora-hardening:${PATH}"
 # tree over it). The directory is named like the project: the script names the
 # Downloads/<project> report folder after it.
 COPY --chown=root:root fedora-harden.sh /opt/fedora-hardening/
-COPY --chown=root:root lib /opt/fedora-hardening/lib
-COPY --chown=root:root sections /opt/fedora-hardening/sections
+COPY --chown=root:root core /opt/fedora-hardening/core
+COPY --chown=root:root fedora /opt/fedora-hardening/fedora
 COPY --chown=root:root libexec /opt/fedora-hardening/libexec
 RUN chmod 755 /opt/fedora-hardening/fedora-harden.sh && bash -n /opt/fedora-hardening/fedora-harden.sh
 
@@ -114,8 +114,8 @@ WORKDIR /root
 ENV PATH="/opt/fedora-hardening:${PATH}"
 
 COPY --chown=root:root fedora-harden.sh /opt/fedora-hardening/
-COPY --chown=root:root lib /opt/fedora-hardening/lib
-COPY --chown=root:root sections /opt/fedora-hardening/sections
+COPY --chown=root:root core /opt/fedora-hardening/core
+COPY --chown=root:root fedora /opt/fedora-hardening/fedora
 COPY --chown=root:root libexec /opt/fedora-hardening/libexec
 RUN chmod 755 /opt/fedora-hardening/fedora-harden.sh && bash -n /opt/fedora-hardening/fedora-harden.sh
 

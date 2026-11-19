@@ -39,22 +39,47 @@ is built at the same pinned version with Fedora's Go (`tests/install-shfmt.sh`).
 `fedora-harden.sh` holds the usage text (`--help` prints its header comment) and
 loads the rest with one `source` line per file, in this order:
 
-- `lib/01-07-*.sh`: globals, the GUI bridge, logging and package helpers, rollback,
-  preflight and option parsing.
-- `sections/NN-*.sh`: one file per section, with the helpers only that section uses.
-- `lib/30-38-*.sh`: the scorecard, helpers shared by sections (kernel boot options,
-  service sandboxing), personal setup, the recovery file, follow-ups, the summary,
-  the safety point and `main`.
+- `core/NN-*.sh`: the framework, shared by any distribution family: globals, the
+  GUI bridge, logging, rollback, preflight and option parsing, the scorecard, the
+  recovery file, follow-ups, the summary and `main`.
+- `fedora/lib/00-platform.sh`: what core needs from Fedora (see below).
+- `fedora/lib/NN-*.sh`: helpers shared by Fedora sections (kernel boot options,
+  service sandboxing, personal setup, the safety point).
+- `fedora/sections/NN-*.sh`: one file per section, with the helpers only that
+  section uses.
 
 The order matters: files run their top-level statements (globals, traps) as they
 load. A new file needs its own `source` line (with a `# shellcheck source=` directive)
-in `fedora-harden.sh`; the static tier fails when a file in `lib/` or `sections/` is
+in `fedora-harden.sh`; the static tier fails when a file in `core/` or `fedora/` is
 not loaded. Bash's own error messages and the ERR trap name the file and line
-(`sections/05-selinux.sh line 42`).
+(`fedora/sections/05-selinux.sh line 42`).
 
 `libexec/` holds programs the script installs rather than runs inline: the `--gui`
 window (`fedora-harden-gui.py`) and the routine helper (`fedora-harden-routine`). Short
 config files stay as heredocs next to the code that writes them.
+
+## Core and distribution families
+
+`core/` never calls a distribution's own tools (package managers, boot loaders,
+SELinux, the firewall); the static tier fails if it does. It reaches them through
+the family's platform file, `fedora/lib/00-platform.sh`, whose header lists the
+contract: the section list and run order, detection, the package backend, the
+safety point, the scorecard rows for the firewall, updates and SELinux, and the
+`--rollback` steps for entries only that family writes (packages, kernel options,
+ostree pins).
+
+Only Fedora is supported. Another family (the RHEL rebuilds, Debian) would get its
+own entry script and folder, reusing `core/`:
+
+1. Add `<family>/lib/00-platform.sh` providing every function and variable in the
+   contract (the static tier checks Fedora's; add the same check for the new one),
+   and `<family>/sections/`.
+2. Add `<family>-harden.sh`, loading `core/` and `<family>/` like `fedora-harden.sh`.
+3. Give it its own test tier on real images of that family in CI. Until that tier
+   passes, it is not supported, and the README does not say otherwise.
+
+Don't add distribution checks (`if debian; then ...`) to `core/` or to Fedora's
+sections: a family that needs different behaviour gets it in its own files.
 
 ## Conventions in the script
 
@@ -81,8 +106,8 @@ These rules exist because breaking them caused real bugs:
 - **Cite sources.** Each recommendation carries a `# Source:` comment naming the
   Privacy Guides or IntelTechniques page it comes from (listed in
   `docs/references.json`).
-- **Formatting** comes from `.editorconfig` (tabs in the script and its `lib/` and
-  `sections/` files, 4 spaces in the routine helper and the test scripts); run `shfmt -w`.
+- **Formatting** comes from `.editorconfig` (tabs in the script and its `core/` and
+  `fedora/` files, 4 spaces in the routine helper and the test scripts); run `shfmt -w`.
 - **Comments say why.** No header that restates the function name; document
   arguments (`# Usage: name <arg> ...`), caveats and the reason for non-obvious code.
 
@@ -93,7 +118,7 @@ The weekly **Reference watch** workflow opens an issue when a source in
 
 1. Read the changed page and update the script where the advice changed.
 2. For a new arkenfox release, update `ARKENFOX_VERSION` and `ARKENFOX_SHA256` in
-   `lib/01-globals.sh`
+   `core/01-globals.sh`
    (`curl -fsSL https://raw.githubusercontent.com/arkenfox/user.js/<tag>/user.js | sha256sum`).
 3. Run the tests, then record the review:
    `python3 tests/check-references.py --update`, and commit `docs/references.json`.

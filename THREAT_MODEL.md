@@ -43,7 +43,7 @@ this script is meant to be trusted directly and immediately. Concretely:
   widens a firewalld zone, or drops a sysctl entry) is easy to miss in a large
   diff and would ship the *opposite* of what every user of this project
   believes they are getting. Review diffs to the script (`fedora-harden.sh`,
-  `lib/`, `sections/`, `libexec/`) by reading the actual
+  `core/`, `fedora/`, `libexec/`) by reading the actual
   `dnf`/`sed`/`sysctl`/config-write lines, not just the surrounding comments —
   comments describe intent, they don't enforce it.
 - **A PR that adds a new fetch-and-execute path is the second-highest.** The
