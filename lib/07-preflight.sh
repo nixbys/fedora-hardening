@@ -22,8 +22,8 @@ list_sections() {
    5  SELinux tools
    6  firewalld
    7  SSH hardening
-   8  PAM/password policy
-   9  Kernel sysctl (incl. IPv6 privacy extensions)
+   8  PAM/password policy (incl. sudo use_pty)
+   9  Kernel sysctl (incl. IPv6 privacy extensions, io_uring for root only)
   10  auditd (incl. time/network/mount rules, deletes under /etc)
   11  DNS over TLS (11b: NetworkManager MAC address randomization)
   12  Fail2Ban
