@@ -59,7 +59,7 @@ write_session_report() {
 	[[ -z "$SESSION_REPORT_FILE" ]] && return 0
 
 	local plat
-	((IS_OSTREE)) && plat="rpm-ostree (immutable)" || plat="dnf (mutable)"
+	plat="$PLATFORM_PKG_LABEL"
 
 	local change_count=0 file_backups=0 pkg_installs=0
 	local svc_enables=0 svc_disables=0 flatpak_installs=0

@@ -177,7 +177,7 @@ vm 'grep -m1 "^AutomaticUpdatePolicy" /etc/rpm-ostreed.conf 2>/dev/null || true'
 # ── Run the script on the booted image ─────────────────────────────────────────
 # The script and the parts it loads, in a directory named like the project (the
 # Downloads/<project> report folder is named after it).
-tar -C /src -cf - fedora-harden.sh lib sections libexec tests/verify-host.sh |
+tar -C /src -cf - fedora-harden.sh core fedora libexec tests/verify-host.sh |
     vm 'mkdir -p fedora-hardening && tar -C fedora-hardening -xf -'
 rc=0
 vm "TERM=dumb ./fedora-hardening/fedora-harden.sh --yes --only 1,2,4,5,16,17,18,24 --user tester </dev/null" \

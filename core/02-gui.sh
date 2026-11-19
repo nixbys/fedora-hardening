@@ -40,10 +40,10 @@ setup_ui_mode() {
 		return 0
 	fi
 	if ! gui_deps_ok && ((! IS_OSTREE)) && ((EUID == 0)); then
-		install_dep_candidates python3-gobject 2>/dev/null || true
-		install_dep_candidates gobject-introspection 2>/dev/null || true
-		install_dep_candidates gtk4 2>/dev/null || true
-		install_dep_candidates libadwaita 2>/dev/null || true
+		local gpkg
+		for gpkg in "${PLATFORM_GUI_PACKAGES[@]}"; do
+			install_dep_candidates "$gpkg" 2>/dev/null || true
+		done
 	fi
 	if ! gui_deps_ok; then
 		warn "--gui needs python3-gobject, gtk4 and libadwaita — using the terminal."
@@ -183,9 +183,9 @@ gui_lost() {
 # the run as cancelled. Usage: gui_read_line <var> [timeout]
 gui_read_line() {
 	local -n _line="$1"
-	local -a t=()
-	[[ -n "${2:-}" ]] && t=(-t "$2")
-	if ! IFS= read -r "${t[@]}" -u "$GUI_RX_FD" _line 2>/dev/null; then
+	local -a tmo=()
+	[[ -n "${2:-}" ]] && tmo=(-t "$2")
+	if ! IFS= read -r "${tmo[@]}" -u "$GUI_RX_FD" _line 2>/dev/null; then
 		gui_lost
 		return 1
 	fi

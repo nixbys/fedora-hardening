@@ -42,10 +42,9 @@ write_recovery_file() {
 		all[$key]="${ANSWERS[$key]}"
 		text[$key]="${ANSWER_TEXT[$key]}"
 	done
-	local release="${FEDORA_MAJOR:-0}" edition
-	((release > 0)) || release="$(rpm -E %fedora 2>/dev/null || echo unknown)"
+	local release="${PLATFORM_RELEASE:-unknown}" edition
 	# shellcheck source=/dev/null
-	edition="$(. /etc/os-release 2>/dev/null && echo "${VARIANT_ID:-${ID:-fedora}}")"
+	edition="$(. /etc/os-release 2>/dev/null && echo "${VARIANT_ID:-${ID:-unknown}}")"
 	local new
 	new="$(mktemp)" || return 0
 	register_tmp "$new"

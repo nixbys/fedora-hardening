@@ -176,7 +176,7 @@ final_summary() {
 	local summary_path=""
 	# Precompute platform label once — avoids two subshell spawns in report + terminal output.
 	local _plat
-	((IS_OSTREE)) && _plat="rpm-ostree (immutable)" || _plat="dnf (mutable)"
+	_plat="$PLATFORM_PKG_LABEL"
 
 	# Write overall human-readable summary to Downloads/<project>/results/
 	if [[ -n "$USER_RESULTS_DIR" ]]; then
@@ -218,7 +218,7 @@ final_summary() {
 			printf '  • KDE GUI-only settings      — KWallet master password, Privacy, Activity.\n'
 			printf '  • AIDE re-init               — after any future package updates.\n'
 			printf '  • REBOOT RECOMMENDED         — to apply kernel/sysctl/PAM/GRUB changes.\n'
-			((IS_OSTREE)) && printf '  • rpm-ostree REBOOT         — required for staged/layered package changes.\n'
+			((IS_OSTREE)) && printf '  • REBOOT (image-based)     — required for staged/layered package changes.\n'
 			printf '\n=== Section Reports in Downloads/%s/results/ ===\n' "$PROJECT_NAME"
 			for f in "$USER_RESULTS_DIR"/section-*.txt "$USER_RESULTS_DIR"/section-*.html; do
 				[[ -f "$f" ]] && printf '  %s\n' "$(basename "$f")"
@@ -235,7 +235,7 @@ final_summary() {
 		printf '\n%s════════════════════════ Summary ════════════════════════%s\n' "$C_GRN" "$C_RST"
 		local reports_line="" ostree_line=""
 		[[ -n "$USER_RESULTS_DIR" ]] && reports_line=" Reports:      $USER_RESULTS_DIR"
-		((IS_OSTREE)) && ostree_line=$'\n On rpm-ostree systems, reboot is also required to apply layered package changes and staged updates.'
+		((IS_OSTREE)) && ostree_line=$'\n On image-based systems, a reboot is also required to apply layered package changes and staged updates.'
 		cat <<EOF
     Log:          $LOG_WHERE
     Backups:      $BACKUP_DIR  (empty if no changes needed)
@@ -258,7 +258,7 @@ EOF
 	else
 		log "Summary: log=$LOG_WHERE backups=$BACKUP_DIR target_user=${TARGET_USER:-<none>}"
 		log "Summary: reboot recommended for kernel/GRUB/sysctl/PAM changes"
-		((IS_OSTREE)) && log "Summary: reboot required on rpm-ostree for staged/layered changes"
+		((IS_OSTREE)) && log "Summary: reboot required on an image-based system for staged/layered changes"
 	fi
 
 	local gui_headline="Fedora hardening finished."
