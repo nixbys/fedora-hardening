@@ -4,6 +4,11 @@
 # workloads (init_on_free zeroes freed memory), so they are opt-in: asked, or
 # --kernel-hardening; never by default with --yes, and not offered for gaming.
 KERNEL_HARDENING_ARGS=(init_on_free=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on)
+# IOMMU on and strict, and no DMA by PCI bridges before it starts: a device on
+# Thunderbolt/USB4 or PCIe can then read only the memory the kernel gives it.
+# Asked separately (default no): a few laptops' firmware handles the IOMMU badly.
+# (Madaidan Linux Hardening Guide, "DMA attacks", linked by privacyguides.org)
+KERNEL_DMA_ARGS=(intel_iommu=on iommu=force iommu.passthrough=0 iommu.strict=1 efi=disable_early_pci_dma)
 
 _kernel_boot_hardening() {
 	local current add=() a profile
@@ -25,19 +30,31 @@ _kernel_boot_hardening() {
 		info "Kernel boot hardening: neither rpm-ostree nor grubby is available — skipped."
 		return 0
 	fi
+	local -a mem=() dma=()
 	for a in "${KERNEL_HARDENING_ARGS[@]}"; do
-		[[ " $current " == *" $a "* ]] || add+=("$a")
+		[[ " $current " == *" $a "* ]] || mem+=("$a")
 	done
-	if ((${#add[@]} == 0)); then
+	# Not in a virtual machine: its devices are the host's to protect.
+	if ! systemd-detect-virt --vm --quiet 2>/dev/null; then
+		for a in "${KERNEL_DMA_ARGS[@]}"; do
+			[[ " $current " == *" $a "* ]] || dma+=("$a")
+		done
+	fi
+	if ((${#mem[@]} + ${#dma[@]} == 0)); then
 		ok "Kernel boot hardening options are already set."
 		return 0
 	fi
-	if ((! KERNEL_HARDENING)); then
-		confirm "Add kernel boot hardening (${add[*]})? It makes memory bugs harder to exploit and costs about 1-5% in some workloads." no || {
+	if ((${#mem[@]})); then
+		if ((KERNEL_HARDENING)) || confirm "Add kernel boot hardening (${mem[*]})? It makes memory bugs harder to exploit and costs about 1-5% in some workloads." no; then
+			add+=("${mem[@]}")
+		else
 			info "Kernel boot hardening not added (opt-in: --kernel-hardening)."
-			return 0
-		}
+		fi
 	fi
+	if ((${#dma[@]})) && confirm "Turn on DMA attack protection (${dma[*]})? A device plugged into Thunderbolt/USB4 or PCIe can then read only the memory it is given. A few laptops' firmware handles this badly; the safety point (or --rollback) brings the old boot options back." no; then
+		add+=("${dma[@]}")
+	fi
+	((${#add[@]})) || return 0
 	if ((IS_OSTREE)); then
 		local -a opts=()
 		for a in "${add[@]}"; do opts+=("--append-if-missing=$a"); done

@@ -88,6 +88,10 @@ sec_13_desktop() {
 	fi
 
 	# ── GNOME (Silverblue, Onyx, Workstation GNOME) ──────────────────────────
+	# Plugged-in drives and discs are still mounted, but nothing on them runs and no
+	# file manager window opens by itself (GNOME, Budgie, Cinnamon, MATE): a hostile
+	# drive gets no autorun and no automatic file previews. USBGuard (section 23)
+	# goes further and is opt-in.
 	if ((HAS_GNOME)); then
 		info "--- GNOME settings ---"
 		if ((! DRY_RUN)); then
@@ -103,9 +107,11 @@ sec_13_desktop() {
 				gsettings set org.gnome.desktop.privacy send-software-usage-stats false
 				gsettings set org.gnome.desktop.privacy report-technical-problems false
 				gsettings set org.gnome.desktop.privacy remember-recent-files false
+				gsettings set org.gnome.desktop.media-handling autorun-never true
+				gsettings set org.gnome.desktop.media-handling automount-open false
 			' 2>/dev/null || true
 		else
-			info "Would apply GNOME gsettings: screen lock, location off, privacy"
+			info "Would apply GNOME gsettings: screen lock, location off, privacy, no autorun"
 		fi
 		((DRY_RUN)) || verify_user_setting "GNOME: screen lock, location off, privacy" true \
 			"gsettings get org.gnome.desktop.screensaver lock-enabled" || true
@@ -128,6 +134,8 @@ sec_13_desktop() {
 				gsettings set org.gnome.desktop.privacy remove-old-trash-files true
 				gsettings set org.gnome.desktop.privacy old-files-age 7
 				gsettings set org.gnome.desktop.privacy send-software-usage-stats false
+				gsettings set org.gnome.desktop.media-handling autorun-never true
+				gsettings set org.gnome.desktop.media-handling automount-open false
 			' 2>/dev/null || true
 		else
 			info "Would apply Budgie gsettings: screen lock, location off, privacy"
@@ -158,6 +166,8 @@ sec_13_desktop() {
 				gsettings set org.cinnamon.desktop.screensaver lock-enabled true
 				gsettings set org.cinnamon.desktop.screensaver lock-delay 0
 				gsettings set org.cinnamon.desktop.session idle-delay 300 2>/dev/null || true
+				gsettings set org.cinnamon.desktop.media-handling autorun-never true 2>/dev/null || true
+				gsettings set org.cinnamon.desktop.media-handling automount-open false 2>/dev/null || true
 				gsettings set org.gnome.desktop.privacy remember-recent-files false 2>/dev/null || true
 				gsettings set org.gnome.desktop.privacy remove-old-temp-files true 2>/dev/null || true
 				gsettings set org.gnome.desktop.privacy remove-old-trash-files true 2>/dev/null || true
@@ -182,6 +192,8 @@ sec_13_desktop() {
 				gsettings set org.mate.screensaver idle-activation-enabled true 2>/dev/null || true
 				gsettings set org.mate.screensaver idle-delay 5 2>/dev/null || true
 				gsettings set org.mate.power-manager sleep-display-ac 300 2>/dev/null || true
+				gsettings set org.mate.media-handling autorun-never true 2>/dev/null || true
+				gsettings set org.mate.media-handling automount-open false 2>/dev/null || true
 				gsettings set org.gnome.desktop.privacy remember-recent-files false 2>/dev/null || true
 				gsettings set org.gnome.system.location enabled false 2>/dev/null || true
 			' 2>/dev/null || true

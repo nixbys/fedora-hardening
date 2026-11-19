@@ -7,6 +7,8 @@ name: Reference watch
 # When a source changes, one tracking issue is opened (or updated) with what
 # changed; a human reviews it, updates the script, and refreshes the
 # fingerprints with: python3 tests/check-references.py --update
+# The same run looks for text in this repository that repeats a source word for
+# word (tests/check-overlap.py) and opens a separate issue for it.
 
 on:
   schedule:
@@ -46,6 +48,15 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Look for text repeated word for word from a source
+        id: overlap
+        run: |
+          if python3 tests/check-overlap.py --markdown "$RUNNER_TEMP/overlap.md"; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Open or update the tracking issue
         if: steps.check.outputs.changed == 'true'
         env:
@@ -60,4 +71,20 @@ jobs:
             gh issue comment "$existing" --body-file "$RUNNER_TEMP/report.md"
           else
             gh issue create --title "$title" --body-file "$RUNNER_TEMP/report.md"
+          fi
+
+      - name: Open or update the overlap issue
+        if: steps.overlap.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title="Text repeats a source word for word: reword or quote it"
+          existing="$(gh issue list --state open --search "\"$title\" in:title" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/overlap.md"
+          else
+            gh issue create --title "$title" --body-file "$RUNNER_TEMP/overlap.md"
           fi

@@ -19,21 +19,21 @@ touches SSH, PAM, the kernel and the firewall: read the `--dry-run` output first
 | [3](fedora/sections/03-secureboot.sh) | Secure Boot | Verification (GRUB password is manual — printed as an action item) |
 | [4](fedora/sections/04-flatpak.sh) | Flatpak / Flathub | Blocks Flatpak apps from the host filesystem; mat2 (image-based: Metadata Cleaner Flatpak); Firejail opt-in only |
 | [5](fedora/sections/05-selinux.sh) | SELinux | Enforcing; a disabled system goes permissive + full relabel first (safe path) |
-| [6](fedora/sections/06-firewalld.sh) | firewalld | Drop-default zone policy (OpenSnitch suggested for outbound control) |
+| [6](fedora/sections/06-firewalld.sh) | firewalld | Drop-default zone policy; blocked connections to this machine are logged and counted in the weekly summary (OpenSnitch suggested for outbound control) |
 | [7](fedora/sections/07-ssh.sh) | SSH hardening | Key-based auth, hardened ciphers via `sshd_config.d/10-hardening.conf` (takes precedence over Fedora's defaults); never restarts sshd on an invalid config |
 | [8](fedora/sections/08-pam.sh) | Password & PAM | pwquality: at least 15 characters, no composition rules or forced expiry (NIST SP 800-63B); faillock (5 tries, 15 min); sudo runs commands in their own pseudo-terminal |
-| [9](fedora/sections/09-sysctl.sh) | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941); unused kernel modules blocked; io_uring limited to root (asked) |
+| [9](fedora/sections/09-sysctl.sh) | Kernel sysctl | Network, VM, filesystem, IPv6 privacy extensions (RFC 4941); unused kernel modules blocked; TTY line disciplines, userfaultfd and TIOCSTI for root only; io_uring limited to root (asked); memory and DMA-protection boot options (opt-in) |
 | [10](fedora/sections/10-auditd.sh) | auditd | Identity, privilege escalation, module, time/network/mount syscalls, deletes under /etc |
 | [11](fedora/sections/11-dot.sh) | DNS over TLS | systemd-resolved with Quad9 only (installed if missing; warns if DNS bypasses it); LLMNR off, mDNS only for gaming/creative; NTS time (11c) |
 | [11b](fedora/sections/11-dot.sh) | MAC randomization | Random MAC for Wi-Fi, stable per-network MAC for Ethernet (home DHCP reservations keep working) |
 | [12](fedora/sections/12-fail2ban.sh) | Fail2Ban | Intrusion detection + auto-ban |
-| [13](fedora/sections/13-desktop.sh) | Desktop settings | Screen lock, recent docs, Bluetooth, location — per DE, verified after applying; microphone off only if you choose |
+| [13](fedora/sections/13-desktop.sh) | Desktop settings | Screen lock, recent docs, Bluetooth, location, no autorun for USB drives and discs — per DE, verified after applying; microphone off only if you choose |
 | [14](fedora/sections/14-browsers.sh) | Browsers | Firefox Flatpak + pinned arkenfox + extensions; Brave/Chromium/Chrome privacy policies when installed; VPN detection; Tor Browser + Mullvad Browser (opt-in, locked down) |
 | [15](fedora/sections/15-wireguard.sh) | WireGuard | With `--wireguard-config FILE`: the tunnel, a kill switch and DNS through the tunnel; nothing otherwise |
 | [16](fedora/sections/16-clamav.sh) | ClamAV | freshclam + a weekly idle-priority scan of /home (on-access scanning if you choose it); image-based: weekly scan in a locked-down container |
 | [17](fedora/sections/17-openscap.sh) | OpenSCAP | Compliance scan (image-based: from a throwaway container, nothing layered) |
 | [18](fedora/sections/18-containers.sh) | Container security | Rootless Podman, image policy, seccomp, registry hardening; toolbox or distrobox for tools |
-| [19](fedora/sections/19-routine.sh) | Your routine | Timers for the upkeep this machine's use cases need, a weekly drift check and summary, desktop notifications |
+| [19](fedora/sections/19-routine.sh) | Your routine | Timers for the upkeep this machine's use cases need, a weekly drift check (including any protection on the scorecard that turned off) and summary, desktop notifications |
 | [20](fedora/sections/20-snapshots.sh) | Home snapshots | Btrfs snapshots (Snapper on Bazzite) or incremental copies of home, as often as the machine is used |
 | [21](fedora/sections/21-services.sh) | Service cleanup | Offers to disable avahi, cups, bluetooth, ModemManager (default No); unencrypted telnet/rsh/rlogin sockets off |
 | [22](fedora/sections/22-perms.sh) | File permissions | shadow, /tmp, compilers, umask 077 for regular users, core dumps, hostname privacy, unencrypted-swap check |
@@ -110,6 +110,7 @@ sudo ./fedora-harden.sh [options]
                           with placeholders; add --full to keep them)
       --resume            Review the last session's open follow-ups and exit
       --score             Show what protects this machine now (read-only) and exit
+      --json              With --score: print it as JSON, for scripts and monitoring
       --kernel-hardening  Add the kernel boot hardening options (section 9; opt-in)
       --wireguard-config <file>  Install this WireGuard config with a kill switch (section 15)
       --profile <list>    Use cases for section 19: everyday,gaming,creative,dev,laptop,private
@@ -205,6 +206,7 @@ sudo ./fedora-harden.sh --score                     # what protects this machine
 
 ## License
 
-Provided as-is for personal use, without warranty. Read the sections you plan to run
-(`fedora/sections/NN-*.sh`, or `--dry-run`) before using it on a machine you cannot easily
-reinstall.
+[GPL-3.0](LICENSE): you may use, change and share it; a changed version you
+distribute must stay under the same license, with its source. No warranty. Read the
+sections you plan to run (`fedora/sections/NN-*.sh`, or `--dry-run`) before using it
+on a machine you cannot easily reinstall.

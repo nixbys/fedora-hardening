@@ -10,7 +10,7 @@ usage() {
         /^# =============================================================================$/ { sep++; next }
         sep == 1 { sub(/^# ?/, ""); print }
         sep >= 2 { exit }
-    ' "$0"
+    ' "$0" || true # a reader that stops early (| head) is not an error
 }
 
 parse_args() {
@@ -85,6 +85,10 @@ parse_args() {
 			;;
 		--score)
 			SCORE_MODE=1
+			shift
+			;;
+		--json)
+			SCORE_JSON=1
 			shift
 			;;
 		--kernel-hardening)
@@ -164,6 +168,10 @@ parse_args() {
 			;;
 		esac
 	done
+	if ((SCORE_JSON && ! SCORE_MODE)); then
+		err "--json goes with --score."
+		exit 2
+	fi
 	[[ -n "$ONLY_LIST" ]] && validate_section_list --only "$ONLY_LIST"
 	[[ -n "$SKIP_LIST" ]] && validate_section_list --skip "$SKIP_LIST"
 	if [[ -n "$TARGET_USER" ]] && ! getent passwd "$TARGET_USER" >/dev/null 2>&1; then

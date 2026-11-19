@@ -73,6 +73,16 @@
       "reviewed": "2026-11-16"
     },
     {
+      "id": "madaidan-linux",
+      "title": "Madaidan — Linux Hardening Guide (linked by Privacy Guides)",
+      "url": "https://madaidans-insecurities.github.io/guides/linux-hardening.html",
+      "type": "html",
+      "sections": "9, 9b, 9c, 22",
+      "covers": "sysctl set, kernel boot options (memory and IOMMU/DMA), module blocklist, core dumps",
+      "fingerprint": "b18c13f38b723b0c35b1289903cf5b06749cb2ef877d05107a1a1b28c2cfc9d3",
+      "reviewed": "2026-11-19"
+    },
+    {
       "id": "arkenfox-release",
       "title": "arkenfox user.js release",
       "repo": "arkenfox/user.js",

@@ -123,6 +123,12 @@ The weekly **Reference watch** workflow opens an issue when a source in
 3. Run the tests, then record the review:
    `python3 tests/check-references.py --update`, and commit `docs/references.json`.
 
+The same workflow runs `tests/check-overlap.py`, which reports any run of 12 or more
+words in the README, the docs or a code comment that repeats a source word for word,
+and opens its own issue. Write the guidance in the project's own words; a quotation
+(quotation marks or a `>` block, with the citation) is fine. Run it locally before a
+release: `python3 tests/check-overlap.py`.
+
 ## CI
 
 | Workflow | Runs | What it does |
@@ -136,12 +142,14 @@ to commit SHAs; Dependabot proposes grouped updates weekly.
 
 ## MCP server (optional)
 
-`mcp_server_fedora_harden.py` exposes lint, test and docs checks as MCP tools for
-Claude while you work on the script. It is not used by `fedora-harden.sh`.
+`mcp_server_fedora_harden.py` exposes lint, test and docs checks as tools for any
+MCP client (an editor or assistant that speaks the Model Context Protocol). It is
+not used by `fedora-harden.sh`.
 
 ```bash
 sudo dnf install python3-mcp
-claude mcp add fedora-harden-dev -- python3 "$PWD/mcp_server_fedora_harden.py"
+# then register it with your MCP client as a stdio server:
+python3 "$PWD/mcp_server_fedora_harden.py"
 ```
 
 Tools: `verify-script`, `lint-script`, `test-script`, `check-security`,

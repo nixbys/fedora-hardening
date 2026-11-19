@@ -139,9 +139,11 @@ fi
 close_app
 
 # --- 3. Stop in the window ends the run with exit 130 ------------------------------
-# A real (non-dry) run of section 4 is slow enough (package + Flathub work) to stop.
+# Without --yes the run waits at its first question in the window, so Stop always
+# arrives while it is running. (With --yes, section 4 can finish in under a second
+# once an earlier step has installed its Flatpaks, and Stop then came too late.)
 rm -f /var/log/fedora-harden/harden-*.log
-/opt/fedora-hardening/fedora-harden.sh --gui --yes --only 4 >"$OUT/gui-cancel.log" 2>&1 &
+/opt/fedora-hardening/fedora-harden.sh --gui --only 4 >"$OUT/gui-cancel.log" 2>&1 &
 pid=$!
 wait_for 60 test -n "$(window)"
 sleep 3
@@ -168,7 +170,8 @@ if [[ "$(state exit)" == 130 ]]; then pass "window shows the run stopped"; else 
 close_app
 
 # --- 4. a window that disappears stops the run -------------------------------------
-/opt/fedora-hardening/fedora-harden.sh --gui --yes --only 4 >"$OUT/gui-killed.log" 2>&1 &
+# Same as 3: waiting at a question, so the run is still going when the window dies.
+/opt/fedora-hardening/fedora-harden.sh --gui --only 4 >"$OUT/gui-killed.log" 2>&1 &
 pid=$!
 wait_for 60 test -n "$(window)"
 sleep 3

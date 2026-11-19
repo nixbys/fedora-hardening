@@ -54,6 +54,19 @@ protection_scorecard() {
 	*) _score na "Kernel lockdown" "not reported by this kernel" ;;
 	esac
 
+	# DMA protection: with the IOMMU on, a device plugged into Thunderbolt/USB4 or a
+	# PCIe slot can reach only the memory the kernel hands it, not all of it.
+	if systemd-detect-virt --vm --quiet 2>/dev/null; then
+		_score na "DMA protection" "virtual machine (the host's IOMMU applies)"
+	elif compgen -G '/sys/kernel/iommu_groups/*' >/dev/null; then
+		v=""
+		grep -qs 1 /sys/bus/thunderbolt/devices/domain*/iommu_dma_protection && v=", including Thunderbolt"
+		_score ok "DMA protection" "the IOMMU is on$v"
+	else
+		_score no "DMA protection" "the IOMMU is off: a Thunderbolt/USB4 or PCIe device could read memory" \
+			"Turn on VT-d (Intel) or AMD-Vi/IOMMU in the firmware setup, then add the IOMMU kernel options: sudo $SCRIPT_NAME --only 9 (kernel boot hardening)"
+	fi
+
 	# Firewall, automatic updates and mandatory access control: the platform file.
 	platform_score_rows
 
@@ -134,10 +147,39 @@ protection_scorecard() {
 	return 0
 }
 
-# show_protection_scorecard - Print the scorecard (terminal) or show it in the window.
+# _json_str <text> - The text as a JSON string (quotes, backslashes, control characters).
+_json_str() {
+	local s="${1//\\/\\\\}"
+	s="${s//\"/\\\"}"
+	s="${s//$'\n'/\\n}"
+	s="${s//$'\t'/\\t}"
+	s="${s//$'\r'/\\r}"
+	printf '"%s"' "${s//[$'\001'-$'\037']/}"
+}
+
+# _scorecard_json - SCORE_ROWS as one JSON object: version, counts and rows.
+_scorecard_json() {
+	local row state label detail fix ok=0 total=0 sep=""
+	printf '{"version":%s,"checked":%s,"rows":[' "$(_json_str "$FH_VERSION")" "$(_json_str "$(date -Iseconds)")"
+	for row in "${SCORE_ROWS[@]}"; do
+		IFS='|' read -r state label detail fix <<<"$row"
+		[[ "$state" == ok || "$state" == no ]] && ((++total))
+		[[ "$state" == ok ]] && ((++ok))
+		printf '%s{"state":%s,"label":%s,"detail":%s,"fix":%s}' "$sep" \
+			"$(_json_str "$state")" "$(_json_str "$label")" "$(_json_str "$detail")" "$(_json_str "$fix")"
+		sep=","
+	done
+	printf '],"ok":%d,"total":%d}\n' "$ok" "$total"
+}
+
+# show_protection_scorecard - Print the scorecard (terminal or JSON) or show it in the window.
 show_protection_scorecard() {
 	local row state label detail fix tag col ok=0 total=0
 	protection_scorecard
+	if ((SCORE_JSON)); then
+		_scorecard_json >&"$SCORE_FD"
+		return 0
+	fi
 	if ((GUI_FULL_MODE)); then
 		for row in "${SCORE_ROWS[@]}"; do
 			IFS='|' read -r state label detail fix <<<"$row"

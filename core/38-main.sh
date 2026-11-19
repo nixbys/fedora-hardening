@@ -3,6 +3,10 @@
 # Exit codes: 0 success, 1 preflight failed; anything else is an abort.
 main() {
 	parse_args "$@"
+	# --score --json: everything except the JSON goes to stderr, so stdout parses.
+	if ((SCORE_JSON)); then
+		exec {SCORE_FD}>&1 1>&2
+	fi
 	[[ -n "$RESTORE_FILE" ]] && load_recovery_file "$RESTORE_FILE"
 
 	# --list-sessions: show past sessions without running a full preflight

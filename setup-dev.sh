@@ -60,7 +60,7 @@ OPTIONS:
 PLATFORM:
     Fedora ${TARGET_FEDORA}. Tools are installed as Fedora RPMs with dnf:
       $(printf '%s ' "${FEDORA_TOOLS[@]#*:}")
-    Optional: ${OPTIONAL_RPMS[*]} (for the Claude MCP server)
+    Optional: ${OPTIONAL_RPMS[*]} (for the optional MCP server)
     On rpm-ostree hosts, run inside a fedora-toolbox:${TARGET_FEDORA} toolbox.
 
 EOF

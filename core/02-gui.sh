@@ -68,7 +68,7 @@ setup_ui_mode() {
 	local ready=""
 	read -r -t 30 -u "$GUI_RX_FD" ready 2>/dev/null || true
 	if [[ "$ready" != READY ]]; then
-		[[ -n "$GUI_APP_PID" ]] && kill "$GUI_APP_PID" 2>/dev/null
+		[[ -n "${GUI_APP_PID:-}" ]] && kill "${GUI_APP_PID:-}" 2>/dev/null
 		exec {GUI_TX_FD}>&- {GUI_RX_FD}<&-
 		GUI_TX_FD="" GUI_RX_FD="" GUI_APP_PID=""
 		trap - PIPE
@@ -164,9 +164,15 @@ gui_finish() {
 	esac
 	gui_send_items
 	gui_send END "$rc" "$msg"
-	exec {GUI_TX_FD}>&- {GUI_RX_FD}<&- 2>/dev/null
+	# Braces keep the 2>/dev/null to this line; on exec alone it would silence stderr
+	# for the rest of the run.
+	{ exec {GUI_TX_FD}>&- {GUI_RX_FD}<&-; } 2>/dev/null
 	GUI_TX_FD="" GUI_RX_FD=""
-	[[ -n "$GUI_APP_PID" ]] && disown "$GUI_APP_PID" 2>/dev/null
+	# disown fails when the window process is already gone (closed or killed); under
+	# set -e that failure turned an exit 130 (stopped) into 1.
+	if [[ -n "${GUI_APP_PID:-}" ]]; then
+		disown "${GUI_APP_PID:-}" 2>/dev/null || true
+	fi
 	trap - PIPE
 	return 0
 }
@@ -226,7 +232,7 @@ gui_check_cancel() {
 		gui_read_line line 1 || break
 	done
 	((GUI_CANCEL_REQUESTED)) && return 0
-	if [[ -n "$GUI_APP_PID" ]] && ! kill -0 "$GUI_APP_PID" 2>/dev/null; then
+	if [[ -n "${GUI_APP_PID:-}" ]] && ! kill -0 "${GUI_APP_PID:-}" 2>/dev/null; then
 		gui_lost
 		return 0
 	fi
