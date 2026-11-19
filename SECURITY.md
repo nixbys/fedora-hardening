@@ -47,9 +47,8 @@ rather than a public issue. This includes:
 - A way for the script's own logic to be tricked into weakening a system
   instead of hardening it (e.g. a crafted `/etc/os-release` or environment
   causing the wrong branch of the dnf/rpm-ostree detection to run).
-- Any code-execution or privilege-escalation path in the script or in
-  `mcp_server_fedora_harden.py` that isn't already covered by "this script
-  runs as root by design."
+- Any code-execution or privilege-escalation path in the script that isn't
+  already covered by "this script runs as root by design."
 
 If you're unsure whether something rises to that level, open it privately
 first — it's easy to downgrade a private report to a public issue, much harder
@@ -78,10 +77,3 @@ short:
   `libexec/`) for anything that changes *what gets executed* (new `curl`,
   `wget`, `eval`, or dynamically constructed commands) with more scrutiny than
   a diff that only changes strings, comments, or section wording.
-
-## Reporting Issues in the MCP Server
-
-`mcp_server_fedora_harden.py` is a local developer-tooling helper (invoked via
-`mcp install`, not part of the hardening script's runtime path) that shells
-out to run linting/testing commands. Treat vulnerability reports about it the
-same way as the shell script — via a private security advisory.

@@ -68,7 +68,7 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         run: >-
           dnf install -y --setopt=install_weak_deps=False
-          bash findutils diffutils ShellCheck yamllint ruff hadolint python3 python3-mcp
+          bash findutils diffutils ShellCheck yamllint ruff hadolint python3
 
       # Fedora RPM where packaged (44), else the same pinned version built with Go (45+)
       - name: Install shfmt

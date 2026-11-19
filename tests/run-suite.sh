@@ -13,7 +13,7 @@
 #   fault   runs in the quick and full images of release N
 #
 # Tiers (run in order; each includes only its own tests):
-#   static  - syntax, shellcheck, shfmt, yamllint, ruff, hadolint, MCP server smoke
+#   static  - syntax, shellcheck, shfmt, yamllint, ruff, hadolint
 #             test, regression greps (RPM toolchain of the release under test)
 #   quick   - CLI contract + full dry-run in the no-systemd container, with a check
 #             that dry-run left the container filesystem untouched
@@ -347,18 +347,11 @@ tier_static() {
     fi
 
     # libexec/fedora-harden-gui.py is the --gui window app.
-    local pys=("$ROOT/mcp_server_fedora_harden.py" "$ROOT/tests/mcp_smoke.py" "$ROOT/tests/check-references.py"
+    local pys=("$ROOT/tests/check-references.py" "$ROOT/tests/check-overlap.py" "$ROOT/tests/check-mappings.py"
         "$ROOT/libexec/fedora-harden-gui.py")
     check "static: python compiles" python3 -c 'import ast,sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' "${pys[@]}"
     if need_tool ruff "static: ruff"; then
         check "static: ruff check" ruff check --no-cache "${pys[@]}"
-    fi
-
-    if python3 -c 'import mcp' 2>/dev/null; then
-        check "static: MCP server starts and serves tools" \
-            python3 -I "$ROOT/tests/mcp_smoke.py" "$ROOT/mcp_server_fedora_harden.py"
-    else
-        record FAIL "static: MCP server smoke test" "python3-mcp not installed"
     fi
 
     # The pinned arkenfox release must still match its checksum (catches re-tagging).

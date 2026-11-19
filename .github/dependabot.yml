@@ -10,9 +10,7 @@
 #
 # This repo has no application dependency manifest (no requirements.txt,
 # package.json, or go.mod — fedora-harden.sh is a dependency-free Bash
-# script, and mcp_server_fedora_harden.py's only third-party import, `mcp`,
-# has no pinned-version manifest for Dependabot to track), so only the
-# ecosystems that actually apply are listed below.
+# script), so only the ecosystems that actually apply are listed below.
 
 version: 2
 updates:

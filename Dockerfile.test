@@ -140,7 +140,6 @@ RUN set -e && \
         ruff \
         hadolint \
         python3 \
-        python3-mcp \
         && \
     dnf clean all && \
     rm -rf /var/cache/dnf/* /var/cache/libdnf5/*

@@ -92,7 +92,9 @@ if [[ -n "$wid" ]]; then
     else
         bad "theme not applied: sidebar pixel #${px:-?} (expected #1D1B20)"
     fi
+    # Xvfb sometimes drops the first key press (focus not settled yet): send it once more.
     keys ctrl+w
+    wait_for 5 test -z "$(app_pids)" || keys ctrl+w
     if wait_for 10 test -z "$(app_pids)"; then pass "Ctrl+W closes the finished window"; else bad "window did not close on Ctrl+W"; fi
 else
     bad "no window to inspect"
