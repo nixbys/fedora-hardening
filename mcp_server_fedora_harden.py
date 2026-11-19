@@ -81,8 +81,9 @@ def script_files() -> list[Path]:
     """fedora-harden.sh, the parts it loads and the routine helper it installs."""
     return [
         SCRIPT_PATH,
-        *sorted((PROJECT_ROOT / "lib").glob("*.sh")),
-        *sorted((PROJECT_ROOT / "sections").glob("*.sh")),
+        *sorted((PROJECT_ROOT / "core").glob("*.sh")),
+        *sorted((PROJECT_ROOT / "fedora" / "lib").glob("*.sh")),
+        *sorted((PROJECT_ROOT / "fedora" / "sections").glob("*.sh")),
         PROJECT_ROOT / "libexec" / "fedora-harden-routine",
     ]
 

@@ -27,7 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "docs" / "references.json"
-SCRIPT = ROOT / "lib" / "01-globals.sh"  # the script's pinned versions
+SCRIPT = ROOT / "core" / "01-globals.sh"  # the script's pinned versions
 USER_AGENT = "fedora-harden-reference-check/1.0 (+https://github.com/nixbys/fedora-hardening)"
 
 
