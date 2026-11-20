@@ -23,7 +23,7 @@ BACKUP_DIR="/root/harden-backups-${RUN_STAMP}"
 TOOLS_BOX="fedora-harden-tools"
 TOOLS_BOX_PKGS="openscap-scanner scap-security-guide setools-console buildah skopeo podman-compose"
 # This release. The release workflow refuses a tag that doesn't match it.
-FH_VERSION="1.0.0"
+FH_VERSION="1.1.0"
 
 # ClamAV image for the scheduled scan on image-based systems (section 16). The
 # signatures ship in the image; minor version pinned, patch releases follow.

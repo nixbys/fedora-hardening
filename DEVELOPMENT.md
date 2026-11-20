@@ -2,8 +2,8 @@
 
 ## Platform
 
-Development, tests and CI all run on **Fedora 44 and 45**, the releases the script
-targets. On a Fedora 44 machine, set up once:
+Development, tests and CI run on **Fedora 45**, the latest release the script targets
+(it stays compatible with 44). On a Fedora 45 machine, set up once:
 
 ```bash
 git clone https://github.com/nixbys/fedora-hardening.git
@@ -32,7 +32,7 @@ is built at the same pinned version with Fedora's Go (`tests/install-shfmt.sh`).
    the generic file checks; the commit-msg hook enforces conventional commits
    (`fix:`, `feat:`, `docs:`, ...).
 4. Test: `./tests/run-suite.sh` (all tiers) or one tier, see [TESTING.md](TESTING.md).
-5. Push and open a pull request. CI runs every tier on Fedora 44 and 45.
+5. Push and open a pull request. CI runs every tier on Fedora 45.
 
 ## Layout
 

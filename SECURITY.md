@@ -8,9 +8,9 @@ machine someone actually uses — is the thing this policy exists to protect.
 
 ## Supported Versions
 
-Security fixes are handled on the default branch (`main`) until formal
-releases are tagged. There is no long-term-support branch; always pull the
-latest `main` before running the script.
+Only the latest release is supported: security fixes go into `main` and ship in
+the next release. There is no long-term-support branch. Download the latest
+release and verify it before running it (README, "Download a release instead").
 
 ## Before You Run It
 

@@ -3,7 +3,7 @@
 #  Fedora 44+ Security Hardening Script (multi-release + multi-desktop aware)
 #  Aligned with privacyguides.org and inteltechniques.com recommendations;
 #  sources and review dates: docs/references.json (checked weekly in CI)
-#  Tested on Fedora 44 and 45 (tests/run-suite.sh); version: --version
+#  Tested on Fedora 45, kept compatible with 44 (tests/run-suite.sh); version: --version
 #  License: GPL-3.0-or-later (LICENSE)
 #
 #  FEATURES:

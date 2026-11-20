@@ -206,6 +206,13 @@ sudo ./fedora-harden.sh --score                     # what protects this machine
 - [docs/MAPPING.md](docs/MAPPING.md): sections mapped to NIST CSF 2.0, NIST SP 800-53
   and MITRE ATT&CK, for reviewers and auditors (references, not a compliance claim)
 
+## Status
+
+Complete for its scope: new sections are added only when the guidance it follows
+changes. Upkeep is automated: Dependabot updates the pinned actions, a weekly check
+flags changed sources and tool releases, and a weekly Rawhide run catches the next
+Fedora release early. Fixes ship as signed releases.
+
 ## License
 
 [GPL-3.0](LICENSE): you may use, change and share it; a changed version you
