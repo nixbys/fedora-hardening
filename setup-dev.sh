@@ -220,7 +220,7 @@ main() {
         log_info "Next steps:"
         log_info "  1. Run the test suite:  ./tests/run-suite.sh"
         log_info "  2. Quick check:         ./test-in-podman.sh --quick --dry-run"
-        log_info "  3. Read DEVELOPMENT.md for the full workflow"
+        log_info "  3. Read CONTRIBUTING.md for the full workflow"
     else
         log_warn "Setup finished with missing tools (see above)."
         exit 1

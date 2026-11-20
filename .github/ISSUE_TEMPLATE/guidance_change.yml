@@ -1,0 +1,31 @@
+name: Guidance change
+description: A recommendation is out of date, or the guidance this project follows now asks for something new.
+labels: [guidance]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every recommendation follows a cited source (docs/references.json). Changes follow
+        the source, so start with the link.
+  - type: input
+    id: source
+    attributes:
+      label: Source
+      description: Privacy Guides, IntelTechniques, Madaidan's guide, or the vendor's own documentation
+      placeholder: https://www.privacyguides.org/en/os/linux-overview/
+    validations:
+      required: true
+  - type: input
+    id: section
+    attributes:
+      label: Section
+      description: The section it affects (see `./fedora-harden.sh --list`), or "new"
+      placeholder: "11"
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: What should change, and why
+    validations:
+      required: true

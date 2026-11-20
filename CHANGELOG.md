@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Community files: a code of conduct (Contributor Covenant 2.1), issue forms for bugs
+  and guidance changes, a pull request checklist; DEVELOPMENT.md is now CONTRIBUTING.md,
+  with a short "before you start".
+
 ## 1.1.0 — 2026-11-19
 
 ### Accuracy

@@ -197,7 +197,7 @@ sudo ./fedora-harden.sh --score                     # what protects this machine
 ## More
 
 - [docs/guide.md](docs/guide.md): the features in detail, with screenshots
-- [DEVELOPMENT.md](DEVELOPMENT.md): layout, conventions, CI; [TESTING.md](TESTING.md): the test tiers
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to contribute, layout, conventions; [TESTING.md](TESTING.md): the test tiers
 - [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md): reporting issues, trust assumptions
 - [CHANGELOG.md](CHANGELOG.md): what changed and why
 - Sources: every recommendation cites its source in the code (`# Source:`); the list,
