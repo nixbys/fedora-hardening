@@ -9,7 +9,7 @@ from scratch. See [SECURITY.md](SECURITY.md) for how to report a problem.
 `fedora-harden.sh` is invoked as `sudo ./fedora-harden.sh` (per the README
 Quick Start) against a real Fedora or Atomic-Desktop system — a developer's
 laptop, a home server, or a workstation someone is using right now. It is not
-a container init script or a CI fixture: its 23 sections rewrite `sshd_config`,
+a container init script or a CI fixture: its 24 sections rewrite `sshd_config`,
 firewalld zones, sysctl values, PAM stacks, and systemd unit state on a
 machine with an existing user, existing sessions, and existing expectations
 about what still works after the script exits.
@@ -85,7 +85,8 @@ On a release the detection logic doesn't recognize:
   runs, sections are independently selectable (`--only`/`--skip`) so an
   unfamiliar system can be tested section-by-section, and every file the
   script touches is backed up before modification so `--rollback` can undo a
-  bad application. None of this replaces testing new releases before they're
+  bad application. A weekly CI run against Fedora Rawhide (`rawhide.yml`) opens
+  an issue when the next release breaks something, before users reach it. None of this replaces testing new releases before they're
   added to the supported list — a mismatch between "the script believes it
   succeeded" and "the config now says what the script thinks it says" is a
   correctness bug worth its own test case, not just a rollback safety net.
@@ -123,12 +124,13 @@ a precondition isn't met.
 
 These are open and acknowledged:
 
-1. **No cryptographic verification of the script itself at run time.** Nothing
-   stops a tampered copy from running with a valid-looking `--dry-run` output;
-   the only defense is verifying the source before running it (SECURITY.md).
-   Signed releases/tags are a reasonable future improvement.
+1. **A plain git clone isn't verified.** Releases carry a SHA-256 checksum and a
+   signed build attestation (README, "Download a release instead"), so a release
+   can be checked before it runs as root. A `git clone` of `main` is protected only
+   by GitHub's TLS; use a verified release when that matters. Nothing checks the
+   script at run time.
 2. **Effect-level assertions cover the main sections, not all of them.** The
-   Fedora 44 test suite (`tests/run-suite.sh`, `TESTING.md`) runs the script for
+   test suite (`tests/run-suite.sh`, `TESTING.md`) runs the script for
    real in a systemd container and asserts effects — the effective sshd
    configuration via `sshd -T`, pwquality/faillock/`login.defs` values, firewalld
    default zone, sysctl/audit/umask/core-dump drop-ins, ClamAV running,

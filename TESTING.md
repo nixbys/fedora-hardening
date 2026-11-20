@@ -258,7 +258,7 @@ podman build -f Dockerfile.test --target lint      -t localhost/fedora-harden:li
 
 ## CI
 
-`.github/workflows/ci.yml` runs on push, pull request, nightly and on demand. The
+`.github/workflows/ci.yml` runs on push, pull request, weekly (Mondays) and on demand. The
 static, scan and container jobs run inside a `registry.fedoraproject.org/fedora`
 container of the release under test (45). The atomic-images jobs run on the
 runner itself, so they can free disk space and use KVM; the runner only starts
@@ -269,7 +269,7 @@ containers and VMs, and every check runs on the Fedora Atomic image under test:
 | static | static tier with Fedora 45 RPM tools |
 | secrets | `gitleaks git` over the full history (Fedora `gitleaks` RPM) |
 | vulnerabilities | `trivy fs` (Fedora `trivy` RPM), SARIF uploaded to code scanning |
-| container-tests | quick, full, gui and the six fault groups (one job each), on a Fedora CoreOS VM booted with KVM: Fedora kernel, SELinux enforcing, real nftables |
+| container-tests | quick, full, gui and the four fault groups (one job each), on a Fedora CoreOS VM booted with KVM: Fedora kernel, SELinux enforcing, real nftables |
 | atomic-images | atomic and vm tiers for Silverblue 45 and Bazzite |
 
 ### Running tiers on a Fedora host

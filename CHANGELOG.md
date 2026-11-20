@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-11-19
+
+### Accuracy
+
+- The docs say what is true: tests and CI run on Fedora 45 (kept compatible with 44),
+  CI's scheduled run is weekly and has four fault groups, there are 24 sections,
+  releases are signed (the remaining gap is an unverified `git clone`), only the
+  latest release is supported, and the README states the project's status.
 
 ### Fewer moving parts
 
