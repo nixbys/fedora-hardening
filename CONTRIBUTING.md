@@ -19,8 +19,8 @@ Development, tests and CI run on **Fedora 45**, the latest release the script ta
 (it stays compatible with 44). On a Fedora 45 machine, set up once:
 
 ```bash
-git clone https://github.com/nixbys/fedora-hardening.git
-cd fedora-hardening
+git clone https://github.com/nixbys/linux-hardening.git
+cd linux-hardening
 ./setup-dev.sh        # Fedora RPM toolchain + git hooks
 ```
 

@@ -28,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "docs" / "references.json"
 SCRIPT = ROOT / "core" / "01-globals.sh"  # the script's pinned versions
-USER_AGENT = "fedora-harden-reference-check/1.0 (+https://github.com/nixbys/fedora-hardening)"
+USER_AGENT = "fedora-harden-reference-check/1.0 (+https://github.com/nixbys/linux-hardening)"
 
 
 class _MainText(html.parser.HTMLParser):

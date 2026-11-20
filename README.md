@@ -1,9 +1,9 @@
-# fedora-hardening
+# linux-hardening
 
-A Bash script that hardens Fedora Workstation and the Fedora Atomic desktops
+`fedora-harden.sh` is a Bash script that hardens Fedora Workstation and the Fedora Atomic desktops
 (Silverblue, Kinoite, Bazzite, Bluefin and the rest) in one run, following
 [Privacy Guides](https://www.privacyguides.org) and
-[IntelTechniques](https://inteltechniques.com).
+[IntelTechniques](https://inteltechniques.com). Only the Fedora family is supported.
 
 It works out the release, the package manager (`dnf` or `rpm-ostree`) and the
 desktop, then applies 24 sections in dependency order. Every change is journaled, so
@@ -54,8 +54,8 @@ touches SSH, PAM, the kernel and the firewall: read the `--dry-run` output first
 ## Quick Start
 
 ```bash
-git clone https://github.com/nixbys/fedora-hardening.git
-cd fedora-hardening
+git clone https://github.com/nixbys/linux-hardening.git
+cd linux-hardening
 sudo ./fedora-harden.sh --dry-run           # preview what would change (no modifications made)
 sudo ./fedora-harden.sh                     # run all sections interactively
 sudo ./fedora-harden.sh --user yourusername # target a specific user for SSH/home-dir hardening
@@ -69,13 +69,17 @@ Each release ships a tarball, its checksum and a signed build attestation, so yo
 can check what you're about to run as root:
 
 ```bash
-v=1.0.0
-curl -LO https://github.com/nixbys/fedora-hardening/releases/download/v$v/fedora-hardening-$v.tar.gz
-curl -LO https://github.com/nixbys/fedora-hardening/releases/download/v$v/SHA256SUMS
+v=1.1.0
+curl -LO https://github.com/nixbys/linux-hardening/releases/download/v$v/fedora-hardening-$v.tar.gz
+curl -LO https://github.com/nixbys/linux-hardening/releases/download/v$v/SHA256SUMS
 sha256sum -c SHA256SUMS
-gh attestation verify fedora-hardening-$v.tar.gz -R nixbys/fedora-hardening   # built by this repo's CI
+gh attestation verify fedora-hardening-$v.tar.gz -R nixbys/linux-hardening   # built by this repo's CI
 tar xzf fedora-hardening-$v.tar.gz && cd fedora-hardening-$v
 ```
+
+Releases up to 1.1.0 were built before the repository was renamed from
+`fedora-hardening`, and their signatures name it: verify them with
+`-R nixbys/fedora-hardening`.
 
 `./fedora-harden.sh --version` shows which release you have.
 

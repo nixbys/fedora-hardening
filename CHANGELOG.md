@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The repository is now `nixbys/linux-hardening` (GitHub redirects the old name). Links
+  and clone commands use the new name; releases up to 1.1.0 still verify with
+  `-R nixbys/fedora-hardening`, the name in their signatures. Only the Fedora family
+  is supported.
 - Community files: a code of conduct (Contributor Covenant 2.1), issue forms for bugs
   and guidance changes, a pull request checklist; DEVELOPMENT.md is now CONTRIBUTING.md,
   with a short "before you start".
