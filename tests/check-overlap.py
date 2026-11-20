@@ -32,7 +32,7 @@ _spec.loader.exec_module(refs)
 
 WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
 QUOTED = re.compile(r"\"[^\"]{20,}\"|“[^”]{20,}”")
-DOCS = ["README.md", "SECURITY.md", "THREAT_MODEL.md", "DEVELOPMENT.md", "TESTING.md", "CHANGELOG.md"]
+DOCS = ["README.md", "SECURITY.md", "THREAT_MODEL.md", "CONTRIBUTING.md", "TESTING.md", "CHANGELOG.md"]
 
 
 def words(text: str) -> list[str]:

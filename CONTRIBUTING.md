@@ -1,4 +1,17 @@
-# Developing fedora-harden.sh
+# Contributing
+
+Thanks for helping. Before you start:
+
+- **A bug:** open an issue with the bug form. It asks for the version, your Fedora
+  edition and a `--report`, which hides host name, user names, home paths and
+  addresses; don't paste a `--report --full`.
+- **A security problem:** never in a public issue; see [SECURITY.md](SECURITY.md).
+- **A new section or a changed recommendation:** open an issue with the guidance form
+  first, with the source it comes from. The project is complete for its scope (README,
+  "Status"), so changes follow the guidance it cites rather than new ideas.
+- Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+The rest of this file is the developer guide: setup, layout, conventions, releasing.
 
 ## Platform
 

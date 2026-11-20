@@ -1,0 +1,56 @@
+name: Bug report
+description: A section did the wrong thing, failed, or couldn't be undone.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems don't belong here: report them privately (see SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `./fedora-harden.sh --version`
+      placeholder: fedora-harden.sh 1.1.0
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Fedora edition, release and desktop
+      placeholder: Fedora 45 Silverblue, GNOME
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command you ran
+      placeholder: sudo ./fedora-harden.sh --only 9
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: dropdown
+    id: rollback
+    attributes:
+      label: Did `--rollback` undo it?
+      options:
+        - Didn't try
+        - "Yes"
+        - Partly
+        - "No"
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Report
+      description: >-
+        Paste the relevant part of `sudo ./fedora-harden.sh --report`. It replaces your
+        host name, user names, home paths and addresses with placeholders. Don't paste a
+        `--report --full`.
+      render: text
