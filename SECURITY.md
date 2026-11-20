@@ -24,7 +24,7 @@ release and verify it before running it (README, "Download a release instead").
 - **Verify the commit you're running.** If you pull the script by any means
   other than `git clone` immediately before running it (a cached copy, a
   mirror, a `curl`'d raw-file URL saved from a chat or forum post), confirm it
-  matches the current `main` branch of `github.com/nixbys/fedora-hardening`
+  matches the current `main` branch of `github.com/nixbys/linux-hardening`
   before trusting it.
 - **Use `--dry-run` first.** Every run prints exactly what it would change
   before you commit to applying it for real.
@@ -39,7 +39,7 @@ release and verify it before running it (README, "Download a release instead").
 ## Reporting a Vulnerability
 
 Please report security issues privately via [GitHub Security
-Advisories](https://github.com/nixbys/fedora-hardening/security/advisories/new)
+Advisories](https://github.com/nixbys/linux-hardening/security/advisories/new)
 rather than a public issue. This includes:
 
 - A hardening section that silently fails to apply the protection it claims to

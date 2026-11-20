@@ -208,7 +208,7 @@ SCRIPT_DIR="$(readlink -f -- "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="${SCRIPT_DIR%/*}"
 if [[ ! -f "$SCRIPT_DIR/core/01-globals.sh" || ! -d "$SCRIPT_DIR/fedora/sections" ]]; then
 	printf '%s: core/ and fedora/ are missing next to it in %s.\n' "${0##*/}" "$SCRIPT_DIR" >&2
-	printf 'Run it from a full copy of the project: git clone https://github.com/nixbys/fedora-hardening\n' >&2
+	printf 'Run it from a full copy of the project: git clone https://github.com/nixbys/linux-hardening\n' >&2
 	exit 1
 fi
 
